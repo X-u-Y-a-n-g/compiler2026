@@ -1,0 +1,31 @@
+int add(int a, int b)
+{
+    int tmp = a + b;
+    return tmp;
+}
+
+int fib(int n)
+{
+    if (n <= 1) return n;
+
+    int l = 0, r = 1;
+    int i = 2;
+    while (i <= n)
+    {
+        int tmp = add(l, r);
+        l       = r;
+        r       = tmp;
+        i       = add(i, 1);
+    }
+    return r;
+}
+
+int INT_MAX = 2147483647;
+int INT_MIN = -2147483648;
+
+int main()
+{
+    int i = add(INT_MAX, INT_MIN);
+    putint(fib(i * 10));
+    return 0;
+}

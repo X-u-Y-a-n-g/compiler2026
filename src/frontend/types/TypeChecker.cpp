@@ -10,6 +10,10 @@ std::string Type::toString() const {
       return "int";
     case TypeKind::Float:
       return "float";
+    case TypeKind::Bool:
+      return "bool";
+    case TypeKind::Long:
+      return "long";
     case TypeKind::Unknown:
       return "unknown";
   }

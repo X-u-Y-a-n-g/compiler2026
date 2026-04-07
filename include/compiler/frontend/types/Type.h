@@ -8,6 +8,8 @@ enum class TypeKind {
   Void,
   Int,
   Float,
+  Bool,
+  Long,
   Unknown,
 };
 

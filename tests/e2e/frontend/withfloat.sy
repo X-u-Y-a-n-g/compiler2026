@@ -1,0 +1,49 @@
+float testDecimalFloats()
+{
+    float a = 3.14;
+    float b = 0.5;
+    float c = 123.456;
+    float d = .5;
+    float e = 5.;
+
+    float f = 1e10;
+    float g = 1.5e10;
+    float h = 2.5e-3;
+    float i = .5E+5;
+    float j = 3.e-10;
+
+    return a + b + c + d + e + f + g + h + i + j;
+}
+
+float testHexFloats()
+{
+    float a = 0x1.8p0;
+    float b = 0xA.Bp2;
+    float c = 0x1.0p-3;
+    float d = 0xF.Fp10;
+
+    float e = 0x1p5;
+    float f = 0xAp-2;
+
+    return a + b + c + d + e + f;
+}
+
+int main()
+{
+    float pi       = 3.14159;
+    float e_const  = 2.71828;
+    float small    = 1e-10;
+    float large    = 1.0e20;
+    float hex_half = 0x1.0p-1;
+    float hex_two  = 0x2.0p0;
+
+    float sum      = pi + e_const;
+    float product  = small * large;
+    float division = hex_two / hex_half;
+
+    float result1 = testDecimalFloats();
+    float result2 = testHexFloats();
+
+    if (result1 > result2) return 1;
+    else return 0;
+}

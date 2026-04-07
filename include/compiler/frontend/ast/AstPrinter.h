@@ -6,12 +6,17 @@
 
 namespace compiler::frontend::ast {
 
-class AstPrinter : public AstVisitor {
+class AstPrinter {
  public:
   std::string print(const TranslationUnit& unit);
-  void visit(const TranslationUnit& node) override;
 
  private:
+  void printDecl(const Decl& decl, int indent);
+  void printStmt(const Stmt& stmt, int indent);
+  void printExpr(const Expr& expr, int indent);
+  void printVariableDecl(const VariableDecl& decl, int indent);
+  void line(int indent, const std::string& text);
+
   std::string output_;
 };
 
