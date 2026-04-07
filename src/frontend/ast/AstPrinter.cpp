@@ -206,11 +206,27 @@ void AstPrinter::printExpr(const Expr& expr, int indent) {
   if (const auto* index = dynamic_cast<const IndexExpr*>(&expr)) {
     line(indent, "IndexExpr");
     printExpr(*index->base, indent + 1);
-    printExpr(*index->index, indent + 1);
+      printExpr(*index->index, indent + 1);
+    return;
+  }
+  if (const auto* initList = dynamic_cast<const InitListExpr*>(&expr)) {
+    line(indent, "InitListExpr");
+    for (const auto& element : initList->elements) {
+      printInitializer(*element, indent + 1);
+    }
     return;
   }
 
   line(indent, "UnknownExpr");
+}
+
+void AstPrinter::printInitializer(const Expr& expr, int indent) {
+  if (dynamic_cast<const InitListExpr*>(&expr) != nullptr) {
+    printExpr(expr, indent);
+    return;
+  }
+  line(indent, "InitElement");
+  printExpr(expr, indent + 1);
 }
 
 void AstPrinter::printVariableDecl(const VariableDecl& decl, int indent) {
@@ -224,7 +240,7 @@ void AstPrinter::printVariableDecl(const VariableDecl& decl, int indent) {
   }
   if (decl.initializer) {
     line(indent + 1, "Initializer");
-    printExpr(*decl.initializer, indent + 2);
+    printInitializer(*decl.initializer, indent + 2);
   }
 }
 

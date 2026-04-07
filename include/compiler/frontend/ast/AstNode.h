@@ -38,6 +38,7 @@ class BlockStmt;
 class VariableDecl;
 class VariableDeclGroup;
 class FunctionDecl;
+class InitListExpr;
 class IdentifierExpr;
 class IntegerLiteral;
 class FloatLiteralExpr;
@@ -151,6 +152,13 @@ class IndexExpr final : public Expr {
 
   ExprPtr base;
   ExprPtr index;
+};
+
+class InitListExpr final : public Expr {
+ public:
+  explicit InitListExpr(compiler::support::SourceLocation location) : Expr(location) {}
+
+  std::vector<ExprPtr> elements;
 };
 
 class VariableDecl final : public AstNode {

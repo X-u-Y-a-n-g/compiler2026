@@ -1,0 +1,6 @@
+int main() {
+  int x = {1};
+  float y = {{2}};
+  long z = {3};
+  return 0;
+}

@@ -1,0 +1,6 @@
+const int width = 2;
+int g[2][width] = {{1, 2}, 3};
+
+int main() {
+  return 0;
+}

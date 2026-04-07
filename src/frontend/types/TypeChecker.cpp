@@ -1,5 +1,9 @@
 #include "compiler/frontend/types/TypeChecker.h"
 
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -25,6 +29,7 @@ using compiler::frontend::ast::FunctionDecl;
 using compiler::frontend::ast::IdentifierExpr;
 using compiler::frontend::ast::IfStmt;
 using compiler::frontend::ast::IndexExpr;
+using compiler::frontend::ast::InitListExpr;
 using compiler::frontend::ast::IntegerLiteral;
 using compiler::frontend::ast::ReturnStmt;
 using compiler::frontend::ast::Stmt;
@@ -40,6 +45,8 @@ using compiler::frontend::lexer::toString;
 using compiler::support::DiagnosticEngine;
 using compiler::support::SourceLocation;
 
+constexpr std::size_t kIgnoreFirstArrayDimension = 1;
+
 enum class SymbolKind {
   Variable,
   Function,
@@ -48,6 +55,7 @@ enum class SymbolKind {
 struct CheckedType {
   TypeKind kind = TypeKind::Unknown;
   std::size_t arrayRank = 0;
+  std::vector<std::optional<long long>> arrayDimensions;
   bool isConst = false;
 
   [[nodiscard]] bool isUnknown() const { return kind == TypeKind::Unknown; }
@@ -73,6 +81,7 @@ struct SymbolInfo {
   SymbolKind kind = SymbolKind::Variable;
   SourceLocation location;
   CheckedType type;
+  std::optional<long long> integerConstantValue;
 };
 
 class Checker {
@@ -98,11 +107,12 @@ class Checker {
   }
 
   static CheckedType scalarType(TypeKind kind, bool isConst = false) {
-    return CheckedType{kind, 0, isConst};
+    return CheckedType{kind, 0, {}, isConst};
   }
 
-  static CheckedType variableType(const VariableDecl& variable) {
-    return CheckedType{variable.type.type.kind, variable.dimensions.size(), variable.type.isConst};
+  static CheckedType arrayType(TypeKind kind, std::vector<std::optional<long long>> dimensions,
+                               bool isConst = false) {
+    return CheckedType{kind, dimensions.size(), std::move(dimensions), isConst};
   }
 
   static bool isIntegralScalar(const CheckedType& type) {
@@ -115,6 +125,102 @@ class Checker {
     return !type.isArray() &&
            (type.kind == TypeKind::Int || type.kind == TypeKind::Long ||
             type.kind == TypeKind::Bool || type.kind == TypeKind::Float);
+  }
+
+  static bool parseIntegerLiteral(const std::string& text, long long& value) {
+    errno = 0;
+    char* end = nullptr;
+    const auto parsed = std::strtoll(text.c_str(), &end, 0);
+    if (errno == ERANGE || end == nullptr || *end != '\0') {
+      return false;
+    }
+    value = parsed;
+    return true;
+  }
+
+  static std::optional<long long> tryEvaluateSyntacticIntegerConstant(const Expr& expression) {
+    if (const auto* integer = dynamic_cast<const IntegerLiteral*>(&expression)) {
+      long long value = 0;
+      if (parseIntegerLiteral(integer->value, value)) {
+        return value;
+      }
+      return std::nullopt;
+    }
+
+    if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression)) {
+      const auto operand = tryEvaluateSyntacticIntegerConstant(*unary->operand);
+      if (!operand.has_value()) {
+        return std::nullopt;
+      }
+      switch (unary->op) {
+        case TokenKind::Plus:
+          return operand;
+        case TokenKind::Minus:
+          if (*operand == std::numeric_limits<long long>::min()) {
+            return std::nullopt;
+          }
+          return -*operand;
+        case TokenKind::LogicalNot:
+          return *operand == 0 ? 1 : 0;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
+      if (binary->op == TokenKind::Assign || binary->op == TokenKind::Comma) {
+        return std::nullopt;
+      }
+
+      const auto lhs = tryEvaluateSyntacticIntegerConstant(*binary->lhs);
+      const auto rhs = tryEvaluateSyntacticIntegerConstant(*binary->rhs);
+      if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+      }
+
+      switch (binary->op) {
+        case TokenKind::Plus:
+          return *lhs + *rhs;
+        case TokenKind::Minus:
+          return *lhs - *rhs;
+        case TokenKind::Star:
+          return *lhs * *rhs;
+        case TokenKind::Slash:
+          if (*rhs == 0) {
+            return std::nullopt;
+          }
+          return *lhs / *rhs;
+        case TokenKind::Percent:
+          if (*rhs == 0) {
+            return std::nullopt;
+          }
+          return *lhs % *rhs;
+        case TokenKind::Less:
+          return *lhs < *rhs ? 1 : 0;
+        case TokenKind::LessEqual:
+          return *lhs <= *rhs ? 1 : 0;
+        case TokenKind::Greater:
+          return *lhs > *rhs ? 1 : 0;
+        case TokenKind::GreaterEqual:
+          return *lhs >= *rhs ? 1 : 0;
+        case TokenKind::EqualEqual:
+          return *lhs == *rhs ? 1 : 0;
+        case TokenKind::NotEqual:
+          return *lhs != *rhs ? 1 : 0;
+        case TokenKind::LogicalAnd:
+          return (*lhs != 0 && *rhs != 0) ? 1 : 0;
+        case TokenKind::LogicalOr:
+          return (*lhs != 0 || *rhs != 0) ? 1 : 0;
+        case TokenKind::Ampersand:
+          return *lhs & *rhs;
+        case TokenKind::Pipe:
+          return *lhs | *rhs;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    return std::nullopt;
   }
 
   static CheckedType promoteArithmetic(const CheckedType& type) {
@@ -150,13 +256,38 @@ class Checker {
     return from.kind == to.kind;
   }
 
+  static bool haveCompatibleArrayShape(const CheckedType& argument,
+                                       const CheckedType& parameter) {
+    if (!argument.isArray() || !parameter.isArray()) {
+      return false;
+    }
+    if (argument.kind != parameter.kind || argument.arrayRank < parameter.arrayRank) {
+      return false;
+    }
+
+    if (parameter.arrayRank <= 1) {
+      return true;
+    }
+
+    const std::size_t trailingDims = parameter.arrayRank - kIgnoreFirstArrayDimension;
+    const std::size_t argumentStart = argument.arrayDimensions.size() - trailingDims;
+    for (std::size_t i = 0; i < trailingDims; ++i) {
+      const auto& argumentDimension = argument.arrayDimensions[argumentStart + i];
+      const auto& parameterDimension = parameter.arrayDimensions[kIgnoreFirstArrayDimension + i];
+      if (argumentDimension.has_value() && parameterDimension.has_value() &&
+          argumentDimension != parameterDimension) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   static bool canPassArgument(const CheckedType& argument, const CheckedType& parameter) {
     if (argument.isUnknown() || parameter.isUnknown()) {
       return true;
     }
     if (parameter.isArray()) {
-      return argument.isArray() && argument.arrayRank >= parameter.arrayRank &&
-             argument.kind == parameter.kind;
+      return haveCompatibleArrayShape(argument, parameter);
     }
     if (argument.isArray()) {
       return false;
@@ -164,8 +295,31 @@ class Checker {
     return canImplicitlyConvert(argument, parameter);
   }
 
+  static std::optional<long long> totalArrayCapacity(const CheckedType& type) {
+    if (!type.isArray()) {
+      return std::nullopt;
+    }
+
+    long long capacity = 1;
+    for (const auto& dimension : type.arrayDimensions) {
+      if (!dimension.has_value() || *dimension <= 0) {
+        return std::nullopt;
+      }
+      if (capacity > std::numeric_limits<long long>::max() / *dimension) {
+        return std::nullopt;
+      }
+      capacity *= *dimension;
+    }
+    return capacity;
+  }
+
+  static CheckedType elementTypeOf(const CheckedType& arrayType) {
+    return scalarType(arrayType.kind, arrayType.isConst);
+  }
+
   bool declareInCurrentScope(const std::string& name, SymbolKind kind,
-                             const SourceLocation& location, const CheckedType& type) {
+                             const SourceLocation& location, const CheckedType& type,
+                             std::optional<long long> integerConstantValue = std::nullopt) {
     if (name.empty()) {
       return false;
     }
@@ -173,11 +327,21 @@ class Checker {
     if (scope.find(name) != scope.end()) {
       return false;
     }
-    scope.emplace(name, SymbolInfo{kind, location, type});
+    scope.emplace(name, SymbolInfo{kind, location, type, integerConstantValue});
     return true;
   }
 
   const SymbolInfo* lookupSymbol(const std::string& name) const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      const auto found = it->find(name);
+      if (found != it->end()) {
+        return &found->second;
+      }
+    }
+    return nullptr;
+  }
+
+  SymbolInfo* lookupSymbolMutable(const std::string& name) {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
       const auto found = it->find(name);
       if (found != it->end()) {
@@ -195,10 +359,152 @@ class Checker {
     return &it->second;
   }
 
+  std::optional<long long> tryEvaluateIntegerConstant(const Expr& expression) const {
+    if (const auto* integer = dynamic_cast<const IntegerLiteral*>(&expression)) {
+      long long value = 0;
+      if (parseIntegerLiteral(integer->value, value)) {
+        return value;
+      }
+      return std::nullopt;
+    }
+
+    if (const auto* identifier = dynamic_cast<const IdentifierExpr*>(&expression)) {
+      const auto* symbol = lookupSymbol(identifier->name);
+      if (symbol == nullptr || symbol->kind != SymbolKind::Variable || !symbol->type.isConst ||
+          !symbol->integerConstantValue.has_value()) {
+        return std::nullopt;
+      }
+      return symbol->integerConstantValue;
+    }
+
+    if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression)) {
+      const auto operand = tryEvaluateIntegerConstant(*unary->operand);
+      if (!operand.has_value()) {
+        return std::nullopt;
+      }
+      switch (unary->op) {
+        case TokenKind::Plus:
+          return operand;
+        case TokenKind::Minus:
+          if (*operand == std::numeric_limits<long long>::min()) {
+            return std::nullopt;
+          }
+          return -*operand;
+        case TokenKind::LogicalNot:
+          return *operand == 0 ? 1 : 0;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
+      if (binary->op == TokenKind::Assign || binary->op == TokenKind::Comma) {
+        return std::nullopt;
+      }
+
+      const auto lhs = tryEvaluateIntegerConstant(*binary->lhs);
+      const auto rhs = tryEvaluateIntegerConstant(*binary->rhs);
+      if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+      }
+
+      switch (binary->op) {
+        case TokenKind::Plus:
+          return *lhs + *rhs;
+        case TokenKind::Minus:
+          return *lhs - *rhs;
+        case TokenKind::Star:
+          return *lhs * *rhs;
+        case TokenKind::Slash:
+          if (*rhs == 0) {
+            return std::nullopt;
+          }
+          return *lhs / *rhs;
+        case TokenKind::Percent:
+          if (*rhs == 0) {
+            return std::nullopt;
+          }
+          return *lhs % *rhs;
+        case TokenKind::Less:
+          return *lhs < *rhs ? 1 : 0;
+        case TokenKind::LessEqual:
+          return *lhs <= *rhs ? 1 : 0;
+        case TokenKind::Greater:
+          return *lhs > *rhs ? 1 : 0;
+        case TokenKind::GreaterEqual:
+          return *lhs >= *rhs ? 1 : 0;
+        case TokenKind::EqualEqual:
+          return *lhs == *rhs ? 1 : 0;
+        case TokenKind::NotEqual:
+          return *lhs != *rhs ? 1 : 0;
+        case TokenKind::LogicalAnd:
+          return (*lhs != 0 && *rhs != 0) ? 1 : 0;
+        case TokenKind::LogicalOr:
+          return (*lhs != 0 || *rhs != 0) ? 1 : 0;
+        case TokenKind::Ampersand:
+          return *lhs & *rhs;
+        case TokenKind::Pipe:
+          return *lhs | *rhs;
+        default:
+          return std::nullopt;
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  std::optional<long long> tryEvaluateScalarIntegerInitializer(const Expr& initializer) const {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      if (initList->elements.size() != 1) {
+        return std::nullopt;
+      }
+      return tryEvaluateScalarIntegerInitializer(*initList->elements.front());
+    }
+    return tryEvaluateIntegerConstant(initializer);
+  }
+
+  std::vector<std::optional<long long>> buildSyntacticArrayDimensions(
+      const VariableDecl& variable) const {
+    std::vector<std::optional<long long>> dimensions;
+    dimensions.reserve(variable.dimensions.size());
+    for (const auto& dimension : variable.dimensions) {
+      if (!dimension) {
+        dimensions.push_back(std::nullopt);
+        continue;
+      }
+      dimensions.push_back(tryEvaluateSyntacticIntegerConstant(*dimension));
+    }
+    return dimensions;
+  }
+
+  std::vector<std::optional<long long>> buildResolvedArrayDimensions(
+      const VariableDecl& variable) const {
+    std::vector<std::optional<long long>> dimensions;
+    dimensions.reserve(variable.dimensions.size());
+    for (const auto& dimension : variable.dimensions) {
+      if (!dimension) {
+        dimensions.push_back(std::nullopt);
+        continue;
+      }
+      dimensions.push_back(tryEvaluateIntegerConstant(*dimension));
+    }
+    return dimensions;
+  }
+
+  CheckedType syntacticVariableType(const VariableDecl& variable) const {
+    return arrayType(variable.type.type.kind, buildSyntacticArrayDimensions(variable),
+                     variable.type.isConst);
+  }
+
+  CheckedType resolvedVariableType(const VariableDecl& variable) const {
+    return arrayType(variable.type.type.kind, buildResolvedArrayDimensions(variable),
+                     variable.type.isConst);
+  }
+
   void registerBuiltinFunction(const std::string& name, CheckedType returnType,
                                std::vector<CheckedType> parameters) {
     functions_.emplace(name, FunctionInfo{{}, returnType, std::move(parameters)});
-    scopes_.front().emplace(name, SymbolInfo{SymbolKind::Function, {}, returnType});
+    scopes_.front().emplace(name, SymbolInfo{SymbolKind::Function, {}, returnType, std::nullopt});
   }
 
   void registerBuiltins() {
@@ -206,9 +512,9 @@ class Checker {
     registerBuiltinFunction("getch", scalarType(TypeKind::Int), {});
     registerBuiltinFunction("getfloat", scalarType(TypeKind::Float), {});
     registerBuiltinFunction("getarray", scalarType(TypeKind::Int),
-                            {CheckedType{TypeKind::Int, 1, false}});
+                            {arrayType(TypeKind::Int, {std::nullopt})});
     registerBuiltinFunction("getfarray", scalarType(TypeKind::Int),
-                            {CheckedType{TypeKind::Float, 1, false}});
+                            {arrayType(TypeKind::Float, {std::nullopt})});
     registerBuiltinFunction("putint", scalarType(TypeKind::Void),
                             {scalarType(TypeKind::Int)});
     registerBuiltinFunction("putch", scalarType(TypeKind::Void),
@@ -216,9 +522,11 @@ class Checker {
     registerBuiltinFunction("putfloat", scalarType(TypeKind::Void),
                             {scalarType(TypeKind::Float)});
     registerBuiltinFunction("putarray", scalarType(TypeKind::Void),
-                            {scalarType(TypeKind::Int), CheckedType{TypeKind::Int, 1, false}});
+                            {scalarType(TypeKind::Int),
+                             arrayType(TypeKind::Int, {std::nullopt})});
     registerBuiltinFunction("putfarray", scalarType(TypeKind::Void),
-                            {scalarType(TypeKind::Int), CheckedType{TypeKind::Float, 1, false}});
+                            {scalarType(TypeKind::Int),
+                             arrayType(TypeKind::Float, {std::nullopt})});
     registerBuiltinFunction("starttime", scalarType(TypeKind::Void), {});
     registerBuiltinFunction("stoptime", scalarType(TypeKind::Void), {});
   }
@@ -228,7 +536,7 @@ class Checker {
       if (const auto* group = dynamic_cast<const VariableDeclGroup*>(declaration.get())) {
         for (const auto& variable : group->declarations) {
           declareInCurrentScope(variable->name, SymbolKind::Variable, variable->location(),
-                                variableType(*variable));
+                                syntacticVariableType(*variable));
         }
         continue;
       }
@@ -238,7 +546,7 @@ class Checker {
           std::vector<CheckedType> parameters;
           parameters.reserve(function->parameters.size());
           for (const auto& parameter : function->parameters) {
-            parameters.push_back(variableType(*parameter));
+            parameters.push_back(syntacticVariableType(*parameter));
           }
           functions_.emplace(function->name,
                              FunctionInfo{function->location(),
@@ -247,7 +555,8 @@ class Checker {
         }
         scopes_.front().emplace(function->name,
                                 SymbolInfo{SymbolKind::Function, function->location(),
-                                           scalarType(function->returnType.type.kind)});
+                                           scalarType(function->returnType.type.kind),
+                                           std::nullopt});
       }
     }
   }
@@ -272,7 +581,7 @@ class Checker {
     for (const auto& parameter : function.parameters) {
       if (!parameter->name.empty()) {
         declareInCurrentScope(parameter->name, SymbolKind::Variable, parameter->location(),
-                              variableType(*parameter));
+                              resolvedVariableType(*parameter));
       }
     }
 
@@ -291,24 +600,129 @@ class Checker {
     }
   }
 
+  void checkScalarInitializer(const VariableDecl& variable, const CheckedType& targetType,
+                              const Expr& initializer) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      if (initList->elements.empty()) {
+        diagnostics_.error(initializer.location(),
+                           "scalar variable '" + variable.name +
+                               "' cannot be initialized with an empty initializer list");
+        return;
+      }
+      if (initList->elements.size() != 1) {
+        diagnostics_.error(initializer.location(),
+                           "scalar variable '" + variable.name +
+                               "' cannot be initialized with multiple initializer elements");
+        return;
+      }
+      checkScalarInitializer(variable, targetType, *initList->elements.front());
+      return;
+    }
+
+    const CheckedType initializerType = analyzeExpression(initializer);
+    if (initializerType.isUnknown()) {
+      return;
+    }
+    if (initializerType.isArray()) {
+      diagnostics_.error(initializer.location(),
+                         "cannot initialize scalar variable '" + variable.name +
+                             "' of type " + targetType.toString() +
+                             " with array expression of type " + initializerType.toString());
+      return;
+    }
+    if (!canImplicitlyConvert(initializerType, targetType)) {
+      diagnostics_.error(initializer.location(),
+                         "cannot initialize variable '" + variable.name + "' of type " +
+                             targetType.toString() + " with expression of type " +
+                             initializerType.toString());
+    }
+  }
+
+  void collectArrayInitializerScalars(const VariableDecl& variable, const CheckedType& elementType,
+                                      const Expr& initializer,
+                                      std::size_t& scalarInitializerCount) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      for (const auto& element : initList->elements) {
+        collectArrayInitializerScalars(variable, elementType, *element, scalarInitializerCount);
+      }
+      return;
+    }
+
+    ++scalarInitializerCount;
+    const CheckedType initializerType = analyzeExpression(initializer);
+    if (initializerType.isUnknown()) {
+      return;
+    }
+    if (initializerType.isArray()) {
+      diagnostics_.error(initializer.location(),
+                         "cannot initialize element of array '" + variable.name +
+                             "' with array expression of type " + initializerType.toString());
+      return;
+    }
+    if (!canImplicitlyConvert(initializerType, elementType)) {
+      diagnostics_.error(initializer.location(),
+                         "cannot initialize element of array '" + variable.name + "' of type " +
+                             elementType.toString() + " with expression of type " +
+                             initializerType.toString());
+    }
+  }
+
+  void checkArrayInitializer(const VariableDecl& variable, const CheckedType& targetType,
+                             const Expr& initializer) {
+    const auto* initList = dynamic_cast<const InitListExpr*>(&initializer);
+    if (initList == nullptr) {
+      const CheckedType initializerType = analyzeExpression(initializer);
+      diagnostics_.error(initializer.location(),
+                         "array variable '" + variable.name +
+                             "' must be initialized with an initializer list");
+      if (!initializerType.isUnknown() && initializerType.isArray()) {
+        diagnostics_.note(initializer.location(),
+                          "found array expression of type " + initializerType.toString());
+      }
+      return;
+    }
+
+    std::size_t scalarInitializerCount = 0;
+    const CheckedType elementType = elementTypeOf(targetType);
+    for (const auto& element : initList->elements) {
+      collectArrayInitializerScalars(variable, elementType, *element, scalarInitializerCount);
+    }
+
+    if (const auto capacity = totalArrayCapacity(targetType);
+        capacity.has_value() && scalarInitializerCount > static_cast<std::size_t>(*capacity)) {
+      diagnostics_.error(initializer.location(),
+                         "too many initializer elements for array '" + variable.name + "' of type " +
+                             targetType.toString());
+    }
+  }
+
   void analyzeVariable(const VariableDecl& variable, bool declareLocals) {
-    const CheckedType declaredType = variableType(variable);
+    const CheckedType declaredType = resolvedVariableType(variable);
+    std::optional<long long> integerConstantValue;
+
     if (variable.initializer) {
-      const CheckedType initializerType = analyzeExpression(*variable.initializer);
       if (declaredType.isArray()) {
-        diagnostics_.error(variable.initializer->location(),
-                           "array variable '" + variable.name +
-                               "' cannot be initialized with a scalar expression");
-      } else if (!canImplicitlyConvert(initializerType, declaredType)) {
-        diagnostics_.error(variable.initializer->location(),
-                           "cannot initialize variable '" + variable.name + "' of type " +
-                               declaredType.toString() + " with expression of type " +
-                               initializerType.toString());
+        checkArrayInitializer(variable, declaredType, *variable.initializer);
+      } else {
+        checkScalarInitializer(variable, declaredType, *variable.initializer);
       }
     }
 
+    if (variable.type.isConst && !declaredType.isArray() && isIntegralScalar(declaredType) &&
+        variable.initializer) {
+      integerConstantValue = tryEvaluateScalarIntegerInitializer(*variable.initializer);
+    }
+
     if (declareLocals && !variable.name.empty()) {
-      declareInCurrentScope(variable.name, SymbolKind::Variable, variable.location(), declaredType);
+      declareInCurrentScope(variable.name, SymbolKind::Variable, variable.location(), declaredType,
+                            integerConstantValue);
+      return;
+    }
+
+    if (auto* existing = lookupSymbolMutable(variable.name); existing != nullptr &&
+        existing->kind == SymbolKind::Variable) {
+      existing->type = declaredType;
+      existing->integerConstantValue = integerConstantValue;
     }
   }
 
@@ -426,8 +840,8 @@ class Checker {
     if (!canImplicitlyConvert(expressionType, currentReturnType_)) {
       diagnostics_.error(statement.expression->location(),
                          "cannot return expression of type " + expressionType.toString() +
-                             " from function '" + currentFunctionName_ + "' returning " +
-                             currentReturnType_.toString());
+                             " from function '" + currentFunctionName_ +
+                             "' returning " + currentReturnType_.toString());
     }
   }
 
@@ -458,6 +872,13 @@ class Checker {
     }
 
     if (dynamic_cast<const StringLiteralExpr*>(&expression) != nullptr) {
+      return scalarType(TypeKind::Unknown);
+    }
+
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&expression)) {
+      for (const auto& element : initList->elements) {
+        analyzeExpression(*element);
+      }
       return scalarType(TypeKind::Unknown);
     }
 
@@ -632,7 +1053,13 @@ class Checker {
                                baseType.toString());
         return scalarType(TypeKind::Unknown);
       }
-      return CheckedType{baseType.kind, baseType.arrayRank - 1, baseType.isConst};
+
+      std::vector<std::optional<long long>> subDimensions;
+      if (!baseType.arrayDimensions.empty()) {
+        subDimensions.assign(baseType.arrayDimensions.begin() + 1, baseType.arrayDimensions.end());
+      }
+      return CheckedType{baseType.kind, baseType.arrayRank - 1, std::move(subDimensions),
+                         baseType.isConst};
     }
 
     return scalarType(TypeKind::Unknown);

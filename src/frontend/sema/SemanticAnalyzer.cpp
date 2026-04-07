@@ -33,6 +33,7 @@ using compiler::frontend::ast::FunctionDecl;
 using compiler::frontend::ast::GotoStmt;
 using compiler::frontend::ast::IdentifierExpr;
 using compiler::frontend::ast::IfStmt;
+using compiler::frontend::ast::InitListExpr;
 using compiler::frontend::ast::IndexExpr;
 using compiler::frontend::ast::IntegerLiteral;
 using compiler::frontend::ast::LabelStmt;
@@ -544,9 +545,9 @@ class Analyzer {
     bool initializerIsConstExpr = false;
     std::optional<long long> initializerIntValue;
     if (variable.initializer) {
-      analyzeExpression(*variable.initializer, "initializer expression must produce a value");
-      initializerIsConstExpr = isConstantExpression(*variable.initializer);
-      initializerIntValue = tryEvaluateIntegerConstant(*variable.initializer);
+      analyzeInitializer(*variable.initializer);
+      initializerIsConstExpr = isConstantInitializer(*variable.initializer);
+      initializerIntValue = tryEvaluateScalarIntegerInitializer(*variable.initializer);
     }
 
     if (variable.type.isConst && variable.initializer && !initializerIsConstExpr) {
@@ -832,6 +833,16 @@ class Analyzer {
   ExprResult analyzeExpression(const Expr& expression, const char* voidUseMessage) {
     ExprResult result = ExprResult::Value;
 
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&expression)) {
+      for (const auto& element : initList->elements) {
+        analyzeInitializer(*element);
+      }
+      if (voidUseMessage != nullptr) {
+        diagnostics_.error(initList->location(), voidUseMessage);
+      }
+      return ExprResult::Value;
+    }
+
     if (const auto* identifier = dynamic_cast<const IdentifierExpr*>(&expression)) {
       const auto* symbol = lookupSymbol(identifier->name);
       if (!symbol) {
@@ -959,6 +970,16 @@ class Analyzer {
     return "<call>";
   }
 
+  void analyzeInitializer(const Expr& initializer) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      for (const auto& element : initList->elements) {
+        analyzeInitializer(*element);
+      }
+      return;
+    }
+    analyzeExpression(initializer, "initializer expression must produce a value");
+  }
+
   bool isConstantExpression(const Expr& expression) const {
     if (dynamic_cast<const IntegerLiteral*>(&expression) != nullptr ||
         dynamic_cast<const FloatLiteralExpr*>(&expression) != nullptr ||
@@ -984,6 +1005,28 @@ class Analyzer {
     }
 
     return false;
+  }
+
+  bool isConstantInitializer(const Expr& initializer) const {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      for (const auto& element : initList->elements) {
+        if (!isConstantInitializer(*element)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return isConstantExpression(initializer);
+  }
+
+  std::optional<long long> tryEvaluateScalarIntegerInitializer(const Expr& initializer) const {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      if (initList->elements.size() != 1) {
+        return std::nullopt;
+      }
+      return tryEvaluateScalarIntegerInitializer(*initList->elements.front());
+    }
+    return tryEvaluateIntegerConstant(initializer);
   }
 
   std::optional<long long> tryEvaluateIntegerConstant(const Expr& expression) const {
@@ -1080,7 +1123,7 @@ class Analyzer {
   }
 
   void checkArrayDimensions(const VariableDecl& variable, bool isParameter,
-                            bool isGlobalVariable) {
+                            bool /*isGlobalVariable*/) {
     for (std::size_t i = 0; i < variable.dimensions.size(); ++i) {
       const auto& dimension = variable.dimensions[i];
       if (!dimension) {
@@ -1104,12 +1147,6 @@ class Analyzer {
                            "array dimension for '" + variable.name +
                                "' must be greater than zero");
       }
-    }
-
-    if (isGlobalVariable && variable.initializer && isArrayLike(variable)) {
-      diagnostics_.error(variable.initializer->location(),
-                         "global array initializer for '" + variable.name +
-                             "' must use aggregate initialization");
     }
   }
 

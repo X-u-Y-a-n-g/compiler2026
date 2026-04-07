@@ -65,6 +65,7 @@ class Parser {
   StmtPtr parseDeclarationStatement(compiler::support::DiagnosticEngine& diagnostics);
   StmtPtr parseExpressionStatement(compiler::support::DiagnosticEngine& diagnostics);
   StmtPtr parseLabelStatement(compiler::support::DiagnosticEngine& diagnostics);
+  ExprPtr parseInitializer(compiler::support::DiagnosticEngine& diagnostics);
 
   ExprPtr parseExpression(compiler::support::DiagnosticEngine& diagnostics);
   ExprPtr parseComma(compiler::support::DiagnosticEngine& diagnostics);

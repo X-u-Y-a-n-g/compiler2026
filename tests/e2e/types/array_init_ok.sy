@@ -1,0 +1,9 @@
+const int width = 2;
+int global_matrix[2][width] = {{1, 2}, 3};
+
+int main() {
+  int local_matrix[2][2] = {1, 2, 3, 4};
+  float values[3] = {1, 2.5, {3}};
+  int scalar = {1};
+  return 0;
+}

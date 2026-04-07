@@ -188,7 +188,7 @@ std::unique_ptr<ast::VariableDecl> Parser::parseSingleVariableDeclarator(
   }
 
   if (!isParameter && match({TokenKind::Assign})) {
-    decl->initializer = parseAssignment(diagnostics);
+    decl->initializer = parseInitializer(diagnostics);
   }
 
   return decl;
@@ -493,6 +493,26 @@ Parser::StmtPtr Parser::parseLabelStatement(compiler::support::DiagnosticEngine&
   expect(TokenKind::Colon, diagnostics, "expected ':' after label");
   auto statement = parseStatement(diagnostics);
   return std::make_unique<ast::LabelStmt>(label.location, label.lexeme, std::move(statement));
+}
+
+Parser::ExprPtr Parser::parseInitializer(compiler::support::DiagnosticEngine& diagnostics) {
+  if (match({TokenKind::LBrace})) {
+    auto list = std::make_unique<ast::InitListExpr>(previous().location);
+    if (!check(TokenKind::RBrace)) {
+      while (true) {
+        list->elements.push_back(parseInitializer(diagnostics));
+        if (!match({TokenKind::Comma})) {
+          break;
+        }
+        if (check(TokenKind::RBrace)) {
+          break;
+        }
+      }
+    }
+    expect(TokenKind::RBrace, diagnostics, "expected '}' after initializer list");
+    return list;
+  }
+  return parseAssignment(diagnostics);
 }
 
 Parser::ExprPtr Parser::parseExpression(compiler::support::DiagnosticEngine& diagnostics) {
