@@ -1,0 +1,16 @@
+float mix(float a, int b) {
+  return a + b;
+}
+
+int take(int a[]) {
+  return a[0];
+}
+
+int main() {
+  int arr[2];
+  float x = mix(1.5, 2);
+  if (x > 0.0) {
+    return take(arr);
+  }
+  return 0;
+}

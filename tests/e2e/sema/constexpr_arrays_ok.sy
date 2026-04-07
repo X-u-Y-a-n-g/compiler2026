@@ -1,0 +1,15 @@
+const int N = 2 + 3;
+int g = N * 2;
+int arr[N];
+
+int main() {
+  const int M = N - 1;
+  int local[M + 1];
+  switch (N) {
+    case 5:
+      break;
+    default:
+      break;
+  }
+  return g + local[0];
+}

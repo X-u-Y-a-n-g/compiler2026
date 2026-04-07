@@ -181,6 +181,8 @@ std::unique_ptr<ast::VariableDecl> Parser::parseSingleVariableDeclarator(
   while (match({TokenKind::LBracket})) {
     if (!check(TokenKind::RBracket)) {
       decl->dimensions.push_back(parseExpression(diagnostics));
+    } else {
+      decl->dimensions.push_back(nullptr);
     }
     expect(TokenKind::RBracket, diagnostics, "expected ']' after array dimension");
   }

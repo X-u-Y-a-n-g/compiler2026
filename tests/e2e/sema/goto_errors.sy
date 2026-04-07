@@ -1,0 +1,6 @@
+int main() {
+  goto missing;
+label:
+  label:
+  return 0;
+}

@@ -1,0 +1,8 @@
+int main() {
+  putint(3);
+  int x = putint(5);
+  if (putch(32)) {
+    return x;
+  }
+  return 0;
+}

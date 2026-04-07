@@ -4,7 +4,7 @@
 
 本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干：
 
-`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义/类型检查占位 -> AST 驱动 IR Lowering -> 最小后端汇编输出`
+`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 IR Lowering -> 最小后端汇编输出`
 
 当前阶段的定位是：
 
@@ -32,9 +32,9 @@
 | AST 结构 | 已实现真实语法树节点体系，覆盖翻译单元、函数/变量声明、块、返回、条件、循环、`switch-case-default`、`goto/label`、调用、下标、一元/二元表达式、整数字面量、浮点字面量、字符串字面量 | `include/compiler/frontend/ast/AstNode.h` | Done |
 | 语法分析 | 已实现递归下降语法分析；支持顶层变量声明、函数声明/定义、数组声明、参数声明、表达式优先级、逗号表达式、控制流语句、`switch-case-default`、`goto`/标签、调用与下标访问 | `src/frontend/parser/Parser.cpp`、`include/compiler/frontend/parser/Parser.h`、`Parser` | Done |
 | AST 打印 | 输出结构化 AST，便于前端调试与回归 | `src/frontend/ast/AstPrinter.cpp`、`AstPrinter` | Done |
-| 语义分析 | 保留分析入口，当前未实现符号表、作用域检查、控制流合法性检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial（仅定义接口） |
+| 语义分析 | 已实现全局/局部符号表、函数声明收集、重复定义检查、未定义标识符检查、内建函数注册与调用参数个数检查、函数声明签名一致性检查、数组形参数组层级检查、`break/continue` 上下文检查、`switch-case-default` 合法性检查、`goto/label` 解析、`void` 返回值误用检查、`return` 语句合法性检查、整数常量表达式求值、数组维度常量性/正数性检查、`case` 标签常量性检查、全局初始化常量表达式检查、常量零除检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial |
 | 类型系统 | 已定义 `void / int / float / bool / long / unknown` 类型枚举与字符串化接口 | `include/compiler/frontend/types/Type.h`、`src/frontend/types/TypeChecker.cpp` | Partial |
-| 类型检查 | 保留检查入口，当前未实现表达式类型推导、赋值约束、函数签名检查 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial（仅定义接口） |
+| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
 | IR 核心结构 | 已定义 `Module / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
 | IR Lowering | 当前基于 AST 识别 `main` 中可静态提取的整数返回路径，生成最小 `ret` IR；复杂表达式和一般语句尚未降低 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |
@@ -45,7 +45,7 @@
 | 栈帧生成 | 保留后端阶段入口，暂无实际逻辑 | `src/backend/frame/FrameLowering.cpp`、`FrameLowering` | Partial（仅定义接口） |
 | 寄存器分配 | 保留后端阶段入口，暂无实际逻辑 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Partial（仅定义接口） |
 | 汇编输出 | 支持最小 RISC-V / ARMv7 汇编输出 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Done |
-| 前端样例回归 | 已纳入基础样例、数组样例、浮点样例，以及扩展前端覆盖样例；已完成本地构建回归 | `tests/e2e/frontend/*.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/functional/return_42.sysy` | Done |
+| 前端样例回归 | 已纳入基础样例、数组样例、浮点样例、扩展前端覆盖样例、语义分析正反样例与类型检查样例；已完成本地构建回归 | `tests/e2e/frontend/*.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/functional/return_42.sysy`、`tests/e2e/sema/*.sy`、`tests/e2e/types/*.sy` | Done |
 
 ## 项目结构说明
 
@@ -75,7 +75,9 @@ compiler/
 ├── tests/
 │   └── e2e/
 │       ├── frontend/              # 参考仓库导入的前端回归样例
-│       └── functional/            # 当前项目功能样例
+│       ├── functional/            # 当前项目功能样例
+│       ├── sema/                  # 语义分析正反样例
+│       └── types/                 # 类型检查正反样例
 ├── docs/
 ├── runtime/
 ├── scripts/
@@ -100,16 +102,22 @@ compiler/
 3. `tests/e2e/frontend/witharray.sy` 可完成数组相关语法分析
 4. `tests/e2e/frontend/withfloat.sy` 可完成浮点字面量词法分析和语法分析
 5. `tests/e2e/functional/frontend_full.sysy` 可覆盖 `default`、逗号表达式、函数原型、数组下标、调用、标签、`goto`、`for`、`switch`、`do-while`
+6. `tests/e2e/sema/ok_builtin_calls.sy` 可通过内建函数与语义检查
+7. `tests/e2e/sema/duplicate_local.sy`、`tests/e2e/sema/control_flow_errors.sy`、`tests/e2e/sema/goto_errors.sy`、`tests/e2e/sema/void_value_errors.sy` 可稳定触发预期语义报错
+8. `tests/e2e/sema/constexpr_arrays_ok.sy` 可验证常量表达式、数组维度和全局常量初始化
+9. `tests/e2e/sema/array_dim_errors.sy`、`tests/e2e/sema/case_const_errors.sy`、`tests/e2e/sema/global_init_errors.sy`、`tests/e2e/sema/global_array_init_errors.sy` 可稳定触发常量表达式 / 数组 / 全局初始化相关语义报错
+10. `tests/e2e/sema/signature_param_shape_errors.sy`、`tests/e2e/sema/array_param_rank_errors.sy`、`tests/e2e/sema/array_param_rank_ok.sy` 可验证函数签名匹配与数组形参数组层级检查
+11. `tests/e2e/types/type_operator_errors.sy`、`tests/e2e/types/type_index_errors.sy`、`tests/e2e/types/type_call_base_errors.sy`、`tests/e2e/types/type_ok.sy` 可验证表达式类型推导、索引、运算符和函数实参类型检查
 
 ## 队友接手指南（TODO List）
 
-- [ ] 实现真正的语义分析与符号表  
-  切入点：`src/frontend/sema/SemanticAnalyzer.cpp`。  
-  优先补齐作用域管理、重复定义检查、`break/continue` 所在上下文检查、`goto/label` 解析关系。
-
-- [ ] 实现真正的类型检查  
+- [ ] 继续扩展类型检查  
   切入点：`src/frontend/types/TypeChecker.cpp`。  
-  优先补齐字面量类型、表达式二元运算结果类型、赋值兼容性、函数返回类型检查。
+  优先补齐更完整的数值转换规则、函数返回/参数精细匹配、数组初始化类型规则、字符串字面量与不支持类型的诊断收敛。
+
+- [ ] 继续扩展语义分析  
+  切入点：`src/frontend/sema/SemanticAnalyzer.cpp`。  
+  优先补齐局部/全局数组初始化规则、更多函数声明兼容性规则、内建函数参数形状检查与更完整的常量折叠结果复用。
 
 - [ ] 将 AST Lowering 扩展为真实表达式/语句级 IR 生成  
   切入点：`src/ir/builder/AstToIR.cpp`。  
@@ -150,6 +158,33 @@ cmake --build build -j4
 ./build/compiler tests/e2e/functional/frontend_full.sysy --dump-tokens --dump-ast -o /tmp/frontend_full.s
 ```
 
+### 验证语义分析样例
+
+```bash
+./build/compiler tests/e2e/sema/ok_builtin_calls.sy -o /tmp/ok_builtin_calls.s
+./build/compiler tests/e2e/sema/constexpr_arrays_ok.sy -o /tmp/constexpr_arrays_ok.s
+./build/compiler tests/e2e/sema/duplicate_local.sy -o /tmp/duplicate_local.s
+./build/compiler tests/e2e/sema/control_flow_errors.sy -o /tmp/control_flow_errors.s
+./build/compiler tests/e2e/sema/goto_errors.sy -o /tmp/goto_errors.s
+./build/compiler tests/e2e/sema/void_value_errors.sy -o /tmp/void_value_errors.s
+./build/compiler tests/e2e/sema/array_dim_errors.sy -o /tmp/array_dim_errors.s
+./build/compiler tests/e2e/sema/case_const_errors.sy -o /tmp/case_const_errors.s
+./build/compiler tests/e2e/sema/global_init_errors.sy -o /tmp/global_init_errors.s
+./build/compiler tests/e2e/sema/global_array_init_errors.sy -o /tmp/global_array_init_errors.s
+./build/compiler tests/e2e/sema/signature_param_shape_errors.sy -o /tmp/signature_param_shape_errors.s
+./build/compiler tests/e2e/sema/array_param_rank_errors.sy -o /tmp/array_param_rank_errors.s
+./build/compiler tests/e2e/sema/array_param_rank_ok.sy -o /tmp/array_param_rank_ok.s
+```
+
+### 验证类型检查样例
+
+```bash
+./build/compiler tests/e2e/types/type_ok.sy -o /tmp/type_ok.s
+./build/compiler tests/e2e/types/type_operator_errors.sy -o /tmp/type_operator_errors.s
+./build/compiler tests/e2e/types/type_index_errors.sy -o /tmp/type_index_errors.s
+./build/compiler tests/e2e/types/type_call_base_errors.sy -o /tmp/type_call_base_errors.s
+```
+
 ### 生成 RISC-V 汇编
 
 ```bash
@@ -165,7 +200,8 @@ cmake --build build -j4
 ## 当前限制
 
 1. 仅支持单输入文件
-2. 语义分析与类型检查仍为占位实现
-3. IR Lowering 仅覆盖最小整数返回路径，尚未支持一般表达式与控制流 lowering
-4. 中端暂无真实优化 pass
-5. 后端仅支持最小返回路径，不支持局部变量、表达式求值、分支、调用约定和真实寄存器分配
+2. 类型检查尚未覆盖完整的隐式转换、完整函数签名兼容性、数组初始化规则与更复杂表达式类别
+3. 语义分析仍未覆盖更完整的数组初始化语义、更多声明兼容规则与常量折叠结果复用
+4. IR Lowering 仅覆盖最小整数返回路径，尚未支持一般表达式与控制流 lowering
+5. 中端暂无真实优化 pass
+6. 后端仅支持最小返回路径，不支持局部变量、表达式求值、分支、调用约定和真实寄存器分配

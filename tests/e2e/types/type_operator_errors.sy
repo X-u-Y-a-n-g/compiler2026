@@ -1,0 +1,8 @@
+int main() {
+  float x = 1.5;
+  int arr[2];
+  if (arr) {
+    return 1;
+  }
+  return x % 2;
+}

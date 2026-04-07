@@ -1,0 +1,8 @@
+int use(int a[]) {
+  return a[0];
+}
+
+int main() {
+  float fa[2];
+  return use(fa);
+}
