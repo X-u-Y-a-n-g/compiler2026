@@ -34,7 +34,7 @@
 | AST 打印 | 输出结构化 AST，便于前端调试与回归 | `src/frontend/ast/AstPrinter.cpp`、`AstPrinter` | Done |
 | 语义分析 | 已实现全局/局部符号表、函数声明收集、重复定义检查、未定义标识符检查、内建函数注册与调用参数个数检查、函数声明签名一致性检查、数组形参数组层级检查、`break/continue` 上下文检查、`switch-case-default` 合法性检查、`goto/label` 解析、`void` 返回值误用检查、`return` 语句合法性检查、整数常量表达式求值、数组维度常量性/正数性检查、`case` 标签常量性检查、全局初始化常量表达式检查、递归初始化列表常量性检查、常量零除检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial |
 | 类型系统 | 已定义 `void / int / float / bool / long / unknown` 类型枚举与字符串化接口，并在类型检查阶段跟踪数组层级与已知维度信息 | `include/compiler/frontend/types/Type.h`、`src/frontend/types/TypeChecker.cpp` | Partial |
-| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
+| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查，并将归一化后的线性初始化槽位结果回写到 AST 变量声明缓存 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
 | IR 核心结构 | 已定义 `Module / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
 | IR Lowering | 当前基于 AST 识别 `main` 中可静态提取的整数返回路径，生成最小 `ret` IR；复杂表达式和一般语句尚未降低 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |

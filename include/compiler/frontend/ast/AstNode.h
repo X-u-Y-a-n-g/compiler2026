@@ -161,6 +161,22 @@ class InitListExpr final : public Expr {
   std::vector<ExprPtr> elements;
 };
 
+struct NormalizedInitializerSlot {
+  const Expr* expression = nullptr;
+
+  [[nodiscard]] bool isImplicitZero() const { return expression == nullptr; }
+};
+
+struct NormalizedInitializerData {
+  bool available = false;
+  std::vector<NormalizedInitializerSlot> slots;
+
+  void clear() {
+    available = false;
+    slots.clear();
+  }
+};
+
 class VariableDecl final : public AstNode {
  public:
   VariableDecl(compiler::support::SourceLocation location, TypeSpecifier type, std::string name,
@@ -172,6 +188,9 @@ class VariableDecl final : public AstNode {
   std::vector<ExprPtr> dimensions;
   ExprPtr initializer;
   bool isParameter = false;
+  // Analysis cache filled after type checking: flattened initializer slots, with nullptr meaning
+  // implicit zero-fill.
+  mutable NormalizedInitializerData normalizedInitializer;
 };
 
 class VariableDeclGroup final : public Decl {

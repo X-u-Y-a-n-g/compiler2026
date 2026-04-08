@@ -31,6 +31,7 @@ using compiler::frontend::ast::IfStmt;
 using compiler::frontend::ast::IndexExpr;
 using compiler::frontend::ast::InitListExpr;
 using compiler::frontend::ast::IntegerLiteral;
+using compiler::frontend::ast::NormalizedInitializerSlot;
 using compiler::frontend::ast::ReturnStmt;
 using compiler::frontend::ast::Stmt;
 using compiler::frontend::ast::StringLiteralExpr;
@@ -600,6 +601,21 @@ class Checker {
     }
   }
 
+  static void setZeroNormalizedInitializer(const VariableDecl& variable, std::size_t slotCount) {
+    variable.normalizedInitializer.available = true;
+    variable.normalizedInitializer.slots.assign(slotCount, NormalizedInitializerSlot{});
+  }
+
+  static const Expr* unwrapScalarInitializerExpression(const Expr& initializer) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      if (initList->elements.size() != 1) {
+        return nullptr;
+      }
+      return unwrapScalarInitializerExpression(*initList->elements.front());
+    }
+    return &initializer;
+  }
+
   void checkScalarInitializer(const VariableDecl& variable, const CheckedType& targetType,
                               const Expr& initializer) {
     if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
@@ -689,13 +705,15 @@ class Checker {
                                        const CheckedType& elementType, const Expr& initializer,
                                        std::size_t depth, std::size_t totalCapacity,
                                        std::size_t& linearPosition,
-                                       bool& sawTotalOverflow) {
+                                       bool& sawTotalOverflow,
+                                       std::vector<NormalizedInitializerSlot>& normalizedSlots) {
     if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
       const auto blockSize = blockSizeForDepth(arrayType, depth);
       if (!blockSize.has_value()) {
         for (const auto& element : initList->elements) {
           validateArrayInitializerAligned(variable, arrayType, elementType, *element, depth + 1,
-                                          totalCapacity, linearPosition, sawTotalOverflow);
+                                          totalCapacity, linearPosition, sawTotalOverflow,
+                                          normalizedSlots);
         }
         return;
       }
@@ -725,7 +743,8 @@ class Checker {
         }
 
         validateArrayInitializerAligned(variable, arrayType, elementType, *element, depth + 1,
-                                        totalCapacity, linearPosition, sawTotalOverflow);
+                                        totalCapacity, linearPosition, sawTotalOverflow,
+                                        normalizedSlots);
       }
 
       if (linearPosition < blockEnd) {
@@ -744,6 +763,7 @@ class Checker {
     }
 
     checkArrayElementInitializer(variable, elementType, initializer);
+    normalizedSlots[linearPosition].expression = &initializer;
     ++linearPosition;
   }
 
@@ -766,9 +786,12 @@ class Checker {
     if (const auto capacity = totalArrayCapacity(targetType); capacity.has_value()) {
       std::size_t linearPosition = 0;
       bool sawTotalOverflow = false;
+      variable.normalizedInitializer.available = true;
+      variable.normalizedInitializer.slots.assign(static_cast<std::size_t>(*capacity),
+                                                  NormalizedInitializerSlot{});
       validateArrayInitializerAligned(variable, targetType, elementType, initializer, 0,
                                       static_cast<std::size_t>(*capacity), linearPosition,
-                                      sawTotalOverflow);
+                                      sawTotalOverflow, variable.normalizedInitializer.slots);
       return;
     }
 
@@ -778,12 +801,26 @@ class Checker {
   void analyzeVariable(const VariableDecl& variable, bool declareLocals) {
     const CheckedType declaredType = resolvedVariableType(variable);
     std::optional<long long> integerConstantValue;
+    variable.normalizedInitializer.clear();
 
     if (variable.initializer) {
       if (declaredType.isArray()) {
         checkArrayInitializer(variable, declaredType, *variable.initializer);
       } else {
         checkScalarInitializer(variable, declaredType, *variable.initializer);
+        if (const Expr* scalarInitializer = unwrapScalarInitializerExpression(*variable.initializer);
+            scalarInitializer != nullptr) {
+          variable.normalizedInitializer.available = true;
+          variable.normalizedInitializer.slots = {NormalizedInitializerSlot{scalarInitializer}};
+        }
+      }
+    } else if (!declareLocals && !declaredType.isUnknown() && !declaredType.isVoid()) {
+      if (declaredType.isArray()) {
+        if (const auto capacity = totalArrayCapacity(declaredType); capacity.has_value()) {
+          setZeroNormalizedInitializer(variable, static_cast<std::size_t>(*capacity));
+        }
+      } else {
+        setZeroNormalizedInitializer(variable, 1);
       }
     }
 
