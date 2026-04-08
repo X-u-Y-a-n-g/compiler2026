@@ -17,9 +17,9 @@ class IRBuilder {
   }
 
   void emit(compiler::ir::core::BasicBlock& block, std::string opcode,
-            std::vector<std::string> operands = {}) {
+            std::vector<std::string> operands = {}, std::string result = "") {
     block.addInstruction(
-        compiler::ir::core::Instruction{std::move(opcode), std::move(operands)});
+        compiler::ir::core::Instruction{std::move(opcode), std::move(operands), std::move(result)});
   }
 
  private:

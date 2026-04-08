@@ -684,11 +684,7 @@ class Lowerer {
   }
 
   bool isCurrentBlockTerminated() const {
-    if (currentBlock_ == nullptr || currentBlock_->instructions().empty()) {
-      return false;
-    }
-    const auto& opcode = currentBlock_->instructions().back().opcode();
-    return opcode == "ret" || opcode == "jmp" || opcode == "br";
+    return currentBlock_ != nullptr && currentBlock_->isTerminated();
   }
 
   void ensureCurrentBlock(const std::string& prefix = "dead") {
@@ -702,10 +698,16 @@ class Lowerer {
     builder_->emit(*currentBlock_, std::move(opcode), std::move(operands));
   }
 
+  void emitNamedValue(std::string result, std::string opcode,
+                      std::vector<std::string> operands = {}) {
+    ensureCurrentBlock();
+    builder_->emit(*currentBlock_, std::move(opcode), std::move(operands), std::move(result));
+  }
+
   std::string emitValue(std::string opcode, std::vector<std::string> operands = {},
                         const char* hint = "t") {
     const std::string temp = nextTemp(hint);
-    emit(temp + " = " + std::move(opcode), std::move(operands));
+    emitNamedValue(temp, std::move(opcode), std::move(operands));
     return temp;
   }
 
@@ -807,30 +809,63 @@ class Lowerer {
     return "<expr>";
   }
 
-  std::string formatGlobalInitializer(const VariableDecl& variable, const LoweredType& type) const {
+  compiler::ir::core::Constant buildZeroConstant(const LoweredType& type) const {
+    if (!type.isArray()) {
+      return compiler::ir::core::Constant::scalar(type.toString(), zeroLiteral(type));
+    }
+
+    std::vector<compiler::ir::core::Constant> elements;
+    if (!type.dimensions.empty() && type.dimensions.front().has_value()) {
+      elements.reserve(static_cast<std::size_t>(*type.dimensions.front()));
+      for (long long i = 0; i < *type.dimensions.front(); ++i) {
+        elements.push_back(buildZeroConstant(type.elementType()));
+      }
+    }
+    return compiler::ir::core::Constant::aggregate(type.toString(), std::move(elements));
+  }
+
+  compiler::ir::core::Constant buildScalarConstant(const Expr* expression,
+                                                   const LoweredType& type) const {
+    if (expression == nullptr) {
+      return compiler::ir::core::Constant::scalar(type.toString(), zeroLiteral(type));
+    }
+    return compiler::ir::core::Constant::scalar(type.toString(),
+                                                renderConstantOrExpression(*expression, type));
+  }
+
+  compiler::ir::core::Constant buildAggregateConstant(
+      const std::vector<NormalizedInitializerSlot>& slots, const LoweredType& type,
+      std::size_t& slotIndex) const {
+    if (!type.isArray()) {
+      const Expr* expression = slotIndex < slots.size() ? slots[slotIndex].expression : nullptr;
+      if (slotIndex < slots.size()) {
+        ++slotIndex;
+      }
+      return buildScalarConstant(expression, type);
+    }
+
+    std::vector<compiler::ir::core::Constant> elements;
+    if (!type.dimensions.empty() && type.dimensions.front().has_value()) {
+      elements.reserve(static_cast<std::size_t>(*type.dimensions.front()));
+      for (long long i = 0; i < *type.dimensions.front(); ++i) {
+        elements.push_back(buildAggregateConstant(slots, type.elementType(), slotIndex));
+      }
+    }
+    return compiler::ir::core::Constant::aggregate(type.toString(), std::move(elements));
+  }
+
+  compiler::ir::core::Constant buildGlobalInitializer(const VariableDecl& variable,
+                                                      const LoweredType& type) const {
     if (!variable.normalizedInitializer.available || variable.normalizedInitializer.slots.empty()) {
-      return zeroLiteral(type);
+      return buildZeroConstant(type);
     }
 
     if (!type.isArray()) {
-      const auto& slot = variable.normalizedInitializer.slots.front();
-      return slot.isImplicitZero() ? zeroLiteral(type)
-                                   : renderConstantOrExpression(*slot.expression, type);
+      return buildScalarConstant(variable.normalizedInitializer.slots.front().expression, type);
     }
 
-    std::ostringstream os;
-    os << "[";
-    const LoweredType elementType = flattenedElementType(type);
-    for (std::size_t i = 0; i < variable.normalizedInitializer.slots.size(); ++i) {
-      if (i != 0) {
-        os << ", ";
-      }
-      const auto& slot = variable.normalizedInitializer.slots[i];
-      os << (slot.isImplicitZero() ? zeroLiteral(elementType)
-                                   : renderConstantOrExpression(*slot.expression, elementType));
-    }
-    os << "]";
-    return os.str();
+    std::size_t slotIndex = 0;
+    return buildAggregateConstant(variable.normalizedInitializer.slots, type, slotIndex);
   }
 
   void lowerGlobals() {
@@ -854,13 +889,9 @@ class Lowerer {
         }
         declareVariable(variable->name, info);
 
-        std::ostringstream global;
-        global << info.storage << " : ";
-        if (variable->type.isConst) {
-          global << "const ";
-        }
-        global << type.toString() << " = " << formatGlobalInitializer(*variable, type);
-        module_->addGlobal(global.str());
+        module_->addGlobal(compiler::ir::core::GlobalVariable(
+            variable->name, type.toString(), buildGlobalInitializer(*variable, type),
+            variable->type.isConst));
       }
     }
   }
@@ -876,7 +907,17 @@ class Lowerer {
   }
 
   void lowerFunction(const FunctionDecl& functionDecl, const LoweringContext&) {
-    auto& function = module_->addFunction(compiler::ir::core::Function(functionDecl.name));
+    std::vector<compiler::ir::core::FunctionParameter> parameters;
+    parameters.reserve(functionDecl.parameters.size());
+    for (std::size_t i = 0; i < functionDecl.parameters.size(); ++i) {
+      const auto& parameter = functionDecl.parameters[i];
+      const std::string name =
+          parameter->name.empty() ? "%arg" + std::to_string(i) : parameter->name;
+      parameters.push_back({name, resolveVariableType(*parameter).toString()});
+    }
+
+    auto& function = module_->addFunction(compiler::ir::core::Function(
+        functionDecl.name, functionDecl.returnType.type.toString(), std::move(parameters)));
     compiler::ir::builder::IRBuilder builder(function);
     builder_ = &builder;
     currentFunctionName_ = functionDecl.name;
@@ -894,7 +935,7 @@ class Lowerer {
       const auto& parameter = functionDecl.parameters[i];
       const LoweredType parameterType = resolveVariableType(*parameter);
       const std::string argValue = "%arg" + std::to_string(i);
-      emit(argValue + " = param", {parameterType.toString(), parameter->name});
+      emitNamedValue(argValue, "param", {parameterType.toString(), parameter->name});
 
       VariableInfo info;
       info.type = parameterType;
@@ -1315,10 +1356,13 @@ class Lowerer {
 
     if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
       auto& thenBlock = createBlock("if.then");
-      auto& elseBlock = createBlock("if.else");
       auto& mergeBlock = createBlock("if.end");
+      compiler::ir::core::BasicBlock* elseBlock = nullptr;
+      if (ifStmt->elseBranch) {
+        elseBlock = &createBlock("if.else");
+      }
       lowerConditionBranch(*ifStmt->condition, thenBlock,
-                           ifStmt->elseBranch ? elseBlock : mergeBlock);
+                           elseBlock != nullptr ? *elseBlock : mergeBlock);
 
       currentBlock_ = &thenBlock;
       if (ifStmt->thenBranch) {
@@ -1329,7 +1373,7 @@ class Lowerer {
       }
 
       if (ifStmt->elseBranch) {
-        currentBlock_ = &elseBlock;
+        currentBlock_ = elseBlock;
         lowerStatement(*ifStmt->elseBranch);
         if (currentBlock_ != nullptr && !isCurrentBlockTerminated()) {
           emitJump(mergeBlock);

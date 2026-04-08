@@ -15,6 +15,13 @@ class BasicBlock {
   [[nodiscard]] const std::string& name() const { return name_; }
   [[nodiscard]] const std::vector<Instruction>& instructions() const { return instructions_; }
   [[nodiscard]] std::vector<Instruction>& instructions() { return instructions_; }
+  [[nodiscard]] bool empty() const { return instructions_.empty(); }
+  [[nodiscard]] bool isTerminated() const {
+    return !instructions_.empty() && instructions_.back().isTerminator();
+  }
+  [[nodiscard]] const Instruction* terminator() const {
+    return isTerminated() ? &instructions_.back() : nullptr;
+  }
 
   void addInstruction(Instruction instruction) { instructions_.push_back(std::move(instruction)); }
 

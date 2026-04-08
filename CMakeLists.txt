@@ -16,6 +16,7 @@ add_library(compiler_lib
   src/frontend/types/TypeChecker.cpp
   src/ir/builder/AstToIR.cpp
   src/ir/printer/IRPrinter.cpp
+  src/ir/verify/IRVerifier.cpp
   src/midend/pass/PassManager.cpp
   src/backend/target/TargetInfo.cpp
   src/backend/isel/InstructionSelector.cpp

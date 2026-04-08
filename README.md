@@ -4,7 +4,7 @@
 
 本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干：
 
-`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 pseudo-IR Lowering -> 最小后端汇编输出`
+`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 pseudo-IR Lowering -> IR Verifier -> 最小后端汇编输出`
 
 当前阶段的定位是：
 
@@ -35,10 +35,11 @@
 | 语义分析 | 已实现全局/局部符号表、函数声明收集、重复定义检查、未定义标识符检查、内建函数注册与调用参数个数检查、函数声明签名一致性检查、数组形参数组层级检查、`break/continue` 上下文检查、`switch-case-default` 合法性检查、`goto/label` 解析、`void` 返回值误用检查、`return` 语句合法性检查、整数常量表达式求值、数组维度常量性/正数性检查、`case` 标签常量性检查、全局初始化常量表达式检查、递归初始化列表常量性检查、常量零除检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial |
 | 类型系统 | 已定义 `void / int / float / bool / long / unknown` 类型枚举与字符串化接口，并在类型检查阶段跟踪数组层级与已知维度信息 | `include/compiler/frontend/types/Type.h`、`src/frontend/types/TypeChecker.cpp` | Partial |
 | 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查，并将归一化后的线性初始化槽位结果回写到 AST 变量声明缓存 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
-| IR 核心结构 | 已定义 `Module / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构 | `include/compiler/ir/core/*.h` | Done |
+| IR 核心结构 | 已定义 `Module / GlobalVariable / Constant / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构；全局变量为结构化 typed global object，函数带返回类型与参数签名，指令结果值不再内嵌在 opcode 字符串中 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
-| IR Lowering | 已实现 AST 到 textual pseudo-IR 的系统化 lowering，覆盖全局变量与常量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成；当前仍未进入 SSA 形态，模块级全局对象仍为字符串化表示 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |
+| IR Lowering | 已实现 AST 到 textual pseudo-IR 的系统化 lowering，覆盖结构化全局变量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Done |
 | IR 打印 | 支持模块、函数、基本块、IR 指令输出 | `src/ir/printer/IRPrinter.cpp`、`IRPrinter` | Done |
+| IR 验证 | 已实现模块级 IR verifier，检查全局/函数/基本块命名唯一性、空块、终结指令位置、`jmp/br/ret` 形状与跳转目标合法性、返回值与函数签名一致性 | `src/ir/verify/IRVerifier.cpp`、`IRVerifier` | Done |
 | 中端 Pass 管理 | 支持注册与执行 `ModulePass`；`-O1` 当前仅注入占位 pass | `src/midend/pass/PassManager.cpp`、`PassManager` | Partial |
 | 目标机描述 | 支持 `riscv64` 与 `armv7` 目标信息 | `src/backend/target/TargetInfo.cpp`、`TargetInfo` | Done |
 | 指令选择 | 当前仅支持将 `ret <imm>` 映射为目标相关机器指令 | `src/backend/isel/InstructionSelector.cpp`、`InstructionSelector` | Partial |
@@ -94,17 +95,18 @@ compiler/
 3. `src/frontend/parser/Parser.cpp`：递归下降语法分析实现
 4. `include/compiler/frontend/ast/AstNode.h`：AST 节点定义
 5. `src/ir/builder/AstToIR.cpp`：当前 AST 到 pseudo-IR 的核心 lowering 实现
+6. `src/ir/verify/IRVerifier.cpp`：IR 结构合法性校验
 
 ## 当前已验证内容
 
-1. `tests/e2e/functional/return_42.sysy` 可单独输出 IR，并生成可用 RISC-V 汇编
+1. `tests/e2e/functional/return_42.sysy` 可单独输出经过 verifier 校验的 IR，并生成可用 RISC-V 汇编
 2. `tests/e2e/frontend/simple.sy` 可完成词法分析和语法分析
 3. `tests/e2e/frontend/witharray.sy` 可完成数组相关语法分析
 4. `tests/e2e/frontend/withfloat.sy` 可完成浮点字面量词法分析和语法分析
 5. `tests/e2e/functional/frontend_full.sysy` 可覆盖 `default`、逗号表达式、函数原型、数组下标、调用、标签、`goto`、`for`、`switch`、`do-while`，并验证复杂控制流 IR lowering
 6. `tests/e2e/sema/ok_builtin_calls.sy` 可通过内建函数与语义检查
 7. `tests/e2e/sema/duplicate_local.sy`、`tests/e2e/sema/control_flow_errors.sy`、`tests/e2e/sema/goto_errors.sy`、`tests/e2e/sema/void_value_errors.sy` 可稳定触发预期语义报错
-8. `tests/e2e/sema/constexpr_arrays_ok.sy` 与 `tests/e2e/sema/global_array_init_ok.sy` 可验证常量表达式折叠、数组维度和全局数组初始化 lowering
+8. `tests/e2e/sema/constexpr_arrays_ok.sy` 与 `tests/e2e/sema/global_array_init_ok.sy` 可验证常量表达式折叠、数组维度和结构化全局数组初始化 lowering
 9. `tests/e2e/sema/array_dim_errors.sy`、`tests/e2e/sema/case_const_errors.sy`、`tests/e2e/sema/global_init_errors.sy`、`tests/e2e/sema/global_array_init_errors.sy` 可稳定触发常量表达式 / 数组 / 全局初始化相关报错
 10. `tests/e2e/sema/signature_param_shape_errors.sy`、`tests/e2e/sema/array_param_rank_errors.sy`、`tests/e2e/sema/array_param_rank_ok.sy` 可验证函数签名匹配与数组形参数组层级检查
 11. `tests/e2e/types/type_operator_errors.sy`、`tests/e2e/types/type_index_errors.sy`、`tests/e2e/types/type_call_base_errors.sy`、`tests/e2e/types/type_call_array_shape_errors.sy`、`tests/e2e/types/type_ok.sy` 可验证表达式类型推导、索引、运算符和函数实参类型检查
@@ -113,13 +115,13 @@ compiler/
 
 ## 队友接手指南（TODO List）
 
-- [ ] 将模块级全局变量从字符串表示升级为强类型 IR 对象  
-  切入点：`include/compiler/ir/core/Module.h`、`src/ir/printer/IRPrinter.cpp`、`src/ir/builder/AstToIR.cpp`。  
-  优先把 `Module::globals_` 从 `std::vector<std::string>` 升级为结构化全局定义，便于后续中端分析、后端数据段生成和 IR 校验。
-
 - [ ] 开始实现真实中端优化 pass  
   切入点：`include/compiler/midend/pass/PassManager.h`、`src/midend/pass/PassManager.cpp`。  
   优先增加常量传播、死代码删除、基础块简化等 pass，并接在当前 pseudo-IR 上验证优化前后输出。
+
+- [ ] 将当前 pseudo-IR 继续提升到 SSA 形态  
+  切入点：`src/ir/builder/AstToIR.cpp`、`include/compiler/ir/core/*.h`。  
+  优先引入显式 `phi`、更清晰的 def-use 约束与内存到寄存器提升，为中端优化创造稳定前提。
 
 - [ ] 扩展后端以消费一般 IR 指令而不仅是 `ret <imm>`  
   切入点：`src/backend/isel/InstructionSelector.cpp`、`src/backend/frame/FrameLowering.cpp`、`src/backend/regalloc/RegisterAllocator.cpp`。  
@@ -212,6 +214,6 @@ cmake --build build -j4
 1. 仅支持单输入文件
 2. 类型检查仍未覆盖显式类型转换、指针相关规则、字符串字面量的完整类型约束，以及聚合初始化结果的归一化产出
 3. 语义分析仍未覆盖更多声明兼容规则与更完整的常量折叠结果复用
-4. IR 仍是 textual pseudo-IR，尚未进行 SSA 化、IR 校验与强类型全局对象建模
+4. IR 仍是 textual pseudo-IR，虽然已具备结构化全局对象与 verifier，但尚未进行 SSA 化，也还没有完整的 use-def / `phi` 建模
 5. 中端暂无真实优化 pass
 6. 后端仍只支持最小返回路径；一般 `load/store/算术/分支/调用` IR 尚未完成真实指令选择、栈帧与寄存器分配

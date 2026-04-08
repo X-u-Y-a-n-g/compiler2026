@@ -20,6 +20,7 @@
 #include "compiler/frontend/types/TypeChecker.h"
 #include "compiler/ir/builder/AstToIR.h"
 #include "compiler/ir/printer/IRPrinter.h"
+#include "compiler/ir/verify/IRVerifier.h"
 #include "compiler/midend/pass/PassManager.h"
 #include "compiler/support/FileSystem.h"
 
@@ -156,6 +157,14 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<PipelineMarkerPass>());
   }
   passManager.run(module);
+
+  const auto irErrors = compiler::ir::verify::IRVerifier{}.verify(module);
+  for (const auto& error : irErrors) {
+    diagnostics.error({}, "IR verifier: " + error);
+  }
+  if (!irErrors.empty()) {
+    return 1;
+  }
 
   if (invocation.options().dumpIr) {
     std::cout << compiler::ir::printer::IRPrinter{}.print(module);
