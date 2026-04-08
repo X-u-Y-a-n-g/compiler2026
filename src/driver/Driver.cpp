@@ -160,6 +160,9 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   if (invocation.options().dumpIr) {
     std::cout << compiler::ir::printer::IRPrinter{}.print(module);
   }
+  if (invocation.options().dumpIr && invocation.options().outputPath.empty()) {
+    return diagnostics.hasErrors() ? 1 : 0;
+  }
 
   const auto target = compiler::backend::target::TargetInfo::fromName(invocation.options().target);
   auto machineModule = compiler::backend::isel::InstructionSelector{}.select(module, target);

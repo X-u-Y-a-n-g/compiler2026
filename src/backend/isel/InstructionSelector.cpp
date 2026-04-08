@@ -2,6 +2,29 @@
 
 namespace compiler::backend::isel {
 
+namespace {
+
+bool isIntegerImmediate(const std::string& text) {
+  if (text.empty()) {
+    return false;
+  }
+  std::size_t index = 0;
+  if (text[index] == '+' || text[index] == '-') {
+    ++index;
+  }
+  if (index >= text.size()) {
+    return false;
+  }
+  for (; index < text.size(); ++index) {
+    if (text[index] < '0' || text[index] > '9') {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 compiler::backend::mir::MachineModule InstructionSelector::select(
     const compiler::ir::core::Module& module,
     const compiler::backend::target::TargetInfo& target) const {
@@ -18,10 +41,15 @@ compiler::backend::mir::MachineModule InstructionSelector::select(
       for (const auto& instruction : block.instructions()) {
         if (instruction.opcode() == "ret") {
           if (!instruction.operands().empty()) {
-            if (target.name() == "armv7") {
-              machineBlock.instructions.push_back({"mov_ret", {instruction.operands().front()}});
+            if (isIntegerImmediate(instruction.operands().front())) {
+              if (target.name() == "armv7") {
+                machineBlock.instructions.push_back({"mov_ret", {instruction.operands().front()}});
+              } else {
+                machineBlock.instructions.push_back({"load_ret", {instruction.operands().front()}});
+              }
             } else {
-              machineBlock.instructions.push_back({"load_ret", {instruction.operands().front()}});
+              machineBlock.instructions.push_back(
+                  {"unsupported_ret_operand", {instruction.operands().front()}});
             }
           }
           machineBlock.instructions.push_back({"ret", {}});

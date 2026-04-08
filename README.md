@@ -4,13 +4,13 @@
 
 本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干：
 
-`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 IR Lowering -> 最小后端汇编输出`
+`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 pseudo-IR Lowering -> 最小后端汇编输出`
 
 当前阶段的定位是：
 
 1. 以前端为核心的可扩展开发基线
 2. 词法分析与语法分析已具备独立调试和回归能力
-3. 中端优化、语义规则、完整后端仍待继续实现
+3. 中端优化与完整后端仍待继续实现
 
 ## 技术栈
 
@@ -37,7 +37,7 @@
 | 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查，并将归一化后的线性初始化槽位结果回写到 AST 变量声明缓存 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
 | IR 核心结构 | 已定义 `Module / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
-| IR Lowering | 当前基于 AST 识别 `main` 中可静态提取的整数返回路径，生成最小 `ret` IR；复杂表达式和一般语句尚未降低 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |
+| IR Lowering | 已实现 AST 到 textual pseudo-IR 的系统化 lowering，覆盖全局变量与常量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成；当前仍未进入 SSA 形态，模块级全局对象仍为字符串化表示 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |
 | IR 打印 | 支持模块、函数、基本块、IR 指令输出 | `src/ir/printer/IRPrinter.cpp`、`IRPrinter` | Done |
 | 中端 Pass 管理 | 支持注册与执行 `ModulePass`；`-O1` 当前仅注入占位 pass | `src/midend/pass/PassManager.cpp`、`PassManager` | Partial |
 | 目标机描述 | 支持 `riscv64` 与 `armv7` 目标信息 | `src/backend/target/TargetInfo.cpp`、`TargetInfo` | Done |
@@ -93,18 +93,18 @@ compiler/
 2. `src/frontend/lexer/Lexer.cpp`：词法分析实现
 3. `src/frontend/parser/Parser.cpp`：递归下降语法分析实现
 4. `include/compiler/frontend/ast/AstNode.h`：AST 节点定义
-5. `src/ir/builder/AstToIR.cpp`：当前 AST 到 IR 的最小 lowering
+5. `src/ir/builder/AstToIR.cpp`：当前 AST 到 pseudo-IR 的核心 lowering 实现
 
 ## 当前已验证内容
 
-1. `tests/e2e/functional/return_42.sysy` 可输出 AST、IR，并生成可用 RISC-V 汇编
+1. `tests/e2e/functional/return_42.sysy` 可单独输出 IR，并生成可用 RISC-V 汇编
 2. `tests/e2e/frontend/simple.sy` 可完成词法分析和语法分析
 3. `tests/e2e/frontend/witharray.sy` 可完成数组相关语法分析
 4. `tests/e2e/frontend/withfloat.sy` 可完成浮点字面量词法分析和语法分析
-5. `tests/e2e/functional/frontend_full.sysy` 可覆盖 `default`、逗号表达式、函数原型、数组下标、调用、标签、`goto`、`for`、`switch`、`do-while`
+5. `tests/e2e/functional/frontend_full.sysy` 可覆盖 `default`、逗号表达式、函数原型、数组下标、调用、标签、`goto`、`for`、`switch`、`do-while`，并验证复杂控制流 IR lowering
 6. `tests/e2e/sema/ok_builtin_calls.sy` 可通过内建函数与语义检查
 7. `tests/e2e/sema/duplicate_local.sy`、`tests/e2e/sema/control_flow_errors.sy`、`tests/e2e/sema/goto_errors.sy`、`tests/e2e/sema/void_value_errors.sy` 可稳定触发预期语义报错
-8. `tests/e2e/sema/constexpr_arrays_ok.sy` 与 `tests/e2e/sema/global_array_init_ok.sy` 可验证常量表达式、数组维度和全局数组初始化
+8. `tests/e2e/sema/constexpr_arrays_ok.sy` 与 `tests/e2e/sema/global_array_init_ok.sy` 可验证常量表达式折叠、数组维度和全局数组初始化 lowering
 9. `tests/e2e/sema/array_dim_errors.sy`、`tests/e2e/sema/case_const_errors.sy`、`tests/e2e/sema/global_init_errors.sy`、`tests/e2e/sema/global_array_init_errors.sy` 可稳定触发常量表达式 / 数组 / 全局初始化相关报错
 10. `tests/e2e/sema/signature_param_shape_errors.sy`、`tests/e2e/sema/array_param_rank_errors.sy`、`tests/e2e/sema/array_param_rank_ok.sy` 可验证函数签名匹配与数组形参数组层级检查
 11. `tests/e2e/types/type_operator_errors.sy`、`tests/e2e/types/type_index_errors.sy`、`tests/e2e/types/type_call_base_errors.sy`、`tests/e2e/types/type_call_array_shape_errors.sy`、`tests/e2e/types/type_ok.sy` 可验证表达式类型推导、索引、运算符和函数实参类型检查
@@ -113,17 +113,17 @@ compiler/
 
 ## 队友接手指南（TODO List）
 
-- [ ] 继续补齐聚合初始化规则  
-  切入点：`src/frontend/types/TypeChecker.cpp`。  
-  优先把当前“按层对齐补零 + 子数组边界检查”继续扩展到更完整的聚合初始化归一化结果产出，供后续 IR / 全局数据生成复用。
+- [ ] 将模块级全局变量从字符串表示升级为强类型 IR 对象  
+  切入点：`include/compiler/ir/core/Module.h`、`src/ir/printer/IRPrinter.cpp`、`src/ir/builder/AstToIR.cpp`。  
+  优先把 `Module::globals_` 从 `std::vector<std::string>` 升级为结构化全局定义，便于后续中端分析、后端数据段生成和 IR 校验。
 
-- [ ] 继续扩展语义分析与类型系统  
-  切入点：`src/frontend/sema/SemanticAnalyzer.cpp`、`src/frontend/types/TypeChecker.cpp`。  
-  优先补齐更多声明兼容规则、字符串字面量与不支持类型的诊断收敛，以及更完整的常量折叠结果复用。
+- [ ] 开始实现真实中端优化 pass  
+  切入点：`include/compiler/midend/pass/PassManager.h`、`src/midend/pass/PassManager.cpp`。  
+  优先增加常量传播、死代码删除、基础块简化等 pass，并接在当前 pseudo-IR 上验证优化前后输出。
 
-- [ ] 将 AST Lowering 扩展为真实表达式/语句级 IR 生成  
-  切入点：`src/ir/builder/AstToIR.cpp`。  
-  优先支持局部变量、算术表达式、比较表达式、条件跳转和函数调用，替换当前“仅提取整数返回值”的实现。
+- [ ] 扩展后端以消费一般 IR 指令而不仅是 `ret <imm>`  
+  切入点：`src/backend/isel/InstructionSelector.cpp`、`src/backend/frame/FrameLowering.cpp`、`src/backend/regalloc/RegisterAllocator.cpp`。  
+  优先支持 `load / store / add / sub / mul / div / br / jmp / call` 等基础指令的选择与落地。
 
 ## 编译与测试
 
@@ -143,7 +143,7 @@ cmake --build build -j4
 ### 查看最小样例的 token / AST / IR
 
 ```bash
-./build/compiler tests/e2e/functional/return_42.sysy --dump-tokens --dump-ast --dump-ir -o build/return_42.s
+./build/compiler tests/e2e/functional/return_42.sysy --dump-tokens --dump-ast --dump-ir
 ```
 
 ### 验证前端基础样例
@@ -212,6 +212,6 @@ cmake --build build -j4
 1. 仅支持单输入文件
 2. 类型检查仍未覆盖显式类型转换、指针相关规则、字符串字面量的完整类型约束，以及聚合初始化结果的归一化产出
 3. 语义分析仍未覆盖更多声明兼容规则与更完整的常量折叠结果复用
-4. IR Lowering 仅覆盖最小整数返回路径，尚未支持一般表达式与控制流 lowering
+4. IR 仍是 textual pseudo-IR，尚未进行 SSA 化、IR 校验与强类型全局对象建模
 5. 中端暂无真实优化 pass
-6. 后端仅支持最小返回路径，不支持局部变量、表达式求值、分支、调用约定和真实寄存器分配
+6. 后端仍只支持最小返回路径；一般 `load/store/算术/分支/调用` IR 尚未完成真实指令选择、栈帧与寄存器分配

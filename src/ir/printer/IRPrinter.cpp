@@ -7,6 +7,9 @@ namespace compiler::ir::printer {
 std::string IRPrinter::print(const compiler::ir::core::Module& module) const {
   std::ostringstream os;
   os << "module \"" << module.sourceName() << "\"\n";
+  for (const auto& global : module.globals()) {
+    os << "global " << global << '\n';
+  }
   for (const auto& note : module.passLog()) {
     os << "; pass: " << note << '\n';
   }

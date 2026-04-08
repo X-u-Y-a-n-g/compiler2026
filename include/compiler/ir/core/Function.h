@@ -1,8 +1,8 @@
 #pragma once
 
+#include <deque>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "compiler/ir/core/BasicBlock.h"
 
@@ -13,8 +13,8 @@ class Function {
   explicit Function(std::string name) : name_(std::move(name)) {}
 
   [[nodiscard]] const std::string& name() const { return name_; }
-  [[nodiscard]] const std::vector<BasicBlock>& blocks() const { return blocks_; }
-  [[nodiscard]] std::vector<BasicBlock>& blocks() { return blocks_; }
+  [[nodiscard]] const std::deque<BasicBlock>& blocks() const { return blocks_; }
+  [[nodiscard]] std::deque<BasicBlock>& blocks() { return blocks_; }
 
   BasicBlock& addBlock(BasicBlock block) {
     blocks_.push_back(std::move(block));
@@ -23,7 +23,7 @@ class Function {
 
  private:
   std::string name_;
-  std::vector<BasicBlock> blocks_;
+  std::deque<BasicBlock> blocks_;
 };
 
 }  // namespace compiler::ir::core

@@ -21,12 +21,18 @@ std::string AsmPrinter::print(const compiler::backend::mir::MachineModule& modul
         if (module.target.name() == "armv7") {
           if (instruction.opcode == "mov_ret") {
             os << "  mov r0, #" << instruction.operands.front() << '\n';
+          } else if (instruction.opcode == "unsupported_ret_operand") {
+            os << "  @ unsupported return operand " << instruction.operands.front() << '\n';
+            os << "  mov r0, #0\n";
           } else if (instruction.opcode == "ret") {
             os << "  bx lr\n";
           }
         } else {
           if (instruction.opcode == "load_ret") {
             os << "  li a0, " << instruction.operands.front() << '\n';
+          } else if (instruction.opcode == "unsupported_ret_operand") {
+            os << "  # unsupported return operand " << instruction.operands.front() << '\n';
+            os << "  li a0, 0\n";
           } else if (instruction.opcode == "ret") {
             os << "  ret\n";
           }

@@ -13,9 +13,12 @@ class Module {
   explicit Module(std::string sourceName) : sourceName_(std::move(sourceName)) {}
 
   [[nodiscard]] const std::string& sourceName() const { return sourceName_; }
+  [[nodiscard]] const std::vector<std::string>& globals() const { return globals_; }
   [[nodiscard]] const std::vector<Function>& functions() const { return functions_; }
   [[nodiscard]] std::vector<Function>& functions() { return functions_; }
   [[nodiscard]] const std::vector<std::string>& passLog() const { return passLog_; }
+
+  void addGlobal(std::string global) { globals_.push_back(std::move(global)); }
 
   Function& addFunction(Function function) {
     functions_.push_back(std::move(function));
@@ -26,6 +29,7 @@ class Module {
 
  private:
   std::string sourceName_;
+  std::vector<std::string> globals_;
   std::vector<Function> functions_;
   std::vector<std::string> passLog_;
 };
