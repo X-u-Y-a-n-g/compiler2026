@@ -1,0 +1,54 @@
+# CMake / build directories
+/build/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/compile_commands.json
+
+# Compiler outputs and intermediate artifacts
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.elf
+*.bin
+*.hex
+*.map
+*.d
+*.s
+*.asm
+*.ll
+*.bc
+*.tmp
+*.log
+*.dSYM/
+
+# Common compiler dump / IR artifacts
+*.ast
+*.tokens
+*.tok
+*.ir
+*.mir
+*.ssa
+*.cfg
+*.dot
+
+# Generated coverage / profiling artifacts
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+
+# macOS Finder metadata
+.DS_Store
