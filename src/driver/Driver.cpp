@@ -175,8 +175,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
 
   const auto target = compiler::backend::target::TargetInfo::fromName(invocation.options().target);
   auto machineModule = compiler::backend::isel::InstructionSelector{}.select(module, target);
-  compiler::backend::frame::FrameLowering{}.lower(machineModule);
   compiler::backend::regalloc::RegisterAllocator{}.allocate(machineModule);
+  compiler::backend::frame::FrameLowering{}.lower(machineModule);
   const auto assembly = compiler::backend::asmcode::AsmPrinter{}.print(machineModule);
 
   if (invocation.options().outputPath.empty()) {

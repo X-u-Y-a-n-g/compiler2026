@@ -2,15 +2,15 @@
 
 ## 项目简介
 
-本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干：
+本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干与一条可运行的 `riscv64` 后端链路：
 
-`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 pseudo-IR Lowering -> IR Verifier -> 最小后端汇编输出`
+`源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 pseudo-IR Lowering -> IR Verifier -> 指令选择 -> 栈式寄存器分配 -> 栈帧生成 -> RISC-V 汇编输出`
 
 当前阶段的定位是：
 
 1. 以前端为核心的可扩展开发基线
 2. 词法分析与语法分析已具备独立调试和回归能力
-3. 中端优化与完整后端仍待继续实现
+3. 中端优化仍待继续实现；`riscv64` 后端已能消费当前 IR 子集并输出可汇编的目标代码
 
 ## 技术栈
 
@@ -42,10 +42,10 @@
 | IR 验证 | 已实现模块级 IR verifier，检查全局/函数/基本块命名唯一性、空块、终结指令位置、`jmp/br/ret` 形状与跳转目标合法性、返回值与函数签名一致性 | `src/ir/verify/IRVerifier.cpp`、`IRVerifier` | Done |
 | 中端 Pass 管理 | 支持注册与执行 `ModulePass`；`-O1` 当前仅注入占位 pass | `src/midend/pass/PassManager.cpp`、`PassManager` | Partial |
 | 目标机描述 | 支持 `riscv64` 与 `armv7` 目标信息 | `src/backend/target/TargetInfo.cpp`、`TargetInfo` | Done |
-| 指令选择 | 当前仅支持将 `ret <imm>` 映射为目标相关机器指令 | `src/backend/isel/InstructionSelector.cpp`、`InstructionSelector` | Partial |
-| 栈帧生成 | 保留后端阶段入口，暂无实际逻辑 | `src/backend/frame/FrameLowering.cpp`、`FrameLowering` | Partial（仅定义接口） |
-| 寄存器分配 | 保留后端阶段入口，暂无实际逻辑 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Partial（仅定义接口） |
-| 汇编输出 | 支持最小 RISC-V / ARMv7 汇编输出 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Done |
+| 指令选择 | 已实现 IR 到机器层 lowering，覆盖 `alloca / load / store / jmp / br / ret / call / gep / gep.linear`、整型/浮点算术、整型/浮点比较、`cast / zext / sitofp / uitofp / fptosi`，并保留全局对象/参数/返回类型信息 | `src/backend/isel/InstructionSelector.cpp`、`InstructionSelector` | Done |
+| 栈帧生成 | 已实现栈对象布局、对齐、frame size 计算、outgoing argument area 计算，并为序言/尾声生成偏移信息 | `src/backend/frame/FrameLowering.cpp`、`FrameLowering` | Done |
+| 寄存器分配 | 已实现可运行的栈式寄存器分配器，将虚拟值和形参 home slot 分配到栈槽 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Done |
+| 汇编输出 | 已实现 `riscv64` 汇编输出，覆盖全局区、函数序言/尾声、整数/浮点运算、比较、跳转、调用、数组寻址与返回；`armv7` 仍未补齐 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Partial |
 | 前端样例回归 | 已纳入基础样例、数组样例、浮点样例、扩展前端覆盖样例、语义分析正反样例与类型检查样例；新增全局数组初始化、数组初始化过量、标量花括号初始化、数组形参数组尾部维度错误样例；已完成本地构建回归 | `tests/e2e/frontend/*.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/functional/return_42.sysy`、`tests/e2e/sema/*.sy`、`tests/e2e/types/*.sy` | Done |
 
 ## 项目结构说明
@@ -99,7 +99,7 @@ compiler/
 
 ## 当前已验证内容
 
-1. `tests/e2e/functional/return_42.sysy` 可单独输出经过 verifier 校验的 IR，并生成可用 RISC-V 汇编
+1. `tests/e2e/functional/return_42.sysy` 可单独输出经过 verifier 校验的 IR，并生成可汇编的 `riscv64` 汇编
 2. `tests/e2e/frontend/simple.sy` 可完成词法分析和语法分析
 3. `tests/e2e/frontend/witharray.sy` 可完成数组相关语法分析
 4. `tests/e2e/frontend/withfloat.sy` 可完成浮点字面量词法分析和语法分析
@@ -112,6 +112,7 @@ compiler/
 11. `tests/e2e/types/type_operator_errors.sy`、`tests/e2e/types/type_index_errors.sy`、`tests/e2e/types/type_call_base_errors.sy`、`tests/e2e/types/type_call_array_shape_errors.sy`、`tests/e2e/types/type_ok.sy` 可验证表达式类型推导、索引、运算符和函数实参类型检查
 12. `tests/e2e/types/array_init_ok.sy`、`tests/e2e/types/array_init_aligned_ok.sy`、`tests/e2e/types/array_init_too_many.sy`、`tests/e2e/types/array_init_subarray_overflow.sy` 可验证数组初始化列表的按层对齐/补零、元素类型、整体容量与子数组边界约束
 13. `tests/e2e/types/scalar_brace_init_ok.sy`、`tests/e2e/types/scalar_brace_init_error.sy` 可验证标量花括号初始化规则
+14. `tests/e2e/frontend/simple.sy`、`tests/e2e/frontend/witharray.sy`、`tests/e2e/frontend/withfloat.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/types/type_ok.sy`、`tests/e2e/types/array_init_ok.sy`、`tests/e2e/types/array_init_aligned_ok.sy`、`tests/e2e/sema/ok_builtin_calls.sy`、`tests/e2e/sema/constexpr_arrays_ok.sy`、`tests/e2e/sema/global_array_init_ok.sy`、`tests/e2e/sema/array_param_rank_ok.sy` 当前均可生成 `riscv64` 汇编，并经 `clang --target=riscv64 -march=rv64gc -mabi=lp64d -c` 汇编通过
 
 ## 队友接手指南（TODO List）
 
@@ -123,9 +124,9 @@ compiler/
   切入点：`src/ir/builder/AstToIR.cpp`、`include/compiler/ir/core/*.h`。  
   优先引入显式 `phi`、更清晰的 def-use 约束与内存到寄存器提升，为中端优化创造稳定前提。
 
-- [ ] 扩展后端以消费一般 IR 指令而不仅是 `ret <imm>`  
-  切入点：`src/backend/isel/InstructionSelector.cpp`、`src/backend/frame/FrameLowering.cpp`、`src/backend/regalloc/RegisterAllocator.cpp`。  
-  优先支持 `load / store / add / sub / mul / div / br / jmp / call` 等基础指令的选择与落地。
+- [ ] 为后端补齐自动化回归测试与结果比对  
+  切入点：`tests/`、`src/backend/asm/AsmPrinter.cpp`、`src/backend/isel/InstructionSelector.cpp`。  
+  优先把当前 `riscv64` 代码生成的成功样例固化为汇编输出/可汇编性回归，并补上负例与边界用例。
 
 ## 编译与测试
 
@@ -203,6 +204,12 @@ cmake --build build -j4
 ./build/compiler tests/e2e/functional/return_42.sysy -o build/return_42.s
 ```
 
+### 验证生成的 RISC-V 汇编可被工具链接受
+
+```bash
+/opt/homebrew/opt/llvm/bin/clang --target=riscv64 -march=rv64gc -mabi=lp64d -c build/return_42.s -o /tmp/return_42.o
+```
+
 ### 生成 ARMv7 汇编
 
 ```bash
@@ -216,4 +223,4 @@ cmake --build build -j4
 3. 语义分析仍未覆盖更多声明兼容规则与更完整的常量折叠结果复用
 4. IR 仍是 textual pseudo-IR，虽然已具备结构化全局对象与 verifier，但尚未进行 SSA 化，也还没有完整的 use-def / `phi` 建模
 5. 中端暂无真实优化 pass
-6. 后端仍只支持最小返回路径；一般 `load/store/算术/分支/调用` IR 尚未完成真实指令选择、栈帧与寄存器分配
+6. 后端当前完整实现聚焦 `riscv64`；`armv7` 仍未补齐到同等完成度
