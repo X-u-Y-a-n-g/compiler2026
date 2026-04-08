@@ -638,17 +638,8 @@ class Checker {
     }
   }
 
-  void collectArrayInitializerScalars(const VariableDecl& variable, const CheckedType& elementType,
-                                      const Expr& initializer,
-                                      std::size_t& scalarInitializerCount) {
-    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
-      for (const auto& element : initList->elements) {
-        collectArrayInitializerScalars(variable, elementType, *element, scalarInitializerCount);
-      }
-      return;
-    }
-
-    ++scalarInitializerCount;
+  void checkArrayElementInitializer(const VariableDecl& variable, const CheckedType& elementType,
+                                    const Expr& initializer) {
     const CheckedType initializerType = analyzeExpression(initializer);
     if (initializerType.isUnknown()) {
       return;
@@ -667,6 +658,95 @@ class Checker {
     }
   }
 
+  static std::optional<std::size_t> blockSizeForDepth(const CheckedType& type, std::size_t depth) {
+    if (!type.isArray()) {
+      return std::nullopt;
+    }
+
+    std::size_t blockSize = 1;
+    for (std::size_t i = depth; i < type.arrayDimensions.size(); ++i) {
+      if (!type.arrayDimensions[i].has_value() || *type.arrayDimensions[i] <= 0) {
+        return std::nullopt;
+      }
+      blockSize *= static_cast<std::size_t>(*type.arrayDimensions[i]);
+    }
+    return blockSize;
+  }
+
+  void validateArrayInitializerLeaves(const VariableDecl& variable,
+                                      const CheckedType& elementType, const Expr& initializer) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      for (const auto& element : initList->elements) {
+        validateArrayInitializerLeaves(variable, elementType, *element);
+      }
+      return;
+    }
+    checkArrayElementInitializer(variable, elementType, initializer);
+  }
+
+  void validateArrayInitializerAligned(const VariableDecl& variable,
+                                       const CheckedType& arrayType,
+                                       const CheckedType& elementType, const Expr& initializer,
+                                       std::size_t depth, std::size_t totalCapacity,
+                                       std::size_t& linearPosition,
+                                       bool& sawTotalOverflow) {
+    if (const auto* initList = dynamic_cast<const InitListExpr*>(&initializer)) {
+      const auto blockSize = blockSizeForDepth(arrayType, depth);
+      if (!blockSize.has_value()) {
+        for (const auto& element : initList->elements) {
+          validateArrayInitializerAligned(variable, arrayType, elementType, *element, depth + 1,
+                                          totalCapacity, linearPosition, sawTotalOverflow);
+        }
+        return;
+      }
+
+      const std::size_t blockStart = (linearPosition / *blockSize) * *blockSize;
+      const std::size_t blockEnd = std::min(totalCapacity, blockStart + *blockSize);
+      if (initList->elements.empty()) {
+        linearPosition = blockEnd;
+        return;
+      }
+
+      for (const auto& element : initList->elements) {
+        if (linearPosition >= totalCapacity) {
+          if (!sawTotalOverflow) {
+            diagnostics_.error(element->location(),
+                               "too many initializer elements for array '" + variable.name + "'");
+            sawTotalOverflow = true;
+          }
+          continue;
+        }
+
+        if (linearPosition >= blockEnd) {
+          diagnostics_.error(element->location(),
+                             "too many initializer elements for a subarray of '" +
+                                 variable.name + "'");
+          break;
+        }
+
+        validateArrayInitializerAligned(variable, arrayType, elementType, *element, depth + 1,
+                                        totalCapacity, linearPosition, sawTotalOverflow);
+      }
+
+      if (linearPosition < blockEnd) {
+        linearPosition = blockEnd;
+      }
+      return;
+    }
+
+    if (linearPosition >= totalCapacity) {
+      if (!sawTotalOverflow) {
+        diagnostics_.error(initializer.location(),
+                           "too many initializer elements for array '" + variable.name + "'");
+        sawTotalOverflow = true;
+      }
+      return;
+    }
+
+    checkArrayElementInitializer(variable, elementType, initializer);
+    ++linearPosition;
+  }
+
   void checkArrayInitializer(const VariableDecl& variable, const CheckedType& targetType,
                              const Expr& initializer) {
     const auto* initList = dynamic_cast<const InitListExpr*>(&initializer);
@@ -682,18 +762,17 @@ class Checker {
       return;
     }
 
-    std::size_t scalarInitializerCount = 0;
     const CheckedType elementType = elementTypeOf(targetType);
-    for (const auto& element : initList->elements) {
-      collectArrayInitializerScalars(variable, elementType, *element, scalarInitializerCount);
+    if (const auto capacity = totalArrayCapacity(targetType); capacity.has_value()) {
+      std::size_t linearPosition = 0;
+      bool sawTotalOverflow = false;
+      validateArrayInitializerAligned(variable, targetType, elementType, initializer, 0,
+                                      static_cast<std::size_t>(*capacity), linearPosition,
+                                      sawTotalOverflow);
+      return;
     }
 
-    if (const auto capacity = totalArrayCapacity(targetType);
-        capacity.has_value() && scalarInitializerCount > static_cast<std::size_t>(*capacity)) {
-      diagnostics_.error(initializer.location(),
-                         "too many initializer elements for array '" + variable.name + "' of type " +
-                             targetType.toString());
-    }
+    validateArrayInitializerLeaves(variable, elementType, initializer);
   }
 
   void analyzeVariable(const VariableDecl& variable, bool declareLocals) {

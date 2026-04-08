@@ -34,7 +34,7 @@
 | AST 打印 | 输出结构化 AST，便于前端调试与回归 | `src/frontend/ast/AstPrinter.cpp`、`AstPrinter` | Done |
 | 语义分析 | 已实现全局/局部符号表、函数声明收集、重复定义检查、未定义标识符检查、内建函数注册与调用参数个数检查、函数声明签名一致性检查、数组形参数组层级检查、`break/continue` 上下文检查、`switch-case-default` 合法性检查、`goto/label` 解析、`void` 返回值误用检查、`return` 语句合法性检查、整数常量表达式求值、数组维度常量性/正数性检查、`case` 标签常量性检查、全局初始化常量表达式检查、递归初始化列表常量性检查、常量零除检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial |
 | 类型系统 | 已定义 `void / int / float / bool / long / unknown` 类型枚举与字符串化接口，并在类型检查阶段跟踪数组层级与已知维度信息 | `include/compiler/frontend/types/Type.h`、`src/frontend/types/TypeChecker.cpp` | Partial |
-| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表元素类型检查、数组初始化元素数量检查、数组实参与形参数组尾部维度匹配检查 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
+| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
 | IR 核心结构 | 已定义 `Module / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
 | IR Lowering | 当前基于 AST 识别 `main` 中可静态提取的整数返回路径，生成最小 `ret` IR；复杂表达式和一般语句尚未降低 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Partial |
@@ -108,14 +108,14 @@ compiler/
 9. `tests/e2e/sema/array_dim_errors.sy`、`tests/e2e/sema/case_const_errors.sy`、`tests/e2e/sema/global_init_errors.sy`、`tests/e2e/sema/global_array_init_errors.sy` 可稳定触发常量表达式 / 数组 / 全局初始化相关报错
 10. `tests/e2e/sema/signature_param_shape_errors.sy`、`tests/e2e/sema/array_param_rank_errors.sy`、`tests/e2e/sema/array_param_rank_ok.sy` 可验证函数签名匹配与数组形参数组层级检查
 11. `tests/e2e/types/type_operator_errors.sy`、`tests/e2e/types/type_index_errors.sy`、`tests/e2e/types/type_call_base_errors.sy`、`tests/e2e/types/type_call_array_shape_errors.sy`、`tests/e2e/types/type_ok.sy` 可验证表达式类型推导、索引、运算符和函数实参类型检查
-12. `tests/e2e/types/array_init_ok.sy`、`tests/e2e/types/array_init_too_many.sy` 可验证数组初始化列表的元素类型与数量约束
+12. `tests/e2e/types/array_init_ok.sy`、`tests/e2e/types/array_init_aligned_ok.sy`、`tests/e2e/types/array_init_too_many.sy`、`tests/e2e/types/array_init_subarray_overflow.sy` 可验证数组初始化列表的按层对齐/补零、元素类型、整体容量与子数组边界约束
 13. `tests/e2e/types/scalar_brace_init_ok.sy`、`tests/e2e/types/scalar_brace_init_error.sy` 可验证标量花括号初始化规则
 
 ## 队友接手指南（TODO List）
 
 - [ ] 继续补齐聚合初始化规则  
   切入点：`src/frontend/types/TypeChecker.cpp`。  
-  优先把多维数组初始化从“按标量展平计数”扩展到更接近 C/SysY 的分层对齐与补零规则，并收敛对应诊断。
+  优先把当前“按层对齐补零 + 子数组边界检查”继续扩展到更完整的聚合初始化归一化结果产出，供后续 IR / 全局数据生成复用。
 
 - [ ] 继续扩展语义分析与类型系统  
   切入点：`src/frontend/sema/SemanticAnalyzer.cpp`、`src/frontend/types/TypeChecker.cpp`。  
@@ -188,7 +188,9 @@ cmake --build build -j4
 ./build/compiler tests/e2e/types/type_call_base_errors.sy -o /tmp/type_call_base_errors.s
 ./build/compiler tests/e2e/types/type_call_array_shape_errors.sy -o /tmp/type_call_array_shape_errors.s
 ./build/compiler tests/e2e/types/array_init_ok.sy -o /tmp/array_init_ok.s
+./build/compiler tests/e2e/types/array_init_aligned_ok.sy -o /tmp/array_init_aligned_ok.s
 ./build/compiler tests/e2e/types/array_init_too_many.sy -o /tmp/array_init_too_many.s
+./build/compiler tests/e2e/types/array_init_subarray_overflow.sy -o /tmp/array_init_subarray_overflow.s
 ./build/compiler tests/e2e/types/scalar_brace_init_ok.sy -o /tmp/scalar_brace_init_ok.s
 ./build/compiler tests/e2e/types/scalar_brace_init_error.sy -o /tmp/scalar_brace_init_error.s
 ```
@@ -208,7 +210,7 @@ cmake --build build -j4
 ## 当前限制
 
 1. 仅支持单输入文件
-2. 类型检查仍未覆盖显式类型转换、指针相关规则、字符串字面量的完整类型约束，以及更接近 C 的聚合初始化对齐语义
+2. 类型检查仍未覆盖显式类型转换、指针相关规则、字符串字面量的完整类型约束，以及聚合初始化结果的归一化产出
 3. 语义分析仍未覆盖更多声明兼容规则与更完整的常量折叠结果复用
 4. IR Lowering 仅覆盖最小整数返回路径，尚未支持一般表达式与控制流 lowering
 5. 中端暂无真实优化 pass
