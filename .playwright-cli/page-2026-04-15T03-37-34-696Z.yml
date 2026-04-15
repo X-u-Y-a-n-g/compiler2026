@@ -1,0 +1,234 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "Skip to content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-body"
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - generic [ref=e8]: GitLab
+          - link "Homepage" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img [ref=e10]
+        - list [ref=e16]:
+          - listitem [ref=e17]:
+            - link [ref=e18] [cursor=pointer]:
+              - /url: "#"
+              - img [ref=e19]
+      - list [ref=e22]:
+        - listitem [ref=e23]:
+          - generic [ref=e25]:
+            - generic [ref=e26]:
+              - img [ref=e27]
+              - textbox "Search GitLab" [ref=e29]
+            - generic "Use the shortcut key <kbd>/</kbd> to start a search" [ref=e30]: /
+      - list [ref=e32]:
+        - listitem [ref=e33]:
+          - link "Help" [ref=e34] [cursor=pointer]:
+            - /url: /help
+            - generic [ref=e35]: Help
+            - img [ref=e36]
+            - img [ref=e38]
+        - listitem [ref=e40]:
+          - link "Sign in" [ref=e41] [cursor=pointer]:
+            - /url: /users/sign_in?redirect_to_referer=yes
+  - generic [ref=e42]:
+    - complementary "Project navigation" [ref=e43]:
+      - generic [ref=e44]:
+        - list [ref=e45]:
+          - listitem "Compiler2024" [ref=e46]:
+            - link "Compiler2024" [ref=e47] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024
+              - generic [ref=e49]: C
+              - generic [ref=e50]: Compiler2024
+          - listitem [ref=e51]:
+            - link "Project information" [ref=e52] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/activity
+              - img [ref=e54]
+              - generic [ref=e56]: Project information
+          - listitem [ref=e57]:
+            - link "Repository" [ref=e58] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/tree/main
+              - img [ref=e60]
+              - generic [ref=e62]: Repository
+            - list [ref=e63]:
+              - listitem [ref=e64]:
+                - link "Files" [ref=e65] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/tree/main
+                  - generic [ref=e66]: Files
+              - listitem [ref=e67]:
+                - link "Commits" [ref=e68] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/commits/main?ref_type=heads
+                  - generic [ref=e69]: Commits
+              - listitem [ref=e70]:
+                - link "Branches" [ref=e71] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/branches
+                  - generic [ref=e72]: Branches
+              - listitem [ref=e73]:
+                - link "Tags" [ref=e74] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/tags
+                  - generic [ref=e75]: Tags
+              - listitem [ref=e76]:
+                - link "Contributor statistics" [ref=e77] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/graphs/main?ref_type=heads
+                  - generic [ref=e78]: Contributor statistics
+              - listitem [ref=e79]:
+                - link "Graph" [ref=e80] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/network/main?ref_type=heads
+                  - generic [ref=e81]: Graph
+              - listitem [ref=e82]:
+                - link "Compare revisions" [ref=e83] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/compare?from=main&to=main
+                  - generic [ref=e84]: Compare revisions
+          - listitem [ref=e85]:
+            - link "Issues" [ref=e86] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/issues
+              - img [ref=e88]
+              - generic [ref=e90]: Issues
+              - generic [ref=e91]: "0"
+          - listitem [ref=e92]:
+            - link "Merge requests" [ref=e93] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/merge_requests
+              - img [ref=e95]
+              - generic [ref=e97]: Merge requests
+              - generic [ref=e98]: "0"
+          - listitem [ref=e99]:
+            - link "CI/CD" [ref=e100] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/pipelines
+              - img [ref=e102]
+              - generic [ref=e104]: CI/CD
+          - listitem [ref=e105]:
+            - link "Deployments" [ref=e106] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/environments
+              - img [ref=e108]
+              - generic [ref=e110]: Deployments
+          - listitem [ref=e111]:
+            - link "Packages and registries" [ref=e112] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/packages
+              - img [ref=e114]
+              - generic [ref=e116]: Packages and registries
+          - listitem [ref=e117]:
+            - link "Monitor" [ref=e118] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/incidents
+              - img [ref=e120]
+              - generic [ref=e122]: Monitor
+          - listitem [ref=e123]:
+            - link "Analytics" [ref=e124] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/value_stream_analytics
+              - img [ref=e126]
+              - generic [ref=e128]: Analytics
+          - listitem [ref=e129]:
+            - link "Wiki" [ref=e130] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/wikis/home
+              - img [ref=e132]
+              - generic [ref=e134]: Wiki
+          - listitem [ref=e135]:
+            - link "Snippets" [ref=e136] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/snippets
+              - img [ref=e138]
+              - generic [ref=e140]: Snippets
+        - button "Collapse sidebar" [ref=e141] [cursor=pointer]:
+          - img [ref=e142]
+          - generic [ref=e144]: Collapse sidebar
+    - generic [ref=e145]:
+      - navigation "Breadcrumbs" [ref=e149]:
+        - list [ref=e150]:
+          - listitem [ref=e151]:
+            - link "CSC" [ref=e152] [cursor=pointer]:
+              - /url: /csc1
+            - img [ref=e153]
+          - listitem [ref=e155]:
+            - link "CSC-Compiler" [ref=e156] [cursor=pointer]:
+              - /url: /csc1/nscscc
+            - img [ref=e157]
+          - listitem [ref=e159]:
+            - link "Compiler2024" [ref=e160] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024
+            - img [ref=e161]
+          - listitem [ref=e163]:
+            - link "Repository" [ref=e164] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/tree/main
+      - main [ref=e166]:
+        - generic [ref=e167]:
+          - generic [ref=e169]:
+            - link [ref=e170] [cursor=pointer]:
+              - /url: /root
+            - generic [ref=e172]:
+              - generic [ref=e173]:
+                - link "Upload New File" [ref=e174] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/commit/189f29e5a8629a774d6a959858a6845de96e5737
+                - generic [ref=e175]:
+                  - link "Administrator" [ref=e176] [cursor=pointer]:
+                    - /url: /root
+                  - text: authored
+                  - time [ref=e177]: 1 year ago
+              - group [ref=e179]:
+                - generic [ref=e181]: 189f29e5
+                - button "Copy commit SHA" [ref=e182] [cursor=pointer]:
+                  - img [ref=e183]
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - button "main" [ref=e190] [cursor=pointer]:
+                - generic [ref=e191]:
+                  - generic [ref=e192]: main
+                  - img [ref=e193]
+              - navigation "Files breadcrumb" [ref=e195]:
+                - list [ref=e196]:
+                  - listitem [ref=e197]:
+                    - link "compiler2024" [ref=e198] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/tree/main/
+            - generic [ref=e200]:
+              - link "History" [ref=e201] [cursor=pointer]:
+                - /url: /csc1/nscscc/compiler2024/-/commits/main/
+                - generic [ref=e202]: History
+              - link "Find file" [ref=e203] [cursor=pointer]:
+                - /url: /csc1/nscscc/compiler2024/-/find_file/main
+              - button "Download" [ref=e205] [cursor=pointer]:
+                - img [ref=e206]
+                - generic [ref=e208]: Select Archive Format
+                - img [ref=e209]
+              - link "Clone" [ref=e213] [cursor=pointer]:
+                - /url: "#"
+                - generic [ref=e214]: Clone
+                - img [ref=e215]
+          - table "Loading files, directories, and submodules in the path / for commit reference main" [ref=e220]:
+            - rowgroup [ref=e221]:
+              - row "Name Last commit Last update" [ref=e222]:
+                - columnheader "Name" [ref=e223]
+                - columnheader "Last commit" [ref=e224]
+                - columnheader "Last update" [ref=e225]
+            - rowgroup [ref=e226]:
+              - row [ref=e227]:
+                - cell [ref=e228]:
+                  - img [ref=e230]
+                - cell [ref=e232]:
+                  - img [ref=e234]
+                - cell [ref=e236]:
+                  - img [ref=e239]
+              - row [ref=e241]:
+                - cell [ref=e242]:
+                  - img [ref=e244]
+                - cell [ref=e246]:
+                  - img [ref=e248]
+                - cell [ref=e250]:
+                  - img [ref=e253]
+              - row [ref=e255]:
+                - cell [ref=e256]:
+                  - img [ref=e258]
+                - cell [ref=e260]:
+                  - img [ref=e262]
+                - cell [ref=e264]:
+                  - img [ref=e267]
+              - row [ref=e269]:
+                - cell [ref=e270]:
+                  - img [ref=e272]
+                - cell [ref=e274]:
+                  - img [ref=e276]
+                - cell [ref=e278]:
+                  - img [ref=e281]
+              - row [ref=e283]:
+                - cell [ref=e284]:
+                  - img [ref=e286]
+                - cell [ref=e288]:
+                  - img [ref=e290]
+                - cell [ref=e292]:
+                  - img [ref=e295]

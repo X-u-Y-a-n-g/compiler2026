@@ -1,0 +1,333 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "CourseGrading" [ref=e4] [cursor=pointer]:
+      - /url: /pages/index.jsp
+      - img "CourseGrading" [ref=e6]
+  - generic [ref=e7]:
+    - img [ref=e8]
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - heading "2025年全国大学生计算机系统能力大赛-编译系统设计赛-编译系统实现赛 比赛链接   大赛官网" [level=5] [ref=e11]:
+          - text: 2025年全国大学生计算机系统能力大赛-编译系统设计赛-编译系统实现赛
+          - generic [ref=e12]:
+            - button "比赛链接 " [ref=e13] [cursor=pointer]:
+              - text: 比赛链接
+              - generic [ref=e14]: 
+            - text: 
+          - link " 大赛官网" [ref=e16] [cursor=pointer]:
+            - /url: https://compiler.educg.net
+            - generic [ref=e17]: 
+            - text: 大赛官网
+        - generic [ref=e18]: 参赛队伍 199
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - generic [ref=e24]: 
+          - strong [ref=e25]: 2025年编译系统实现赛 - RISCV赛道-初赛
+          - strong [ref=e26]: "-------------------"
+          - text: 05/15 08:00 - 08/05 23:59
+        - generic [ref=e27]:
+          - generic [ref=e29]: 
+          - strong [ref=e30]: 2025年编译系统实现赛初赛 - ARM赛道 - 初赛
+          - strong [ref=e31]: "-------------------"
+          - text: 05/15 08:00 - 08/05 23:59
+        - generic [ref=e32]:
+          - generic [ref=e34]: 
+          - strong [ref=e35]: 2025年编译系统设计赛-编译系统实现赛初赛- RISCV赛道-赛后练习
+          - strong [ref=e36]: "-------------------"
+          - text: 08/06 11:50 - 08/20 19:40
+        - generic [ref=e37]:
+          - generic [ref=e39]: 
+          - strong [ref=e40]: 2025年编译系统设计赛-编译系统实现赛初赛 - ARM赛道-赛后练习
+          - strong [ref=e41]: "-------------------"
+          - text: 08/06 11:50 - 08/20 19:40
+        - generic [ref=e42]:
+          - generic [ref=e44]: 
+          - strong [ref=e45]: 初赛申诉
+          - strong [ref=e46]: "-------------------"
+          - text: 08/10 19:26 - 08/11 20:00
+        - generic [ref=e47]:
+          - generic [ref=e49]: 
+          - strong [ref=e50]: 2025年编译系统设计赛-编译系统实现赛-RISCV现场赛
+          - strong [ref=e51]: "-------------------"
+          - text: 08/19 08:00 - 08/20 18:00
+        - generic [ref=e52]:
+          - generic [ref=e54]: 
+          - strong [ref=e55]: 2025年编译系统设计赛-编译系统实现赛-ARM现场赛
+          - strong [ref=e56]: "-------------------"
+          - text: 08/19 08:00 - 08/20 18:00
+        - generic [ref=e57]:
+          - generic [ref=e59]: 
+          - strong [ref=e60]: 决赛答辩文件提交
+          - strong [ref=e61]: "-------------------"
+          - text: 08/18 09:35 - 08/20 20:00
+        - generic [ref=e62]:
+          - generic [ref=e64]: 
+          - strong [ref=e65]: RISCV决赛评审
+          - strong [ref=e66]: "-------------------"
+          - text: 08/19 08:00 - 08/22 12:59
+        - generic [ref=e67]:
+          - generic [ref=e69]: 
+          - strong [ref=e70]: ARM决赛评审
+          - strong [ref=e71]: "-------------------"
+          - text: 08/19 08:00 - 08/22 12:59
+        - generic [ref=e72]:
+          - generic [ref=e74]: 
+          - strong [ref=e75]: 2025年编译系统实现赛-决赛申诉
+          - strong [ref=e76]: "-------------------"
+          - text: 08/23 15:20 - 08/24 23:59
+        - generic [ref=e77]:
+          - generic [ref=e79]: 
+          - strong [ref=e80]: 获奖队伍信息填报
+          - strong [ref=e81]: "-------------------"
+          - text: 09/04 17:50 - 09/11 17:00
+        - generic [ref=e82]:
+          - generic [ref=e84]: 
+          - strong [ref=e85]: 结束
+          - text: 09/10 18:00
+    - navigation [ref=e86]:
+      - link "介绍" [ref=e87] [cursor=pointer]:
+        - /url: contest.jsp?contestID=y9s9zPhwJPE&my=false&contestCID=0#contestSubAn
+      - link "排行榜" [ref=e88] [cursor=pointer]:
+        - /url: contest_rank.jsp?contestID=y9s9zPhwJPE&my=false&contestCID=0#contestSubAn
+    - generic [ref=e89]:
+      - list [ref=e91]:
+        - listitem [ref=e92]:
+          - link "大赛介绍" [ref=e93] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=503583&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e94]:
+          - link "大赛内容与评分标准" [ref=e95] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=14745312&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e96]:
+          - link "作品提交与GitLab账号" [ref=e97] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=8186665&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e98]:
+          - link "奖项设置" [ref=e99] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=4376379&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e100]:
+          - link "大赛亮点" [ref=e101] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10190610&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e102]:
+          - link "测试样例、运行时库与相关技术文档" [ref=e103] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=641695&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e104]:
+          - link "技术支持与培训" [ref=e105] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10730949&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e106]:
+          - link "知识产权及学术诚信" [ref=e107] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10660627&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e108]:
+          - link "常见问题" [ref=e109] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=15058533&my=false&contestCID=0#contestSubAn
+      - generic [ref=e112]:
+        - text:                          
+        - generic [ref=e113]:
+          - heading "§ 一、竞赛总则" [level=2] [ref=e114]:
+            - link "§":
+              - /url: "#%E4%B8%80%E3%80%81%E7%AB%9E%E8%B5%9B%E6%80%BB%E5%88%99"
+            - text: 一、竞赛总则
+          - paragraph [ref=e115]: 全国大学生计算机系统能力大赛（以下简称“大赛”）是由系统能力培养研究专家组发起、由全国高校计算机教育研究会主办、面向高校大学生的全国性大赛。大赛目标是以学科竞赛推动专业建设和计算机领域创新人才培养体系改革，培育我国高端芯片、关键基础软件的后备人才。大赛鼓励学生设计、实现综合性的计算机系统，培养系统级的设计、分析、优化与应用能力，提升学生的技术创新、工程实践、团队协作能力。大赛服务国家人才培养战略，以赛促学、以赛促教，为高水平计算机人才成长搭建交流、展示、合作的开放平台。
+          - heading "§ 二、竞赛组织" [level=2] [ref=e116]:
+            - link "§":
+              - /url: "#%E4%BA%8C%E3%80%81%E7%AB%9E%E8%B5%9B%E7%BB%84%E7%BB%87"
+            - text: 二、竞赛组织
+          - paragraph [ref=e117]:
+            - text: "主办单位: 全国高等学校计算机教育研究会 系统能力培养研究专家组 系统能力培养研究项目发起高校"
+            - text: "承办单位: 华中科技大学"
+            - text: "协办单位: 华为技术有限公司 机械工业出版社 教育部编译课程虚拟教研室"
+          - list [ref=e118]:
+            - listitem [ref=e119]:
+              - paragraph [ref=e120]: 为保证大赛顺利进行，全国大学生计算机系统能力大赛在机械工业出版社设立秘书处。
+            - listitem [ref=e121]:
+              - paragraph [ref=e122]: 大赛下设指导委员会、技术委员会、评审委员会、监督委员会，负责指导、执行和监督大赛的组织、运营和奖项评审工作。
+          - heading "§ 三、赛道设置" [level=2] [ref=e123]:
+            - link "§":
+              - /url: "#%E4%B8%89%E3%80%81%E8%B5%9B%E9%81%93%E8%AE%BE%E7%BD%AE"
+            - text: 三、赛道设置
+          - paragraph [ref=e124]:
+            - strong [ref=e125]: 1、大赛分编译系统实现和编译系统挑战两个赛道
+          - list [ref=e126]:
+            - listitem [ref=e127]:
+              - paragraph [ref=e128]: 编译系统实现赛道面向高等院校在校本科生，分 ARM 和 RISC-V 两个后端硬件平台。
+            - listitem [ref=e129]:
+              - paragraph [ref=e130]: 编译系统挑战赛道面向高等院校及其他科研机构在校本科生和研究生。
+          - paragraph [ref=e131]:
+            - strong [ref=e132]: 2、编译系统实现和编译系统挑战赛道均分为初赛和决赛两个阶段，初赛胜出者有资格参加决赛。
+          - paragraph [ref=e133]:
+            - strong [ref=e134]: 3、为进一步扩大大赛影响力，推动区域性编译课程的教学和编译人才的培养，本届大赛启动江苏省省赛试点，省赛章程和技术方案另行发布。
+          - paragraph [ref=e135]:
+            - strong [ref=e136]: 4、编译系统挑战赛道由高校和华为公司共同命题，注重考察作品的创新性。
+          - paragraph [ref=e137]:
+            - strong [ref=e138]: 5、大赛对编译系统实现赛道和编译系统挑战赛道分别进行评奖
+          - list [ref=e139]:
+            - listitem [ref=e140]:
+              - paragraph [ref=e141]: 编译系统实现赛道按ARM 和 RISC-V 两个后端分别评奖。
+            - listitem [ref=e142]:
+              - paragraph [ref=e143]: 编译系统挑战赛道中的所有赛题原则上统一进行评审、打分和评奖。
+          - heading "§ 四、赛事流程" [level=2] [ref=e144]:
+            - link "§":
+              - /url: "#%E5%9B%9B%E3%80%81%E8%B5%9B%E4%BA%8B%E6%B5%81%E7%A8%8B"
+            - text: 四、赛事流程
+          - heading "§ 1、时间安排" [level=3] [ref=e145]:
+            - link "§":
+              - /url: "#1%E3%80%81%E6%97%B6%E9%97%B4%E5%AE%89%E6%8E%92"
+            - text: 1、时间安排
+          - heading "§ 第一阶段：报名与赛题发布" [level=4] [ref=e146]:
+            - link "§":
+              - /url: "#%E7%AC%AC%E4%B8%80%E9%98%B6%E6%AE%B5%EF%BC%9A%E6%8A%A5%E5%90%8D%E4%B8%8E%E8%B5%9B%E9%A2%98%E5%8F%91%E5%B8%83"
+            - text: 第一阶段：报名与赛题发布
+          - list [ref=e147]:
+            - listitem [ref=e148]:
+              - paragraph [ref=e149]: 2025年4月21日：赛事启动，发布大赛章程、赛题和技术方案，开始线上报名。。
+            - listitem [ref=e150]:
+              - paragraph [ref=e151]: 2025年5月30日：报名截止。
+          - heading "§ 第二阶段：初赛" [level=4] [ref=e152]:
+            - link "§":
+              - /url: "#%E7%AC%AC%E4%BA%8C%E9%98%B6%E6%AE%B5%EF%BC%9A%E5%88%9D%E8%B5%9B"
+            - text: 第二阶段：初赛
+          - list [ref=e153]:
+            - listitem [ref=e154]:
+              - paragraph [ref=e155]: 报名开始后——2025年8月5日：初赛线上作品提交，提交截止时间为8月5日23:59。
+            - listitem [ref=e156]:
+              - paragraph [ref=e157]: 江苏省省赛的作品要求和提交办法参见省赛章程和技术方案的规定。
+              - blockquote [ref=e158]: 初赛期间，大赛网站提供云端软硬件开发及评测环境，作品线上提交，完成功能和性能测试。
+              - paragraph
+            - listitem [ref=e159]:
+              - paragraph [ref=e160]: 2025年8月5日—8月10日：初赛作品评审，公布入围全国总决赛的参赛队名单。
+          - blockquote [ref=e161]:
+            - strong [ref=e162]: 报名和初赛期间会安排相应的技术培训
+          - paragraph [ref=e163]
+          - heading "§ 第三阶段：决赛" [level=4] [ref=e164]:
+            - link "§":
+              - /url: "#%E7%AC%AC%E4%B8%89%E9%98%B6%E6%AE%B5%EF%BC%9A%E5%86%B3%E8%B5%9B"
+            - text: 第三阶段：决赛
+          - list [ref=e165]:
+            - listitem [ref=e166]:
+              - paragraph [ref=e167]: 2024年8月中下旬：全国总决赛暨颁奖典礼
+          - blockquote [ref=e168]:
+            - strong [ref=e169]: 注：全国总决赛暨颁奖典礼的最终时间将通过大赛官网、系统能力培养公众号及时发布。
+          - paragraph [ref=e170]
+          - heading "§ 2、报名名额" [level=3] [ref=e171]:
+            - link "§":
+              - /url: "#2%E3%80%81%E6%8A%A5%E5%90%8D%E5%90%8D%E9%A2%9D"
+            - text: 2、报名名额
+          - list [ref=e172]:
+            - listitem [ref=e173]:
+              - paragraph [ref=e174]: 参赛学校以参赛队为基本单位报名参赛，每个参赛队不能超过4人。
+            - listitem [ref=e175]:
+              - paragraph [ref=e176]:
+                - strong [ref=e177]: 同一单位允许报名的参赛队数量不限，但编译系统实现赛道只能由该单位成绩最好的两支参赛队进入全国总决赛，同一所学校的其他参赛队根据自愿原则可选择外卡参赛；编译系统挑战赛道同一单位进入决赛的队伍数量不限。
+            - listitem [ref=e178]:
+              - paragraph [ref=e179]:
+                - strong [ref=e180]: 编译系统实现赛道只限在校本科生组队参赛，每队可选择ARM后端和RISC-V后端中的一个或两个参加比赛。如同一赛队赛队选择两个后端参赛，且两个后端在初赛中均获得有效成绩，则初赛成绩取最好的一个计入决赛入围成绩。如果同一赛队的两个后端成绩均达到入围决赛的标准，则成绩低的一个后端以外卡身份入围决赛。
+            - listitem [ref=e181]:
+              - paragraph [ref=e182]:
+                - strong [ref=e183]: 编译系统挑战赛道可以由本科生、研究生组队，组队形式不限（本科生组队、研究生组队、本科生与研究生混合组队）。
+            - listitem [ref=e184]:
+              - paragraph [ref=e185]: 来自不同学校的学生不能联合组队参赛。
+            - listitem [ref=e186]:
+              - paragraph [ref=e187]: 每位参赛学生只能参加 1 支参赛队，不可重复报名。
+            - listitem [ref=e188]:
+              - paragraph [ref=e189]: 每个参赛队最多有两位指导教师，每位指导教师可同时指导本校多支参赛队。指导教师负责指导参赛队选题、组织学生参加赛前的技术培训，并鼓励学生应用大赛指定的实验平台进行作品的创意设计与实现, 同时负责在大赛过程中与学校及组委会之间的信息沟通。
+            - listitem [ref=e190]:
+              - paragraph [ref=e191]: 本届大赛面向香港、澳门地区和海外高校开放报名。香港、澳门地区和海外高校的参赛队如无法邀请到指导教师，可向华为公司申请企业导师。
+          - heading "§ 3、报名方式" [level=3] [ref=e192]:
+            - link "§":
+              - /url: "#3%E3%80%81%E6%8A%A5%E5%90%8D%E6%96%B9%E5%BC%8F"
+            - text: 3、报名方式
+          - list [ref=e193]:
+            - listitem [ref=e194]:
+              - paragraph [ref=e195]:
+                - text: 登录竞赛网站
+                - link "https://compiler.educg.net" [ref=e196] [cursor=pointer]:
+                  - /url: https://compiler.educg.net
+                - text: 填写相关信息，并按要求提供相关材料，进行在线报名。
+            - listitem [ref=e197]:
+              - paragraph [ref=e198]: 报名者需提供能证明本人身份的材料（学生证扫描件、教师工作证扫描件、校园一卡通扫描件、学院或系盖章的报名表之中的一种）。将上述报名材料扫描后并打包为单个文件，上传至在线报名页面，收到组委会邮件或短信确认后，报名工作完成。
+            - listitem [ref=e199]:
+              - paragraph [ref=e200]: 香港、澳门地区和海外高校的参赛队通过网站报名时，学校所在地区选择“其他”，然后按网站要求填写相关报名信息。
+          - heading "§ 4、参赛费用" [level=3] [ref=e201]:
+            - link "§":
+              - /url: "#4%E3%80%81%E5%8F%82%E8%B5%9B%E8%B4%B9%E7%94%A8"
+            - text: 4、参赛费用
+          - list [ref=e202]:
+            - listitem [ref=e203]:
+              - paragraph [ref=e204]: 大赛不收取任何报名费、参赛费、评审费及技术平台购买费等费用。
+            - listitem [ref=e205]:
+              - paragraph [ref=e206]: 参赛选手及指导老师在全国总决赛及颁奖典礼期间产生的交通、住宿、用餐等费用自理。
+            - listitem [ref=e207]:
+              - paragraph [ref=e208]: 大赛所需实验资源由大赛组委会免费向参赛队提供。
+          - heading "§ 五、竞赛管理" [level=2] [ref=e209]:
+            - link "§":
+              - /url: "#%E4%BA%94%E3%80%81%E7%AB%9E%E8%B5%9B%E7%AE%A1%E7%90%86"
+            - text: 五、竞赛管理
+          - heading "§ 初赛" [level=3] [ref=e210]:
+            - link "§":
+              - /url: "#%E5%88%9D%E8%B5%9B"
+            - text: 初赛
+          - heading "§ 编译系统实现赛道" [level=4] [ref=e211]:
+            - link "§":
+              - /url: "#%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E5%AE%9E%E7%8E%B0%E8%B5%9B%E9%81%93"
+            - text: 编译系统实现赛道
+          - list [ref=e212]:
+            - listitem [ref=e213]:
+              - paragraph [ref=e214]: 参赛队按照大赛技术方案要求在大赛网站提交作品设计方案。评审专家根据评测标准，通过评测系统的测试对初赛作品打分，并按照分数对各参赛队进行排序, 按初赛分数高低决定入围决赛的参赛队。
+          - heading "§ 编译系统挑战赛道" [level=4] [ref=e215]:
+            - link "§":
+              - /url: "#%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E6%8C%91%E6%88%98%E8%B5%9B%E9%81%93"
+            - text: 编译系统挑战赛道
+          - list [ref=e216]:
+            - listitem [ref=e217]:
+              - paragraph [ref=e218]: 参赛队按照大赛技术方案要求在大赛网站提交作品、设计方案。本赛道更关注参赛队在创新性、可行性、有效性等实际工业场景下的综合考量，由技术委员会和华为公司的专家组成的评审专家团队进行综合评判。评审专家将参考往届作品及业界水平，根据评测系统给出的客观成绩、作品创新性、完成度等评测标准，对各参赛队进行综合评分后进行排序, 按排序决定入围决赛的参赛队。
+          - heading "§ 决赛" [level=3] [ref=e219]:
+            - link "§":
+              - /url: "#%E5%86%B3%E8%B5%9B"
+            - text: 决赛
+          - list [ref=e220]:
+            - listitem [ref=e221]:
+              - paragraph [ref=e222]: 由大赛组委会组织决赛，决赛设性能测试、系统展示、答辩环节。最终按决赛各环节的综合分数高低决定奖项归属。
+            - listitem [ref=e223]:
+              - paragraph [ref=e224]: 答辩前各参赛队应按组委会要求提交相关材料，如未能按要求提交，将按照评审规则扣除相应分数。
+            - listitem [ref=e225]:
+              - paragraph [ref=e226]: 参赛团队必须按组委会要求参加决赛，未参赛的队伍视为自动放弃决赛资格。 *
+        - generic [ref=e228]:
+          - text: 目录
+          - generic [ref=e229] [cursor=pointer]: 
+          - text: 
+  - contentinfo [ref=e231]:
+    - generic [ref=e234]:
+      - generic [ref=e235]:
+        - link [ref=e236] [cursor=pointer]:
+          - /url: https://www.educg.net
+          - img [ref=e237]
+        - heading "计算机专业课程一体化支撑平台" [level=6] [ref=e238]:
+          - strong [ref=e239]: 计算机专业课程一体化支撑平台
+        - paragraph [ref=e240]:
+          - generic [ref=e241]:
+            - text: 北京航空航天大学教学成果转化平台
+            - text: ©
+            - link "阔思格睿网络科技（北京）有限责任公司" [ref=e242] [cursor=pointer]:
+              - /url: https://eduxiji.com
+            - text: "|"
+            - link "郑州云海科技有限公司" [ref=e243] [cursor=pointer]:
+              - /url: https://educg.net.cn
+      - generic [ref=e244]:
+        - paragraph [ref=e245]:
+          - strong [ref=e246]: 快速导航
+        - generic [ref=e247]:
+          - link "忘记密码" [ref=e248] [cursor=pointer]:
+            - /url: https://course.educg.net/findpasswd/findpasswd.jsp
+          - link "系统能力培养-编译系统赛官网" [ref=e249] [cursor=pointer]:
+            - /url: https://compiler.educg.net
+          - link "系统能力培养-操作系统赛官网" [ref=e250] [cursor=pointer]:
+            - /url: https://os.educg.net
+          - link "系统能力培养-数据库系统赛官网" [ref=e251] [cursor=pointer]:
+            - /url: https://db.educg.net
+      - generic [ref=e252]:
+        - paragraph [ref=e253]:
+          - strong [ref=e254]: 公众号与微博
+        - link "" [ref=e255] [cursor=pointer]:
+          - /url: "#CollapseWeixin"
+          - generic [ref=e256]: 
+        - link "" [ref=e259] [cursor=pointer]:
+          - /url: https://weibo.com/educg
+          - generic [ref=e260]: 

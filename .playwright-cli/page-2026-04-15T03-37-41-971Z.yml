@@ -1,0 +1,474 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "Skip to content" [ref=e3] [cursor=pointer]:
+      - /url: "#content-body"
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - generic [ref=e8]: GitLab
+          - link "Homepage" [ref=e9] [cursor=pointer]:
+            - /url: /
+            - img [ref=e10]
+        - list [ref=e16]:
+          - listitem [ref=e17]:
+            - button [ref=e18] [cursor=pointer]:
+              - img [ref=e19]
+      - list [ref=e22]:
+        - listitem [ref=e23]:
+          - generic [ref=e25]:
+            - generic [ref=e26]:
+              - img [ref=e27]
+              - textbox "Search GitLab" [ref=e29]
+            - generic "Use the shortcut key <kbd>/</kbd> to start a search" [ref=e30]: /
+      - list [ref=e32]:
+        - listitem [ref=e33]:
+          - link "Help" [ref=e34] [cursor=pointer]:
+            - /url: /help
+            - generic [ref=e35]: Help
+            - img [ref=e36]
+            - img [ref=e38]
+        - listitem [ref=e40]:
+          - link "Sign in" [ref=e41] [cursor=pointer]:
+            - /url: /users/sign_in?redirect_to_referer=yes
+  - generic [ref=e42]:
+    - complementary "Project navigation" [ref=e43]:
+      - generic [ref=e44]:
+        - list [ref=e45]:
+          - listitem "Compiler2024" [ref=e46]:
+            - link "Compiler2024" [ref=e47] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024
+              - generic [ref=e49]: C
+              - generic [ref=e50]: Compiler2024
+          - listitem [ref=e51]:
+            - link "Project information" [ref=e52] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/activity
+              - img [ref=e54]
+              - generic [ref=e56]: Project information
+          - listitem [ref=e57]:
+            - link "Repository" [ref=e58] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/tree/main
+              - img [ref=e60]
+              - generic [ref=e62]: Repository
+            - list [ref=e63]:
+              - listitem [ref=e64]:
+                - link "Files" [ref=e65] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/tree/main
+                  - generic [ref=e66]: Files
+              - listitem [ref=e67]:
+                - link "Commits" [ref=e68] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/commits/main?ref_type=heads
+                  - generic [ref=e69]: Commits
+              - listitem [ref=e70]:
+                - link "Branches" [ref=e71] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/branches
+                  - generic [ref=e72]: Branches
+              - listitem [ref=e73]:
+                - link "Tags" [ref=e74] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/tags
+                  - generic [ref=e75]: Tags
+              - listitem [ref=e76]:
+                - link "Contributor statistics" [ref=e77] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/graphs/main?ref_type=heads
+                  - generic [ref=e78]: Contributor statistics
+              - listitem [ref=e79]:
+                - link "Graph" [ref=e80] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/network/main?ref_type=heads
+                  - generic [ref=e81]: Graph
+              - listitem [ref=e82]:
+                - link "Compare revisions" [ref=e83] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/compare?from=main&to=main
+                  - generic [ref=e84]: Compare revisions
+          - listitem [ref=e85]:
+            - link "Issues" [ref=e86] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/issues
+              - img [ref=e88]
+              - generic [ref=e90]: Issues
+              - generic [ref=e91]: "0"
+          - listitem [ref=e92]:
+            - link "Merge requests" [ref=e93] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/merge_requests
+              - img [ref=e95]
+              - generic [ref=e97]: Merge requests
+              - generic [ref=e98]: "0"
+          - listitem [ref=e99]:
+            - link "CI/CD" [ref=e100] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/pipelines
+              - img [ref=e102]
+              - generic [ref=e104]: CI/CD
+          - listitem [ref=e105]:
+            - link "Deployments" [ref=e106] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/environments
+              - img [ref=e108]
+              - generic [ref=e110]: Deployments
+          - listitem [ref=e111]:
+            - link "Packages and registries" [ref=e112] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/packages
+              - img [ref=e114]
+              - generic [ref=e116]: Packages and registries
+          - listitem [ref=e117]:
+            - link "Monitor" [ref=e118] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/incidents
+              - img [ref=e120]
+              - generic [ref=e122]: Monitor
+          - listitem [ref=e123]:
+            - link "Analytics" [ref=e124] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/value_stream_analytics
+              - img [ref=e126]
+              - generic [ref=e128]: Analytics
+          - listitem [ref=e129]:
+            - link "Wiki" [ref=e130] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/wikis/home
+              - img [ref=e132]
+              - generic [ref=e134]: Wiki
+          - listitem [ref=e135]:
+            - link "Snippets" [ref=e136] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/snippets
+              - img [ref=e138]
+              - generic [ref=e140]: Snippets
+        - button "Collapse sidebar" [ref=e141] [cursor=pointer]:
+          - img [ref=e142]
+          - generic [ref=e144]: Collapse sidebar
+    - generic [ref=e145]:
+      - navigation "Breadcrumbs" [ref=e149]:
+        - list [ref=e150]:
+          - listitem [ref=e151]:
+            - link "CSC" [ref=e152] [cursor=pointer]:
+              - /url: /csc1
+            - img [ref=e153]
+          - listitem [ref=e155]:
+            - link "CSC-Compiler" [ref=e156] [cursor=pointer]:
+              - /url: /csc1/nscscc
+            - img [ref=e157]
+          - listitem [ref=e159]:
+            - link "Compiler2024" [ref=e160] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024
+            - img [ref=e161]
+          - listitem [ref=e163]:
+            - link "Repository" [ref=e164] [cursor=pointer]:
+              - /url: /csc1/nscscc/compiler2024/-/tree/main
+      - main [ref=e166]:
+        - generic [ref=e167]:
+          - generic [ref=e169]:
+            - link [ref=e170] [cursor=pointer]:
+              - /url: /root
+            - generic [ref=e172]:
+              - generic [ref=e173]:
+                - link "Upload New File" [ref=e174] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/commit/189f29e5a8629a774d6a959858a6845de96e5737
+                - generic [ref=e175]:
+                  - link "Administrator" [ref=e176] [cursor=pointer]:
+                    - /url: /root
+                  - text: authored
+                  - time [ref=e177]: 1 year ago
+              - group [ref=e179]:
+                - generic [ref=e181]: 189f29e5
+                - button "Copy commit SHA" [ref=e182] [cursor=pointer]:
+                  - img [ref=e183]
+          - generic [ref=e185]:
+            - generic [ref=e186]:
+              - button "main" [ref=e190] [cursor=pointer]:
+                - generic [ref=e191]:
+                  - generic [ref=e192]: main
+                  - img [ref=e193]
+              - navigation "Files breadcrumb" [ref=e195]:
+                - list [ref=e196]:
+                  - listitem [ref=e197]:
+                    - link "compiler2024" [ref=e198] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/tree/main/
+            - generic [ref=e200]:
+              - link "History" [ref=e201] [cursor=pointer]:
+                - /url: /csc1/nscscc/compiler2024/-/commits/main/
+                - generic [ref=e202]: History
+              - link "Find file" [ref=e203] [cursor=pointer]:
+                - /url: /csc1/nscscc/compiler2024/-/find_file/main
+              - button "Download" [ref=e205] [cursor=pointer]:
+                - img [ref=e206]
+                - generic [ref=e208]: Select Archive Format
+                - img [ref=e209]
+              - link "Clone" [ref=e213] [cursor=pointer]:
+                - /url: "#"
+                - generic [ref=e214]: Clone
+                - img [ref=e215]
+          - generic [ref=e217]:
+            - table "Files, directories, and submodules in the path / for commit reference main" [ref=e220]:
+              - rowgroup [ref=e221]:
+                - row "Name Last commit Last update" [ref=e222]:
+                  - columnheader "Name" [ref=e223]
+                  - columnheader "Last commit" [ref=e224]
+                  - columnheader "Last update" [ref=e225]
+              - rowgroup [ref=e226]:
+                - row "codesize Loading Loading" [ref=e227]:
+                  - cell "codesize" [ref=e228]:
+                    - link "codesize" [ref=e229] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/tree/main/codesize
+                      - img [ref=e231]
+                      - text: codesize
+                  - cell "Loading" [ref=e233]:
+                    - img "Loading" [ref=e236]
+                  - cell "Loading" [ref=e238]:
+                    - img "Loading" [ref=e240]
+                - row "2023编译系统设计赛-云端开发板申请指南.pdf Loading Loading" [ref=e242]:
+                  - cell "2023编译系统设计赛-云端开发板申请指南.pdf" [ref=e243]:
+                    - link "2023编译系统设计赛-云端开发板申请指南.pdf" [ref=e244] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2023%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B-%E4%BA%91%E7%AB%AF%E5%BC%80%E5%8F%91%E6%9D%BF%E7%94%B3%E8%AF%B7%E6%8C%87%E5%8D%97.pdf
+                      - img [ref=e246]
+                      - text: 2023编译系统设计赛-云端开发板申请指南.pdf
+                  - cell "Loading" [ref=e248]:
+                    - img "Loading" [ref=e251]
+                  - cell "Loading" [ref=e253]:
+                    - img "Loading" [ref=e255]
+                - row "2024全国大学生计算机系统能力培养大赛编译系统设计赛-章程.pdf Loading Loading" [ref=e257]:
+                  - cell "2024全国大学生计算机系统能力培养大赛编译系统设计赛-章程.pdf" [ref=e258]:
+                    - link "2024全国大学生计算机系统能力培养大赛编译系统设计赛-章程.pdf" [ref=e259] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%9F%B9%E5%85%BB%E5%A4%A7%E8%B5%9B%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B-%E7%AB%A0%E7%A8%8B.pdf
+                      - img [ref=e261]
+                      - text: 2024全国大学生计算机系统能力培养大赛编译系统设计赛-章程.pdf
+                  - cell "Loading" [ref=e263]:
+                    - img "Loading" [ref=e266]
+                  - cell "Loading" [ref=e268]:
+                    - img "Loading" [ref=e270]
+                - row "2024全国大学生计算机系统能力大赛-编译系统挑战赛-代码自动混精-技术方案v1.pdf Loading Loading" [ref=e272]:
+                  - cell "2024全国大学生计算机系统能力大赛-编译系统挑战赛-代码自动混精-技术方案v1.pdf" [ref=e273]:
+                    - link "2024全国大学生计算机系统能力大赛-编译系统挑战赛-代码自动混精-技术方案v1.pdf" [ref=e274] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E6%8C%91%E6%88%98%E8%B5%9B-%E4%BB%A3%E7%A0%81%E8%87%AA%E5%8A%A8%E6%B7%B7%E7%B2%BE-%E6%8A%80%E6%9C%AF%E6%96%B9%E6%A1%88v1.pdf
+                      - img [ref=e276]
+                      - text: 2024全国大学生计算机系统能力大赛-编译系统挑战赛-代码自动混精-技术方案v1.pdf
+                  - cell "Loading" [ref=e278]:
+                    - img "Loading" [ref=e281]
+                  - cell "Loading" [ref=e283]:
+                    - img "Loading" [ref=e285]
+                - row "2024全国大学生计算机系统能力大赛-编译系统挑战赛-并行优化赛题-技术方案-V3.pdf Loading Loading" [ref=e287]:
+                  - cell "2024全国大学生计算机系统能力大赛-编译系统挑战赛-并行优化赛题-技术方案-V3.pdf" [ref=e288]:
+                    - link "2024全国大学生计算机系统能力大赛-编译系统挑战赛-并行优化赛题-技术方案-V3.pdf" [ref=e289] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E6%8C%91%E6%88%98%E8%B5%9B-%E5%B9%B6%E8%A1%8C%E4%BC%98%E5%8C%96%E8%B5%9B%E9%A2%98-%E6%8A%80%E6%9C%AF%E6%96%B9%E6%A1%88-V3.pdf
+                      - img [ref=e291]
+                      - text: 2024全国大学生计算机系统能力大赛-编译系统挑战赛-并行优化赛题-技术方案-V3.pdf
+                  - cell "Loading" [ref=e293]:
+                    - img "Loading" [ref=e296]
+                  - cell "Loading" [ref=e298]:
+                    - img "Loading" [ref=e300]
+                - row "2024全国大学生计算机系统能力大赛-编译系统挑战赛代码体积优化技术方案v1.pdf Loading Loading" [ref=e302]:
+                  - cell "2024全国大学生计算机系统能力大赛-编译系统挑战赛代码体积优化技术方案v1.pdf" [ref=e303]:
+                    - link "2024全国大学生计算机系统能力大赛-编译系统挑战赛代码体积优化技术方案v1.pdf" [ref=e304] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E6%8C%91%E6%88%98%E8%B5%9B%E4%BB%A3%E7%A0%81%E4%BD%93%E7%A7%AF%E4%BC%98%E5%8C%96%E6%8A%80%E6%9C%AF%E6%96%B9%E6%A1%88v1.pdf
+                      - img [ref=e306]
+                      - text: 2024全国大学生计算机系统能力大赛-编译系统挑战赛代码体积优化技术方案v1.pdf
+                  - cell "Loading" [ref=e308]:
+                    - img "Loading" [ref=e311]
+                  - cell "Loading" [ref=e313]:
+                    - img "Loading" [ref=e315]
+                - row "2024全国大学生计算机系统能力大赛-编译系统设计编译系统实现赛道技术方案V1.1.pdf Loading Loading" [ref=e317]:
+                  - cell "2024全国大学生计算机系统能力大赛-编译系统设计编译系统实现赛道技术方案V1.1.pdf" [ref=e318]:
+                    - link "2024全国大学生计算机系统能力大赛-编译系统设计编译系统实现赛道技术方案V1.1.pdf" [ref=e319] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E5%AE%9E%E7%8E%B0%E8%B5%9B%E9%81%93%E6%8A%80%E6%9C%AF%E6%96%B9%E6%A1%88V1.1.pdf
+                      - img [ref=e321]
+                      - text: 2024全国大学生计算机系统能力大赛-编译系统设计编译系统实现赛道技术方案V1.1.pdf
+                  - cell "Loading" [ref=e323]:
+                    - img "Loading" [ref=e326]
+                  - cell "Loading" [ref=e328]:
+                    - img "Loading" [ref=e330]
+                - row "2024全国大学生计算机系统能力大赛编译系统设计赛优秀指导教师获奖名单.pdf Loading Loading" [ref=e332]:
+                  - cell "2024全国大学生计算机系统能力大赛编译系统设计赛优秀指导教师获奖名单.pdf" [ref=e333]:
+                    - link "2024全国大学生计算机系统能力大赛编译系统设计赛优秀指导教师获奖名单.pdf" [ref=e334] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E4%BC%98%E7%A7%80%E6%8C%87%E5%AF%BC%E6%95%99%E5%B8%88%E8%8E%B7%E5%A5%96%E5%90%8D%E5%8D%95.pdf
+                      - img [ref=e336]
+                      - text: 2024全国大学生计算机系统能力大赛编译系统设计赛优秀指导教师获奖名单.pdf
+                  - cell "Loading" [ref=e338]:
+                    - img "Loading" [ref=e341]
+                  - cell "Loading" [ref=e343]:
+                    - img "Loading" [ref=e345]
+                - row "2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛获奖名单.pdf Loading Loading" [ref=e347]:
+                  - cell "2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛获奖名单.pdf" [ref=e348]:
+                    - link "2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛获奖名单.pdf" [ref=e349] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E5%85%A8%E5%9B%BD%E6%80%BB%E5%86%B3%E8%B5%9B%E8%8E%B7%E5%A5%96%E5%90%8D%E5%8D%95.pdf
+                      - img [ref=e351]
+                      - text: 2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛获奖名单.pdf
+                  - cell "Loading" [ref=e353]:
+                    - img "Loading" [ref=e356]
+                  - cell "Loading" [ref=e358]:
+                    - img "Loading" [ref=e360]
+                - row "2024年编译系统设计赛ARM赛道重测明细.pdf Loading Loading" [ref=e362]:
+                  - cell "2024年编译系统设计赛ARM赛道重测明细.pdf" [ref=e363]:
+                    - link "2024年编译系统设计赛ARM赛道重测明细.pdf" [ref=e364] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%B9%B4%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9BARM%E8%B5%9B%E9%81%93%E9%87%8D%E6%B5%8B%E6%98%8E%E7%BB%86.pdf
+                      - img [ref=e366]
+                      - text: 2024年编译系统设计赛ARM赛道重测明细.pdf
+                  - cell "Loading" [ref=e368]:
+                    - img "Loading" [ref=e371]
+                  - cell "Loading" [ref=e373]:
+                    - img "Loading" [ref=e375]
+                - row "2024年编译系统设计赛RISC-V赛道重测明细.pdf" [ref=e377]:
+                  - cell "2024年编译系统设计赛RISC-V赛道重测明细.pdf" [ref=e378]:
+                    - link "2024年编译系统设计赛RISC-V赛道重测明细.pdf" [ref=e379] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%B9%B4%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9BRISC-V%E8%B5%9B%E9%81%93%E9%87%8D%E6%B5%8B%E6%98%8E%E7%BB%86.pdf
+                      - img [ref=e381]
+                      - text: 2024年编译系统设计赛RISC-V赛道重测明细.pdf
+                  - cell [ref=e383]
+                  - cell [ref=e384]
+                - row "2024年编译系统设计赛最终成绩.pdf" [ref=e385]:
+                  - cell "2024年编译系统设计赛最终成绩.pdf" [ref=e386]:
+                    - link "2024年编译系统设计赛最终成绩.pdf" [ref=e387] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%B9%B4%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E6%9C%80%E7%BB%88%E6%88%90%E7%BB%A9.pdf
+                      - img [ref=e389]
+                      - text: 2024年编译系统设计赛最终成绩.pdf
+                  - cell [ref=e391]
+                  - cell [ref=e392]
+                - row "2024年编译系统设计赛重测规则以及开发板与性能用例对应关系.pdf" [ref=e393]:
+                  - cell "2024年编译系统设计赛重测规则以及开发板与性能用例对应关系.pdf" [ref=e394]:
+                    - link "2024年编译系统设计赛重测规则以及开发板与性能用例对应关系.pdf" [ref=e395] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E5%B9%B4%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E9%87%8D%E6%B5%8B%E8%A7%84%E5%88%99%E4%BB%A5%E5%8F%8A%E5%BC%80%E5%8F%91%E6%9D%BF%E4%B8%8E%E6%80%A7%E8%83%BD%E7%94%A8%E4%BE%8B%E5%AF%B9%E5%BA%94%E5%85%B3%E7%B3%BB.pdf
+                      - img [ref=e397]
+                      - text: 2024年编译系统设计赛重测规则以及开发板与性能用例对应关系.pdf
+                  - cell [ref=e399]
+                  - cell [ref=e400]
+                - row "2024编译系统设计赛报名及提交指南.pdf" [ref=e401]:
+                  - cell "2024编译系统设计赛报名及提交指南.pdf" [ref=e402]:
+                    - link "2024编译系统设计赛报名及提交指南.pdf" [ref=e403] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/2024%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E6%8A%A5%E5%90%8D%E5%8F%8A%E6%8F%90%E4%BA%A4%E6%8C%87%E5%8D%97.pdf
+                      - img [ref=e405]
+                      - text: 2024编译系统设计赛报名及提交指南.pdf
+                  - cell [ref=e407]
+                  - cell [ref=e408]
+                - row "BiSheng编译器的二进制包中导入自定义PASS指南.pdf" [ref=e409]:
+                  - cell "BiSheng编译器的二进制包中导入自定义PASS指南.pdf" [ref=e410]:
+                    - link "BiSheng编译器的二进制包中导入自定义PASS指南.pdf" [ref=e411] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/BiSheng%E7%BC%96%E8%AF%91%E5%99%A8%E7%9A%84%E4%BA%8C%E8%BF%9B%E5%88%B6%E5%8C%85%E4%B8%AD%E5%AF%BC%E5%85%A5%E8%87%AA%E5%AE%9A%E4%B9%89PASS%E6%8C%87%E5%8D%97.pdf
+                      - img [ref=e413]
+                      - text: BiSheng编译器的二进制包中导入自定义PASS指南.pdf
+                  - cell [ref=e415]
+                  - cell [ref=e416]
+                - row "HPC_AI_double_.tar.gz" [ref=e417]:
+                  - cell "HPC_AI_double_.tar.gz" [ref=e418]:
+                    - link "HPC_AI_double_.tar.gz" [ref=e419] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/HPC_AI_double_.tar.gz
+                      - img [ref=e421]
+                      - text: HPC_AI_double_.tar.gz
+                  - cell [ref=e423]
+                  - cell [ref=e424]
+                - row "HPC_AI_double_v2.tar.gz" [ref=e425]:
+                  - cell "HPC_AI_double_v2.tar.gz" [ref=e426]:
+                    - link "HPC_AI_double_v2.tar.gz" [ref=e427] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/HPC_AI_double_v2.tar.gz
+                      - img [ref=e429]
+                      - text: HPC_AI_double_v2.tar.gz
+                  - cell [ref=e431]
+                  - cell [ref=e432]
+                - row "README.md" [ref=e433]:
+                  - cell "README.md" [ref=e434]:
+                    - link "README.md" [ref=e435] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/README.md
+                      - img [ref=e437]
+                      - text: README.md
+                  - cell [ref=e439]
+                  - cell [ref=e440]
+                - row "compile.java" [ref=e441]:
+                  - cell "compile.java" [ref=e442]:
+                    - link "compile.java" [ref=e443] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/compile.java
+                      - img [ref=e445]
+                      - text: compile.java
+                  - cell [ref=e447]
+                  - cell [ref=e448]
+                - row "hpl-ai-finalist.zip" [ref=e449]:
+                  - cell "hpl-ai-finalist.zip" [ref=e450]:
+                    - link "hpl-ai-finalist.zip" [ref=e451] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/hpl-ai-finalist.zip
+                      - img [ref=e453]
+                      - text: hpl-ai-finalist.zip
+                  - cell [ref=e455]
+                  - cell [ref=e456]
+                - row "libsysy.a" [ref=e457]:
+                  - cell "libsysy.a" [ref=e458]:
+                    - link "libsysy.a" [ref=e459] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/libsysy.a
+                      - img [ref=e461]
+                      - text: libsysy.a
+                  - cell [ref=e463]
+                  - cell [ref=e464]
+                - row "sylib.c" [ref=e465]:
+                  - cell "sylib.c" [ref=e466]:
+                    - link "sylib.c" [ref=e467] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/sylib.c
+                      - img [ref=e469]
+                      - text: sylib.c
+                  - cell [ref=e471]
+                  - cell [ref=e472]
+                - row "sylib.h" [ref=e473]:
+                  - cell "sylib.h" [ref=e474]:
+                    - link "sylib.h" [ref=e475] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/sylib.h
+                      - img [ref=e477]
+                      - text: sylib.h
+                  - cell [ref=e479]
+                  - cell [ref=e480]
+                - row "testdata.zip" [ref=e481]:
+                  - cell "testdata.zip" [ref=e482]:
+                    - link "testdata.zip" [ref=e483] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/testdata.zip
+                      - img [ref=e485]
+                      - text: testdata.zip
+                  - cell [ref=e487]
+                  - cell [ref=e488]
+                - row "testdata_final.zip" [ref=e489]:
+                  - cell "testdata_final.zip" [ref=e490]:
+                    - link "testdata_final.zip" [ref=e491] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/testdata_final.zip
+                      - img [ref=e493]
+                      - text: testdata_final.zip
+                  - cell [ref=e495]
+                  - cell [ref=e496]
+                - row "参赛学生-2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛参赛队通知-2024.8.1.pdf" [ref=e497]:
+                  - cell "参赛学生-2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛参赛队通知-2024.8.1.pdf" [ref=e498]:
+                    - link "参赛学生-2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛参赛队通知-2024.8.1.pdf" [ref=e499] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E5%8F%82%E8%B5%9B%E5%AD%A6%E7%94%9F-2024%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E5%85%A8%E5%9B%BD%E6%80%BB%E5%86%B3%E8%B5%9B%E5%8F%82%E8%B5%9B%E9%98%9F%E9%80%9A%E7%9F%A5-2024.8.1.pdf
+                      - img [ref=e501]
+                      - text: 参赛学生-2024全国大学生计算机系统能力大赛编译系统设计赛全国总决赛参赛队通知-2024.8.1.pdf
+                  - cell [ref=e503]
+                  - cell [ref=e504]
+                - row "挑战赛道命题-代码自动混精_测试用例补充说明.pdf" [ref=e505]:
+                  - cell "挑战赛道命题-代码自动混精_测试用例补充说明.pdf" [ref=e506]:
+                    - link "挑战赛道命题-代码自动混精_测试用例补充说明.pdf" [ref=e507] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E6%8C%91%E6%88%98%E8%B5%9B%E9%81%93%E5%91%BD%E9%A2%98-%E4%BB%A3%E7%A0%81%E8%87%AA%E5%8A%A8%E6%B7%B7%E7%B2%BE_%E6%B5%8B%E8%AF%95%E7%94%A8%E4%BE%8B%E8%A1%A5%E5%85%85%E8%AF%B4%E6%98%8E.pdf
+                      - img [ref=e509]
+                      - text: 挑战赛道命题-代码自动混精_测试用例补充说明.pdf
+                  - cell [ref=e511]
+                  - cell [ref=e512]
+                - row "竞赛手册-2024年全国大学生计算机系统能力大赛-编译系统设计赛_华为毕昇杯_-全国总决赛暨颁奖典礼-2024.8.14.pdf" [ref=e513]:
+                  - cell "竞赛手册-2024年全国大学生计算机系统能力大赛-编译系统设计赛_华为毕昇杯_-全国总决赛暨颁奖典礼-2024.8.14.pdf" [ref=e514]:
+                    - link "竞赛手册-2024年全国大学生计算机系统能力大赛-编译系统设计赛_华为毕昇杯_-全国总决赛暨颁奖典礼-2024.8.14.pdf" [ref=e515] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E7%AB%9E%E8%B5%9B%E6%89%8B%E5%86%8C-2024%E5%B9%B4%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B_%E5%8D%8E%E4%B8%BA%E6%AF%95%E6%98%87%E6%9D%AF_-%E5%85%A8%E5%9B%BD%E6%80%BB%E5%86%B3%E8%B5%9B%E6%9A%A8%E9%A2%81%E5%A5%96%E5%85%B8%E7%A4%BC-2024.8.14.pdf
+                      - img [ref=e517]
+                      - text: 竞赛手册-2024年全国大学生计算机系统能力大赛-编译系统设计赛_华为毕昇杯_-全国总决赛暨颁奖典礼-2024.8.14.pdf
+                  - cell [ref=e519]
+                  - cell [ref=e520]
+                - row "编译大赛全国总决赛与答辩的重要事项通知.pdf" [ref=e521]:
+                  - cell "编译大赛全国总决赛与答辩的重要事项通知.pdf" [ref=e522]:
+                    - link "编译大赛全国总决赛与答辩的重要事项通知.pdf" [ref=e523] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E7%BC%96%E8%AF%91%E5%A4%A7%E8%B5%9B%E5%85%A8%E5%9B%BD%E6%80%BB%E5%86%B3%E8%B5%9B%E4%B8%8E%E7%AD%94%E8%BE%A9%E7%9A%84%E9%87%8D%E8%A6%81%E4%BA%8B%E9%A1%B9%E9%80%9A%E7%9F%A5.pdf
+                      - img [ref=e525]
+                      - text: 编译大赛全国总决赛与答辩的重要事项通知.pdf
+                  - cell [ref=e527]
+                  - cell [ref=e528]
+                - row "编译系统设计赛关于决赛作品复测与复核_查重和获奖结果申诉情况的说明.pdf" [ref=e529]:
+                  - cell "编译系统设计赛关于决赛作品复测与复核_查重和获奖结果申诉情况的说明.pdf" [ref=e530]:
+                    - link "编译系统设计赛关于决赛作品复测与复核_查重和获奖结果申诉情况的说明.pdf" [ref=e531] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E5%85%B3%E4%BA%8E%E5%86%B3%E8%B5%9B%E4%BD%9C%E5%93%81%E5%A4%8D%E6%B5%8B%E4%B8%8E%E5%A4%8D%E6%A0%B8_%E6%9F%A5%E9%87%8D%E5%92%8C%E8%8E%B7%E5%A5%96%E7%BB%93%E6%9E%9C%E7%94%B3%E8%AF%89%E6%83%85%E5%86%B5%E7%9A%84%E8%AF%B4%E6%98%8E.pdf
+                      - img [ref=e533]
+                      - text: 编译系统设计赛关于决赛作品复测与复核_查重和获奖结果申诉情况的说明.pdf
+                  - cell [ref=e535]
+                  - cell [ref=e536]
+                - row "编译系统设计赛决赛提醒函.pdf" [ref=e537]:
+                  - cell "编译系统设计赛决赛提醒函.pdf" [ref=e538]:
+                    - link "编译系统设计赛决赛提醒函.pdf" [ref=e539] [cursor=pointer]:
+                      - /url: /csc1/nscscc/compiler2024/-/blob/main/%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E5%86%B3%E8%B5%9B%E6%8F%90%E9%86%92%E5%87%BD.pdf
+                      - img [ref=e541]
+                      - text: 编译系统设计赛决赛提醒函.pdf
+                  - cell [ref=e543]
+                  - cell [ref=e544]
+            - article [ref=e545]:
+              - generic [ref=e547]:
+                - img [ref=e548]
+                - link "README.md" [ref=e550] [cursor=pointer]:
+                  - /url: /csc1/nscscc/compiler2024/-/blob/main/README.md
+                  - strong [ref=e551]: README.md
+              - paragraph [ref=e556]: 2024年全国大学生计算机系统能力大赛-编译系统设计赛

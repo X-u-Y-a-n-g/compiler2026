@@ -1,0 +1,224 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "CourseGrading" [ref=e4] [cursor=pointer]:
+      - /url: /pages/index.jsp
+      - img "CourseGrading" [ref=e6]
+  - generic [ref=e7]:
+    - img [ref=e8]
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - heading "2025年全国大学生计算机系统能力大赛-编译系统设计赛-编译系统实现赛 比赛链接   大赛官网" [level=5] [ref=e11]:
+          - text: 2025年全国大学生计算机系统能力大赛-编译系统设计赛-编译系统实现赛
+          - generic [ref=e12]:
+            - button "比赛链接 " [ref=e13] [cursor=pointer]:
+              - text: 比赛链接
+              - generic [ref=e14]: 
+            - text: 
+          - link " 大赛官网" [ref=e16] [cursor=pointer]:
+            - /url: https://compiler.educg.net
+            - generic [ref=e17]: 
+            - text: 大赛官网
+        - generic [ref=e18]: 参赛队伍 199
+      - generic [ref=e21]:
+        - generic [ref=e22]:
+          - generic [ref=e24]: 
+          - strong [ref=e25]: 2025年编译系统实现赛 - RISCV赛道-初赛
+          - strong [ref=e26]: "-------------------"
+          - text: 05/15 08:00 - 08/05 23:59
+        - generic [ref=e27]:
+          - generic [ref=e29]: 
+          - strong [ref=e30]: 2025年编译系统实现赛初赛 - ARM赛道 - 初赛
+          - strong [ref=e31]: "-------------------"
+          - text: 05/15 08:00 - 08/05 23:59
+        - generic [ref=e32]:
+          - generic [ref=e34]: 
+          - strong [ref=e35]: 2025年编译系统设计赛-编译系统实现赛初赛- RISCV赛道-赛后练习
+          - strong [ref=e36]: "-------------------"
+          - text: 08/06 11:50 - 08/20 19:40
+        - generic [ref=e37]:
+          - generic [ref=e39]: 
+          - strong [ref=e40]: 2025年编译系统设计赛-编译系统实现赛初赛 - ARM赛道-赛后练习
+          - strong [ref=e41]: "-------------------"
+          - text: 08/06 11:50 - 08/20 19:40
+        - generic [ref=e42]:
+          - generic [ref=e44]: 
+          - strong [ref=e45]: 初赛申诉
+          - strong [ref=e46]: "-------------------"
+          - text: 08/10 19:26 - 08/11 20:00
+        - generic [ref=e47]:
+          - generic [ref=e49]: 
+          - strong [ref=e50]: 2025年编译系统设计赛-编译系统实现赛-RISCV现场赛
+          - strong [ref=e51]: "-------------------"
+          - text: 08/19 08:00 - 08/20 18:00
+        - generic [ref=e52]:
+          - generic [ref=e54]: 
+          - strong [ref=e55]: 2025年编译系统设计赛-编译系统实现赛-ARM现场赛
+          - strong [ref=e56]: "-------------------"
+          - text: 08/19 08:00 - 08/20 18:00
+        - generic [ref=e57]:
+          - generic [ref=e59]: 
+          - strong [ref=e60]: 决赛答辩文件提交
+          - strong [ref=e61]: "-------------------"
+          - text: 08/18 09:35 - 08/20 20:00
+        - generic [ref=e62]:
+          - generic [ref=e64]: 
+          - strong [ref=e65]: RISCV决赛评审
+          - strong [ref=e66]: "-------------------"
+          - text: 08/19 08:00 - 08/22 12:59
+        - generic [ref=e67]:
+          - generic [ref=e69]: 
+          - strong [ref=e70]: ARM决赛评审
+          - strong [ref=e71]: "-------------------"
+          - text: 08/19 08:00 - 08/22 12:59
+        - generic [ref=e72]:
+          - generic [ref=e74]: 
+          - strong [ref=e75]: 2025年编译系统实现赛-决赛申诉
+          - strong [ref=e76]: "-------------------"
+          - text: 08/23 15:20 - 08/24 23:59
+        - generic [ref=e77]:
+          - generic [ref=e79]: 
+          - strong [ref=e80]: 获奖队伍信息填报
+          - strong [ref=e81]: "-------------------"
+          - text: 09/04 17:50 - 09/11 17:00
+        - generic [ref=e82]:
+          - generic [ref=e84]: 
+          - strong [ref=e85]: 结束
+          - text: 09/10 18:00
+    - navigation [ref=e86]:
+      - link "介绍" [ref=e87] [cursor=pointer]:
+        - /url: contest.jsp?contestID=y9s9zPhwJPE&my=false&contestCID=0#contestSubAn
+      - link "排行榜" [ref=e88] [cursor=pointer]:
+        - /url: contest_rank.jsp?contestID=y9s9zPhwJPE&my=false&contestCID=0#contestSubAn
+    - generic [ref=e89]:
+      - list [ref=e91]:
+        - listitem [ref=e92]:
+          - link "大赛介绍" [ref=e93] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=503583&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e94]:
+          - link "大赛内容与评分标准" [ref=e95] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=14745312&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e96]:
+          - link "作品提交与GitLab账号" [ref=e97] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=8186665&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e98]:
+          - link "奖项设置" [ref=e99] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=4376379&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e100]:
+          - link "大赛亮点" [ref=e101] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10190610&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e102]:
+          - link "测试样例、运行时库与相关技术文档" [ref=e103] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=641695&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e104]:
+          - link "技术支持与培训" [ref=e105] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10730949&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e106]:
+          - link "知识产权及学术诚信" [ref=e107] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=10660627&my=false&contestCID=0#contestSubAn
+        - listitem [ref=e108]:
+          - link "常见问题" [ref=e109] [cursor=pointer]:
+            - /url: contest.jsp?contestID=y9s9zPhwJPE&tabDocID=15058533&my=false&contestCID=0#contestSubAn
+      - generic [ref=e112]:
+        - text:                          
+        - generic [ref=e113]:
+          - paragraph
+          - heading "§ 语言定义" [level=3] [ref=e114]:
+            - link "§":
+              - /url: "#%E8%AF%AD%E8%A8%80%E5%AE%9A%E4%B9%89"
+            - text: 语言定义
+          - paragraph [ref=e115]:
+            - text: 语言定义与竞赛要求：
+            - link "语言定义" [ref=e116] [cursor=pointer]:
+              - /url: https://gitlab.eduxiji.net/nscscc/compiler2023/-/blob/master/SysY2022%E8%AF%AD%E8%A8%80%E5%AE%9A%E4%B9%89-V1.pdf
+            - text: 、
+            - link "运行时库" [ref=e117] [cursor=pointer]:
+              - /url: https://gitlab.eduxiji.net/nscscc/compiler2023/-/blob/master/SysY2022%E8%BF%90%E8%A1%8C%E6%97%B6%E5%BA%93-V1.pdf
+            - text: 。
+          - heading "§ 详细评分标准" [level=3] [ref=e118]:
+            - link "§":
+              - /url: "#%E8%AF%A6%E7%BB%86%E8%AF%84%E5%88%86%E6%A0%87%E5%87%86"
+            - text: 详细评分标准
+          - paragraph [ref=e119]:
+            - text: 详细评分标准：
+            - link "2025编译系统设计赛技术方案" [ref=e120] [cursor=pointer]:
+              - /url: https://gitlab.eduxiji.net/csc1/nscscc/compiler2025/-/blob/main/2025%E5%B9%B4%E5%85%A8%E5%9B%BD%E5%A4%A7%E5%AD%A6%E7%94%9F%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%B3%BB%E7%BB%9F%E8%83%BD%E5%8A%9B%E5%A4%A7%E8%B5%9B-%E7%BC%96%E8%AF%91%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1%E8%B5%9B%E9%81%93%E6%8A%80%E6%9C%AF%E6%96%B9%E6%A1%88.pdf
+          - heading "§ 编译器目标平台：" [level=3] [ref=e121]:
+            - link "§":
+              - /url: "#%E7%BC%96%E8%AF%91%E5%99%A8%E7%9B%AE%E6%A0%87%E5%B9%B3%E5%8F%B0%EF%BC%9A"
+            - text: 编译器目标平台：
+          - paragraph [ref=e122]:
+            - text: 树莓派4B（ARM Cortex-A72 CPU，2GB LPDDR4 SDRAM 内存）。
+            - link "树莓派相关开发文档.pdf" [ref=e123] [cursor=pointer]:
+              - /url: https://gitlab.eduxiji.net/nscscc/compiler2021/-/blob/master/%E6%A0%91%E8%8E%93%E6%B4%BE%E7%9B%B8%E5%85%B3%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3.pdf
+            - text: 。
+          - heading "§ Git协作与作品提交帮助：" [level=3] [ref=e124]:
+            - link "§":
+              - /url: "#git%E5%8D%8F%E4%BD%9C%E4%B8%8E%E4%BD%9C%E5%93%81%E6%8F%90%E4%BA%A4%E5%B8%AE%E5%8A%A9%EF%BC%9A"
+            - text: Git协作与作品提交帮助：
+          - list [ref=e125]:
+            - listitem [ref=e126]:
+              - paragraph [ref=e127]:
+                - text: 要求使用git进行协作开发，登录之后，点击导航栏的“gitlab”即可直接登录gitlab，
+                - link "代码托管平台使用文档与注册规范" [ref=e128] [cursor=pointer]:
+                  - /url: https://gitlab.eduxiji.net/nscscc/compiler2021/-/blob/master/GitLab%E5%9F%BA%E7%A1%80%E4%BD%BF%E7%94%A8%E6%96%B9%E5%BC%8F.pdf
+            - listitem [ref=e129]:
+              - paragraph [ref=e130]:
+                - link "大赛提交方法" [ref=e131] [cursor=pointer]:
+                  - /url: https://gitlab.eduxiji.net/nscscc/compiler2021/-/blob/master/%E5%A4%A7%E8%B5%9B%E6%8F%90%E4%BA%A4%E8%AF%B4%E6%98%8Ev2.pdf
+          - heading "§ 评测机（x86）Docker镜像" [level=3] [ref=e132]:
+            - link "§":
+              - /url: "#%E8%AF%84%E6%B5%8B%E6%9C%BA%EF%BC%88x86%EF%BC%89docker%E9%95%9C%E5%83%8F"
+            - text: 评测机（x86）Docker镜像
+          - paragraph [ref=e133]:
+            - text: 下载地址：
+            - link "https://pan.educg.net/#/s/V2oiq" [ref=e134] [cursor=pointer]:
+              - /url: https://pan.educg.net/#/s/V2oiq
+        - generic [ref=e135]:
+          - generic [ref=e136]:
+            - text: 目录
+            - generic [ref=e137] [cursor=pointer]: 
+            - text: 
+          - generic [ref=e138]:
+            - generic "语言定义" [ref=e139] [cursor=pointer]
+            - generic "详细评分标准" [ref=e140] [cursor=pointer]
+            - generic "编译器目标平台：" [ref=e141] [cursor=pointer]
+            - generic "Git协作与作品提交帮助：" [ref=e142] [cursor=pointer]
+            - generic "评测机（x86）Docker镜像" [ref=e143] [cursor=pointer]
+  - contentinfo [ref=e144]:
+    - generic [ref=e147]:
+      - generic [ref=e148]:
+        - link [ref=e149] [cursor=pointer]:
+          - /url: https://www.educg.net
+          - img [ref=e150]
+        - heading "计算机专业课程一体化支撑平台" [level=6] [ref=e151]:
+          - strong [ref=e152]: 计算机专业课程一体化支撑平台
+        - paragraph [ref=e153]:
+          - generic [ref=e154]:
+            - text: 北京航空航天大学教学成果转化平台
+            - text: ©
+            - link "阔思格睿网络科技（北京）有限责任公司" [ref=e155] [cursor=pointer]:
+              - /url: https://eduxiji.com
+            - text: "|"
+            - link "郑州云海科技有限公司" [ref=e156] [cursor=pointer]:
+              - /url: https://educg.net.cn
+      - generic [ref=e157]:
+        - paragraph [ref=e158]:
+          - strong [ref=e159]: 快速导航
+        - generic [ref=e160]:
+          - link "忘记密码" [ref=e161] [cursor=pointer]:
+            - /url: https://course.educg.net/findpasswd/findpasswd.jsp
+          - link "系统能力培养-编译系统赛官网" [ref=e162] [cursor=pointer]:
+            - /url: https://compiler.educg.net
+          - link "系统能力培养-操作系统赛官网" [ref=e163] [cursor=pointer]:
+            - /url: https://os.educg.net
+          - link "系统能力培养-数据库系统赛官网" [ref=e164] [cursor=pointer]:
+            - /url: https://db.educg.net
+      - generic [ref=e165]:
+        - paragraph [ref=e166]:
+          - strong [ref=e167]: 公众号与微博
+        - link "" [ref=e168] [cursor=pointer]:
+          - /url: "#CollapseWeixin"
+          - generic [ref=e169]: 
+        - link "" [ref=e172] [cursor=pointer]:
+          - /url: https://weibo.com/educg
+          - generic [ref=e173]: 
