@@ -29,7 +29,7 @@ namespace compiler::driver {
 namespace {
 
 void printUsage(std::ostream& os) {
-  os << "usage: compiler <input> [-o output] [-S] [-O0|-O1] [--target riscv64|armv7]\n";
+  os << "usage: compiler <input> [-o output] [-S] [-O0|-O1] [--target riscv64|aarch64]\n";
   os << "       compiler <input> [--dump-tokens] [--dump-ast] [--dump-ir]\n";
 }
 
