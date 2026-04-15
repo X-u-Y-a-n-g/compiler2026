@@ -390,12 +390,11 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     return;
   }
 
-  if (opcode == "jmp") {
-    os << "  j " << labels.at(instruction.operands[0].text) << '\n';
-    return;
-  }
-
   if (opcode == "br") {
+    if (instruction.operands.size() == 1) {
+      os << "  j " << labels.at(instruction.operands[0].text) << '\n';
+      return;
+    }
     emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
     os << "  bne t0, x0, " << labels.at(instruction.operands[1].text) << '\n';
     os << "  j " << labels.at(instruction.operands[2].text) << '\n';
@@ -452,7 +451,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     return;
   }
 
-  if (opcode == "gep" || opcode == "gep.linear") {
+  if (opcode == "gep" || opcode == "gep.linear" || opcode == "getelementptr" ||
+      opcode == "getelementptr.linear") {
     emitMaterializeAddress(os, function, instruction.operands[0], "t0");
     emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
     emitLi(os, "t2", instruction.operands[2].intValue);
@@ -477,7 +477,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   }
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
-      opcode == "and" || opcode == "or") {
+      opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or") {
     emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
     emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
     if (opcode == "add") {
@@ -486,9 +486,9 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       os << "  sub t2, t0, t1\n";
     } else if (opcode == "mul") {
       os << "  mul t2, t0, t1\n";
-    } else if (opcode == "div") {
+    } else if (opcode == "div" || opcode == "sdiv") {
       os << "  div t2, t0, t1\n";
-    } else if (opcode == "mod") {
+    } else if (opcode == "mod" || opcode == "srem") {
       os << "  rem t2, t0, t1\n";
     } else if (opcode == "and") {
       os << "  and t2, t0, t1\n";
@@ -536,7 +536,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     return;
   }
 
-  if (opcode == "cast" || opcode == "zext") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
     emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
     if (instruction.result.type.isBool()) {
       os << "  andi t1, t0, 1\n";

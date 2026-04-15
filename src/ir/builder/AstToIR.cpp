@@ -270,6 +270,19 @@ class Lowerer {
     return count;
   }
 
+  static int scalarBitWidth(const LoweredType& type) {
+    switch (type.kind) {
+      case TypeKind::Bool:
+        return 1;
+      case TypeKind::Int:
+        return 32;
+      case TypeKind::Long:
+        return 64;
+      default:
+        return 0;
+    }
+  }
+
   static bool typesMatch(const LoweredType& lhs, const LoweredType& rhs) {
     return lhs.kind == rhs.kind && lhs.arrayRank == rhs.arrayRank &&
            lhs.dimensions == rhs.dimensions;
@@ -728,7 +741,7 @@ class Lowerer {
 
   void emitJump(compiler::ir::core::BasicBlock& target) {
     if (currentBlock_ != nullptr && !isCurrentBlockTerminated()) {
-      emit("jmp", {target.name()});
+      emit("br", {target.name()});
     }
     currentBlock_ = nullptr;
   }
@@ -947,8 +960,9 @@ class Lowerer {
     parameters.reserve(functionDecl.parameters.size());
     for (std::size_t i = 0; i < functionDecl.parameters.size(); ++i) {
       const auto& parameter = functionDecl.parameters[i];
-      const std::string name =
-          parameter->name.empty() ? "%arg" + std::to_string(i) : parameter->name;
+      const std::string baseName =
+          parameter->name.empty() ? "arg" + std::to_string(i) : parameter->name;
+      const std::string name = "%" + baseName;
       parameters.push_back({name, resolveVariableType(*parameter).toString()});
     }
 
@@ -970,8 +984,7 @@ class Lowerer {
     for (std::size_t i = 0; i < functionDecl.parameters.size(); ++i) {
       const auto& parameter = functionDecl.parameters[i];
       const LoweredType parameterType = resolveVariableType(*parameter);
-      const std::string argValue = "%arg" + std::to_string(i);
-      emitNamedValue(argValue, "param", {parameterType.toString(), parameter->name});
+      const std::string argValue = function.parameters()[i].name;
 
       VariableInfo info;
       info.type = parameterType;
@@ -1041,7 +1054,12 @@ class Lowerer {
       return {emitValue("sitofp", {value.repr, targetType.toString()}, "cast"), targetType};
     }
     if (value.type.kind != targetType.kind) {
-      return {emitValue("cast", {value.repr, targetType.toString()}, "cast"), targetType};
+      const int sourceWidth = scalarBitWidth(value.type);
+      const int targetWidth = scalarBitWidth(targetType);
+      if (sourceWidth > 0 && targetWidth > 0) {
+        const std::string opcode = sourceWidth < targetWidth ? "sext" : "trunc";
+        return {emitValue(opcode, {value.repr, targetType.toString()}, "cast"), targetType};
+      }
     }
 
     value.type = targetType;
@@ -1060,7 +1078,8 @@ class Lowerer {
       LoweredReference base = lowerLValue(*index->base);
       LoweredValue indexValue = castValue(lowerValue(*index->index),
                                           LoweredType{TypeKind::Int, 0, {}, false});
-      std::string address = emitValue("gep", {base.address, indexValue.repr}, "gep");
+      std::string address =
+          emitValue("getelementptr", {base.address, indexValue.repr}, "gep");
       return {address, base.type.elementType()};
     }
 
@@ -1202,7 +1221,7 @@ class Lowerer {
           } else if (binary->op == TokenKind::Star) {
             opcode = resultType.isFloat() ? "fmul" : "mul";
           } else {
-            opcode = resultType.isFloat() ? "fdiv" : "div";
+            opcode = resultType.isFloat() ? "fdiv" : "sdiv";
           }
           return {emitValue(opcode, {lhs.repr, rhs.repr}), resultType};
         }
@@ -1213,7 +1232,7 @@ class Lowerer {
           lhs = castValue(std::move(lhs), resultType);
           rhs = castValue(std::move(rhs), resultType);
           std::string opcode = binary->op == TokenKind::Percent
-                                   ? "mod"
+                                   ? "srem"
                                    : (binary->op == TokenKind::Ampersand ? "and" : "or");
           return {emitValue(opcode, {lhs.repr, rhs.repr}), resultType};
         }
@@ -1332,7 +1351,7 @@ class Lowerer {
         value = lowerInitializerValue(*slot.expression, elementType);
       }
       const std::string elementAddress =
-          emitValue("gep.linear", {info.storage, std::to_string(i)}, "gep");
+          emitValue("getelementptr.linear", {info.storage, std::to_string(i)}, "gep");
       emit("store", {elementType.toString(), value, elementAddress});
     }
   }
@@ -1481,7 +1500,7 @@ class Lowerer {
       if (forStmt->condition) {
         lowerConditionBranch(*forStmt->condition, bodyBlock, endBlock);
       } else {
-        emit("jmp", {bodyBlock.name()});
+        emit("br", {bodyBlock.name()});
         currentBlock_ = nullptr;
       }
 

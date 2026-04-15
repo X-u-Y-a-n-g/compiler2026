@@ -17,9 +17,7 @@ class Instruction : public Value {
   [[nodiscard]] const std::vector<std::string>& operands() const { return operands_; }
   [[nodiscard]] const std::string& result() const { return name(); }
   [[nodiscard]] bool hasResult() const { return !name().empty(); }
-  [[nodiscard]] bool isTerminator() const {
-    return opcode_ == "ret" || opcode_ == "jmp" || opcode_ == "br";
-  }
+  [[nodiscard]] bool isTerminator() const { return opcode_ == "ret" || opcode_ == "br"; }
 
  private:
   std::string opcode_;

@@ -174,6 +174,13 @@ class FunctionSelector {
   MachineFunction run() {
     machineFunction_.name = function_.name();
     machineFunction_.returnType = scalarValueTypeFromObject(parseObjectType(function_.returnType()));
+    machineFunction_.parameters.reserve(function_.parameters().size());
+    for (const auto& parameter : function_.parameters()) {
+      const ObjectType objectType = parseObjectType(parameter.type);
+      const ValueType valueType = parameterValueType(objectType);
+      bindings_[parameter.name] = ValueBinding{ValueBinding::Kind::Virtual, valueType, -1};
+      machineFunction_.parameters.push_back({parameter.name, valueType, -1});
+    }
 
     for (const auto& block : function_.blocks()) {
       MachineBlock machineBlock;
@@ -298,14 +305,6 @@ class FunctionSelector {
     const std::string& opcode = instruction.opcode();
     const auto& operands = instruction.operands();
 
-    if (opcode == "param") {
-      const ObjectType objectType = parseObjectType(operands[0]);
-      const ValueType valueType = parameterValueType(objectType);
-      bindings_[instruction.result()] = ValueBinding{ValueBinding::Kind::Virtual, valueType, -1};
-      machineFunction_.parameters.push_back({instruction.result(), valueType, -1});
-      return;
-    }
-
     if (opcode == "alloca") {
       const ObjectType objectType = parseObjectType(operands[0]);
       const int objectIndex = addStackObject(instruction.result(), objectType, StackObjectKind::Local);
@@ -330,15 +329,14 @@ class FunctionSelector {
       return;
     }
 
-    if (opcode == "jmp") {
-      emit(block, opcode, {MachineOperand::label(operands[0])});
-      return;
-    }
-
     if (opcode == "br") {
-      emit(block, opcode,
-           {lowerValueOperand(operands[0], ValueType::boolType()), MachineOperand::label(operands[1]),
-            MachineOperand::label(operands[2])});
+      if (operands.size() == 1) {
+        emit(block, opcode, {MachineOperand::label(operands[0])});
+      } else {
+        emit(block, opcode,
+             {lowerValueOperand(operands[0], ValueType::boolType()),
+              MachineOperand::label(operands[1]), MachineOperand::label(operands[2])});
+      }
       return;
     }
 
@@ -379,18 +377,20 @@ class FunctionSelector {
       return;
     }
 
-    if (opcode == "gep" || opcode == "gep.linear") {
+    if (opcode == "gep" || opcode == "gep.linear" || opcode == "getelementptr" ||
+        opcode == "getelementptr.linear") {
       MachineOperand base = lowerValueOperand(operands[0]);
       const ValueType indexType = ValueType::int32Type();
       MachineOperand index = lowerValueOperand(operands[1], indexType);
+      const bool isLinear = opcode == "gep.linear" || opcode == "getelementptr.linear";
 
-      const std::size_t scale = opcode == "gep.linear"
+      const std::size_t scale = isLinear
                                     ? base.type.pointee.flattenedElementType().size(target_)
                                     : (base.type.pointee.isArray()
                                            ? base.type.pointee.elementType().size(target_)
                                            : base.type.pointee.size(target_));
       ObjectType resultPointee = base.type.pointee;
-      if (opcode == "gep.linear") {
+      if (isLinear) {
         resultPointee = base.type.pointee.flattenedElementType();
       } else if (base.type.pointee.isArray()) {
         resultPointee = base.type.pointee.elementType();
@@ -409,8 +409,8 @@ class FunctionSelector {
       return;
     }
 
-    if (opcode == "cast" || opcode == "zext" || opcode == "sitofp" || opcode == "uitofp" ||
-        opcode == "fptosi") {
+    if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
+        opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi") {
       const ObjectType targetObjectType = parseObjectType(operands[1]);
       const ValueType resultType = scalarValueTypeFromObject(targetObjectType);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
@@ -419,7 +419,8 @@ class FunctionSelector {
     }
 
     if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
-        opcode == "mod" || opcode == "and" || opcode == "or") {
+        opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
+        opcode == "or") {
       const ValueType resultType = inferIntegerType(operands);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
            {lowerValueOperand(operands[0], resultType), lowerValueOperand(operands[1], resultType)});

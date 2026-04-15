@@ -87,14 +87,10 @@ std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& mo
                            " has instructions after a terminator");
         }
 
-        if (instruction.opcode() == "jmp") {
-          if (instruction.operands().size() != 1) {
-            errors.push_back("jmp in block '" + block.name() + "' must have exactly one target");
-          }
-        } else if (instruction.opcode() == "br") {
-          if (instruction.operands().size() != 3) {
+        if (instruction.opcode() == "br") {
+          if (instruction.operands().size() != 1 && instruction.operands().size() != 3) {
             errors.push_back("br in block '" + block.name() +
-                             "' must have condition, true target and false target");
+                             "' must have either one target or condition, true target and false target");
           }
         } else if (instruction.opcode() == "ret") {
           const bool isVoid = function.returnType() == "void";
@@ -117,9 +113,9 @@ std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& mo
 
     for (const auto& block : function.blocks()) {
       for (const auto& instruction : block.instructions()) {
-        if (instruction.opcode() == "jmp" && instruction.operands().size() == 1 &&
+        if (instruction.opcode() == "br" && instruction.operands().size() == 1 &&
             blockNames.find(instruction.operands().front()) == blockNames.end()) {
-          errors.push_back("jmp in block '" + block.name() + "' targets unknown block '" +
+          errors.push_back("br in block '" + block.name() + "' targets unknown block '" +
                            instruction.operands().front() + "'");
         }
         if (instruction.opcode() == "br" && instruction.operands().size() == 3) {
