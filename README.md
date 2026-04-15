@@ -140,28 +140,85 @@ bash scripts/dev_impl2026.sh
 /workspace/.docker-build/compiler --help
 ```
 
-### 查看最小样例的 token / AST / IR
+### 说明：当前 IR 不是 LLVM IR
+
+当前 `--dump-ir` 导出的是本项目自己的 **textual pseudo-IR**，用于前端/中端调试；
+它不是 LLVM IR，也不能直接交给 `llc` / `opt` 之类的 LLVM 工具链处理。
+
+### 导出中间产物 IR
+
+将中间 IR 保存到文件：
 
 ```bash
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-tokens --dump-ast --dump-ir
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --dump-ir > /workspace/.docker-build/return_42.ir
 ```
 
-### 生成 RISC-V 汇编
+直接在终端查看 IR：
+
+```bash
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ir
+```
+
+### 导出词法 / AST / IR 调试信息
+
+```bash
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --dump-tokens > /workspace/.docker-build/return_42.tokens.txt
+
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --dump-ast > /workspace/.docker-build/return_42.ast.txt
+
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --dump-ir > /workspace/.docker-build/return_42.ir
+```
+
+如果只想快速看输出，也可以直接打印到终端：
+
+```bash
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-tokens
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ast
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ir
+```
+
+### 生成最终 RISC-V 汇编
 
 ```bash
 /workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy -o /workspace/.docker-build/return_42.s
+```
+
+### 生成最终 AArch64 汇编
+
+```bash
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --target aarch64 \
+  -o /workspace/.docker-build/return_42_arm.s
+```
+
+### 同时导出 IR 和汇编的推荐做法
+
+当前驱动层把 `--dump-ir` 输出到标准输出，把最终汇编通过 `-o` 写入文件。
+因此推荐分两次执行：
+
+```bash
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  --dump-ir > /workspace/.docker-build/return_42.ir
+
+/workspace/.docker-build/compiler \
+  /workspace/tests/e2e/functional/return_42.sysy \
+  -o /workspace/.docker-build/return_42.s
 ```
 
 ### 检查 RISC-V 输出满足较大地址空间约定
 
 ```bash
 riscv64-linux-gnu-gcc -march=rv64gc -mcmodel=medany -c /workspace/.docker-build/return_42.s -o /tmp/return_42.o
-```
-
-### 生成 AArch64 汇编
-
-```bash
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --target aarch64 -o /workspace/.docker-build/return_42_arm.s
 ```
 
 ### 在容器内批量评测近三年官方样例
@@ -176,6 +233,24 @@ python3 /workspace/scripts/eval_nscscc_samples.py
 
 ```bash
 python3 /workspace/scripts/eval_nscscc_samples.py --years 2023 --limit 20
+```
+
+### 仅评测某一年
+
+```bash
+python3 /workspace/scripts/eval_nscscc_samples.py --years 2025
+```
+
+### 只在失败样例上保留中间产物
+
+```bash
+python3 /workspace/scripts/eval_nscscc_samples.py --dump-mode failures
+```
+
+### 调整单个样例超时时间
+
+```bash
+python3 /workspace/scripts/eval_nscscc_samples.py --timeout 120
 ```
 
 ### 评测输出位置

@@ -255,6 +255,21 @@ class Lowerer {
     return type;
   }
 
+  static std::size_t flattenedLeafCount(const LoweredType& type) {
+    if (!type.isArray()) {
+      return 1;
+    }
+
+    std::size_t count = 1;
+    for (const auto& dimension : type.dimensions) {
+      if (!dimension.has_value() || *dimension <= 0) {
+        return 0;
+      }
+      count *= static_cast<std::size_t>(*dimension);
+    }
+    return count;
+  }
+
   static bool typesMatch(const LoweredType& lhs, const LoweredType& rhs) {
     return lhs.kind == rhs.kind && lhs.arrayRank == rhs.arrayRank &&
            lhs.dimensions == rhs.dimensions;
@@ -813,15 +828,9 @@ class Lowerer {
     if (!type.isArray()) {
       return compiler::ir::core::Constant::scalar(type.toString(), zeroLiteral(type));
     }
-
-    std::vector<compiler::ir::core::Constant> elements;
-    if (!type.dimensions.empty() && type.dimensions.front().has_value()) {
-      elements.reserve(static_cast<std::size_t>(*type.dimensions.front()));
-      for (long long i = 0; i < *type.dimensions.front(); ++i) {
-        elements.push_back(buildZeroConstant(type.elementType()));
-      }
-    }
-    return compiler::ir::core::Constant::aggregate(type.toString(), std::move(elements));
+    // Keep zero-initialized arrays compact. The backend already knows the full
+    // object extent from the type string and can materialize trailing zeros.
+    return compiler::ir::core::Constant::aggregate(type.toString(), {});
   }
 
   compiler::ir::core::Constant buildScalarConstant(const Expr* expression,
@@ -846,10 +855,37 @@ class Lowerer {
 
     std::vector<compiler::ir::core::Constant> elements;
     if (!type.dimensions.empty() && type.dimensions.front().has_value()) {
-      elements.reserve(static_cast<std::size_t>(*type.dimensions.front()));
-      for (long long i = 0; i < *type.dimensions.front(); ++i) {
+      const LoweredType elementType = type.elementType();
+      const std::size_t childLeafCount = flattenedLeafCount(elementType);
+      const std::size_t elementCount = static_cast<std::size_t>(*type.dimensions.front());
+      std::size_t lastNonZeroElement = 0;
+
+      if (childLeafCount != 0) {
+        for (std::size_t i = 0; i < elementCount; ++i) {
+          const std::size_t begin = slotIndex + i * childLeafCount;
+          const std::size_t end = std::min(begin + childLeafCount, slots.size());
+          bool hasExplicitInitializer = false;
+          for (std::size_t cursor = begin; cursor < end; ++cursor) {
+            if (slots[cursor].expression != nullptr) {
+              hasExplicitInitializer = true;
+              break;
+            }
+          }
+          if (hasExplicitInitializer) {
+            lastNonZeroElement = i + 1;
+          }
+        }
+      } else {
+        lastNonZeroElement = elementCount;
+      }
+
+      elements.reserve(lastNonZeroElement);
+      for (std::size_t i = 0; i < lastNonZeroElement; ++i) {
         elements.push_back(buildAggregateConstant(slots, type.elementType(), slotIndex));
       }
+
+      const std::size_t skippedLeafCount = (elementCount - lastNonZeroElement) * childLeafCount;
+      slotIndex += skippedLeafCount;
     }
     return compiler::ir::core::Constant::aggregate(type.toString(), std::move(elements));
   }
