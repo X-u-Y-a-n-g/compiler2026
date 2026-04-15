@@ -83,6 +83,7 @@ compiler/
 │   └── support/
 ├── scripts/
 │   ├── build_impl2026.sh
+│   ├── eval_nscscc_samples.py
 │   └── dev_impl2026.sh
 ├── src/
 ├── runtime/
@@ -93,53 +94,106 @@ compiler/
 
 ## 构建与使用
 
-### 进入默认环境
+### 初始化常驻开发容器
 
 ```bash
-bash scripts/dev_impl2026.sh
+docker build --platform linux/amd64 -t compiler-impl2026-env -f docker/impl2026/Dockerfile .
+docker run -dit \
+  --platform linux/amd64 \
+  --name compiler-impl2026-dev \
+  -v "$(pwd):/workspace" \
+  -w /workspace \
+  compiler-impl2026-env:latest \
+  bash
 ```
 
-### 在默认环境中构建
+### 进入已初始化的开发容器
 
 ```bash
-cmake --preset impl2026
-cmake --build --preset impl2026
+docker exec -it compiler-impl2026-dev bash
 ```
 
-### 一步完成容器内构建
+### 在容器内构建
+
+推荐把容器内构建产物放到 `.docker-build/`，便于反复增量编译且不会污染 git：
+
+```bash
+cmake -S /workspace -B /workspace/.docker-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
+cmake --build /workspace/.docker-build
+```
+
+### 一步完成镜像构建并在容器内构建
 
 ```bash
 bash scripts/build_impl2026.sh
 ```
 
+### 临时进入默认环境
+
+```bash
+bash scripts/dev_impl2026.sh
+```
+
 ### 查看帮助
 
 ```bash
-./build/compiler --help
+/workspace/.docker-build/compiler --help
 ```
 
 ### 查看最小样例的 token / AST / IR
 
 ```bash
-./build/compiler tests/e2e/functional/return_42.sysy --dump-tokens --dump-ast --dump-ir
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-tokens --dump-ast --dump-ir
 ```
 
 ### 生成 RISC-V 汇编
 
 ```bash
-./build/compiler tests/e2e/functional/return_42.sysy -o build/return_42.s
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy -o /workspace/.docker-build/return_42.s
 ```
 
 ### 检查 RISC-V 输出满足较大地址空间约定
 
 ```bash
-riscv64-linux-gnu-gcc -march=rv64gc -mcmodel=medany -c build/return_42.s -o /tmp/return_42.o
+riscv64-linux-gnu-gcc -march=rv64gc -mcmodel=medany -c /workspace/.docker-build/return_42.s -o /tmp/return_42.o
 ```
 
 ### 生成 AArch64 汇编
 
 ```bash
-./build/compiler tests/e2e/functional/return_42.sysy --target aarch64 -o build/return_42_arm.s
+/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --target aarch64 -o /workspace/.docker-build/return_42_arm.s
+```
+
+### 在容器内批量评测近三年官方样例
+
+默认评测 `2023/2024/2025` 全部样例，并为每个样例生成 `asm + tokens + ast + ir` 中间产物：
+
+```bash
+python3 /workspace/scripts/eval_nscscc_samples.py
+```
+
+### 在容器内做小规模试跑
+
+```bash
+python3 /workspace/scripts/eval_nscscc_samples.py --years 2023 --limit 20
+```
+
+### 评测输出位置
+
+批量评测结果会落到：
+
+```text
+/workspace/.nscscc-eval/<timestamp>/
+```
+
+其中包含：
+
+1. `summary.txt`：汇总统计
+2. `results.tsv`：每个样例的编译结果
+3. `dumps.tsv`：中间产物索引
+4. `asm/`：汇编输出
+5. `dumps/`：`tokens / ast / ir` 调试产物
+6. `failures/`：失败样例对应的 stderr / stdout
 ```
 
 ## 当前限制

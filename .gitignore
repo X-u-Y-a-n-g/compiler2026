@@ -52,3 +52,14 @@
 
 # macOS Finder metadata
 .DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local docker/container build outputs
+/.docker-build/
+/.nscscc-eval/
+
+# Large downloaded benchmark archives
+/benchmarks.zip
