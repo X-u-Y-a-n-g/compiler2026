@@ -48,15 +48,15 @@
 | 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查，并将归一化后的线性初始化槽位结果回写到 AST 变量声明缓存 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
 | IR 核心结构 | 已定义 `Module / GlobalVariable / Constant / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构；全局变量为结构化 typed global object，函数带返回类型与参数签名，指令结果值不再内嵌在 opcode 字符串中 | `include/compiler/ir/core/*.h` | Done |
 | IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
-| IR Lowering | 已实现 AST 到 LLVM IR 风格中间表示的系统化 lowering，覆盖结构化全局变量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成；当前使用 `br / load / store / call / getelementptr / icmp / fcmp / sext / trunc / sitofp / fptosi` 等 LLVM 风格指令模型 | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Done |
+| IR Lowering | 已实现 AST 到 LLVM IR 风格中间表示的系统化 lowering，覆盖结构化全局变量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成；当前使用 `br / load / store / call / getelementptr / icmp / fcmp / sext / trunc / sitofp / fptosi` 等 LLVM 风格指令模型，并对大规模局部零初始化采用运行时批量清零循环加稀疏显式赋值的 lowering | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Done |
 | IR 打印 | 支持导出 LLVM IR 风格文本中间代码，便于中端与后端联调 | `src/ir/printer/IRPrinter.cpp`、`IRPrinter` | Done |
 | IR 验证 | 已实现模块级 IR verifier，检查全局/函数/基本块命名唯一性、空块、终结指令位置、`br/ret` 形状与跳转目标合法性、返回值与函数签名一致性 | `src/ir/verify/IRVerifier.cpp`、`IRVerifier` | Done |
 | 中端 Pass 管理 | 支持注册与执行 `ModulePass`；`-O1` 当前仅注入占位 pass | `src/midend/pass/PassManager.cpp`、`PassManager` | Partial |
 | 目标机描述 | 当前仅保留 `riscv64` 目标信息与评测环境配置 | `src/backend/target/TargetInfo.cpp`、`TargetInfo` | Done |
 | 指令选择 | 已实现 LLVM IR 风格中间表示到机器层 lowering，覆盖 `alloca / load / store / br / ret / call / getelementptr / getelementptr.linear`、整型/浮点算术、整型/浮点比较、`zext / sext / trunc / sitofp / uitofp / fptosi`，并保留全局对象/参数/返回类型信息 | `src/backend/isel/InstructionSelector.cpp`、`InstructionSelector` | Done |
 | 栈帧生成 | 已实现栈对象布局、对齐、frame size 计算、outgoing argument area 计算，并为序言/尾声生成偏移信息 | `src/backend/frame/FrameLowering.cpp`、`FrameLowering` | Done |
-| 寄存器分配 | 已实现可运行的栈式寄存器分配器，将虚拟值和形参 home slot 分配到栈槽 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Done |
-| 汇编输出 | 已实现 `riscv64` 汇编输出，覆盖全局区、函数序言/尾声、整数/浮点运算、比较、跳转、调用、数组寻址与返回 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Partial |
+| 寄存器分配 | 已实现可运行的栈式寄存器分配器，将虚拟值和形参 home slot 分配到栈槽，并显式区分 `FrameIndex` 地址语义与 `StackSlot` spill/home slot 语义 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Done |
+| 汇编输出 | 已实现 `riscv64` 汇编输出，覆盖全局区、函数序言/尾声、整数/浮点运算、比较、跳转、调用、数组寻址与返回；`getelementptr` 路径已补充常量偏移折叠、`scale==1` 快路径与 2 的幂缩放 `slli` 优化 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Partial |
 | 前端样例回归 | 已纳入基础样例、数组样例、浮点样例、扩展前端覆盖样例、语义分析正反样例与类型检查样例；新增全局数组初始化、数组初始化过量、标量花括号初始化、数组形参数组尾部维度错误样例；已完成本地构建回归 | `tests/e2e/frontend/*.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/functional/return_42.sysy`、`tests/e2e/sema/*.sy`、`tests/e2e/types/*.sy` | Done |
 
 ## 项目结构说明
@@ -283,6 +283,7 @@ riscv64-linux-gnu-gcc -march=rv64gc -mcmodel=medany -c /workspace/.docker-build/
 2. 每个年份内部按 `functional -> hidden/h_functional -> performance -> final/h_performance` 的基础到进阶顺序执行
 3. 默认执行到 `run` 阶段，也就是编译、链接、运行和输出对拍都会做
 4. 默认只在失败样例上额外保留 `tokens / ast / ir` dump
+5. 默认样例阶段为 `全部`；也可以按 `基础` 或 `进阶` 阶段筛选套件
 
 该脚本设计为 **在容器内执行**。进入容器后直接运行：
 
@@ -298,10 +299,51 @@ docker exec compiler-impl2026-dev bash -lc '
 '
 ```
 
+如果你在宿主机当前目录就是仓库根目录，也可以直接这样运行：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py'
+```
+
 ### 仅评测某一年
 
 ```bash
 python3 eval_nscscc_samples.py --years 2025
+```
+
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2025'
+```
+
+### 按基础 / 进阶阶段筛选样例
+
+阶段参数使用 `--stage`，支持：
+
+1. `全部 / all`
+2. `基础 / basic`
+3. `进阶 / advanced`
+
+当前约定如下：
+
+1. 基础阶段：`functional`、`hidden_functional`、`h_functional`
+2. 进阶阶段：`performance`、`h_performance`、`final_performance`、`riscv_performance`、`riscv_final_performance`
+
+示例：
+
+```bash
+python3 eval_nscscc_samples.py --stage 基础
+python3 eval_nscscc_samples.py --years 2025 --stage 进阶
+python3 eval_nscscc_samples.py --years 2023 --stage basic --sample 37_dct.sy
+```
+
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --stage 基础'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2025 --stage 进阶'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2023 --stage basic --sample 37_dct.sy'
 ```
 
 ### 只跑指定样例
@@ -311,6 +353,13 @@ python3 eval_nscscc_samples.py --years 2025
 ```bash
 python3 eval_nscscc_samples.py --sample 92_register_alloc.sy
 python3 eval_nscscc_samples.py --sample functional/95_float.sy
+```
+
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample functional/95_float.sy'
 ```
 
 ### 只评测到某个阶段
@@ -323,16 +372,36 @@ python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after asm
 python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after link
 ```
 
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --stop-after ir'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after asm'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after link'
+```
+
 ### 在容器内做小规模试跑
 
 ```bash
 python3 eval_nscscc_samples.py --years 2023 --limit 20
 ```
 
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2023 --limit 20'
+```
+
 ### 调整单个样例超时时间
 
 ```bash
 python3 eval_nscscc_samples.py --timeout 120 --run-timeout 180
+```
+
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --timeout 120 --run-timeout 180'
 ```
 
 ### 查看附加 dump
@@ -342,6 +411,13 @@ python3 eval_nscscc_samples.py --timeout 120 --run-timeout 180
 ```bash
 python3 eval_nscscc_samples.py --dump-mode none
 python3 eval_nscscc_samples.py --dump-mode all
+```
+
+宿主机直接调用容器：
+
+```bash
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --dump-mode none'
+docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --dump-mode all'
 ```
 
 ### 评测输出位置

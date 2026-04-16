@@ -354,20 +354,20 @@ void rewriteFunctionInstructions(
 
         const int slot = ensureSlot(function, slotMap, operand.text, operand.type, target);
         if (keepUseInFrame(rewritten)) {
-          operand = MachineOperand::frameIndex(slot, operand.type);
+          operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
         const std::string scratch =
             takeScratchRegister(operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
         if (scratch.empty()) {
-          operand = MachineOperand::frameIndex(slot, operand.type);
+          operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
         auto physical = MachineOperand::physicalRegister(scratch, operand.type);
         before.push_back(
-            MachineInstruction::spillReload(physical, MachineOperand::frameIndex(slot, operand.type)));
+            MachineInstruction::spillReload(physical, MachineOperand::stackSlot(slot, operand.type)));
         operand = std::move(physical);
       };
 
@@ -384,21 +384,21 @@ void rewriteFunctionInstructions(
         const int slot = ensureSlot(function, slotMap, operand.text, operand.type, target);
         if (rewritten.kind == MachineInstructionKind::Copy ||
             rewritten.kind == MachineInstructionKind::Phi) {
-          operand = MachineOperand::frameIndex(slot, operand.type);
+          operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
         const std::string scratch =
             takeScratchRegister(operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
         if (scratch.empty()) {
-          operand = MachineOperand::frameIndex(slot, operand.type);
+          operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
         auto physical = MachineOperand::physicalRegister(scratch, operand.type);
         operand = physical;
         after.push_back(
-            MachineInstruction::spillStore(std::move(physical), MachineOperand::frameIndex(slot, operand.type)));
+            MachineInstruction::spillStore(std::move(physical), MachineOperand::stackSlot(slot, operand.type)));
       };
 
       if (rewritten.kind == MachineInstructionKind::Phi) {

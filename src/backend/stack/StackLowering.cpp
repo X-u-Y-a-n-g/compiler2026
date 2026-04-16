@@ -52,7 +52,7 @@ MachineInstruction makeStackRestore(const std::string& reg, const ValueType& typ
 }
 
 MachineInstruction makeParamCopy(int homeSlot, MachineOperand source, const ValueType& type) {
-  return MachineInstruction::frameStore(std::move(source), MachineOperand::frameIndex(homeSlot, type));
+  return MachineInstruction::frameStore(std::move(source), MachineOperand::stackSlot(homeSlot, type));
 }
 
 MachineInstruction makeIncomingStackParamLoad(int homeSlot, const ValueType& type, long long offset) {
@@ -60,7 +60,7 @@ MachineInstruction makeIncomingStackParamLoad(int homeSlot, const ValueType& typ
   instruction.kind = compiler::backend::mir::MachineInstructionKind::StackParameterLoad;
   instruction.opcode = "stack.param.load";
   instruction.hasResult = true;
-  instruction.result = MachineOperand::frameIndex(homeSlot, type);
+  instruction.result = MachineOperand::stackSlot(homeSlot, type);
   instruction.operands.push_back(MachineOperand::immediateInt(offset, ValueType::int64Type()));
   return instruction;
 }

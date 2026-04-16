@@ -28,6 +28,24 @@ constexpr const char* kImmScratch = "t6";
 
 bool fitsSigned12(long long value) { return value >= -2048 && value <= 2047; }
 
+bool isPowerOfTwo(std::int64_t value) {
+  if (value <= 0) {
+    return false;
+  }
+  const auto unsignedValue = static_cast<std::uint64_t>(value);
+  return (unsignedValue & (unsignedValue - 1U)) == 0;
+}
+
+unsigned log2PowerOfTwo(std::int64_t value) {
+  unsigned shift = 0;
+  auto unsignedValue = static_cast<std::uint64_t>(value);
+  while (unsignedValue > 1U) {
+    unsignedValue >>= 1U;
+    ++shift;
+  }
+  return shift;
+}
+
 std::string sanitizeName(const std::string& text) {
   std::string result;
   result.reserve(text.size());
@@ -201,7 +219,7 @@ void emitLoadIntegerOperand(std::ostringstream& os, const MachineFunction& funct
       }
       return;
     case MachineOperandKind::FrameIndex:
-      emitLoadStackSlot(os, function, operand.index, dst, operand.type);
+      emitStackObjectAddress(os, function, operand.index, dst);
       return;
     case MachineOperandKind::StackSlot:
       emitLoadStackSlot(os, function, operand.index, dst, operand.type);
@@ -282,7 +300,8 @@ void emitStoreResult(std::ostringstream& os, const MachineFunction& function,
     return;
   }
   if (result.kind == MachineOperandKind::FrameIndex) {
-    emitStoreStackSlot(os, function, result.index, src, result.type);
+    emitStoreBaseOffset(os, storeMnemonic(result.type), src, "s0",
+                        -stackObject(function, result.index).offset);
   }
 }
 
@@ -469,12 +488,12 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   }
 
   if (opcode == "spill.reload" || opcode == "frame.load") {
-    if (instruction.result.type.isFloat()) {
-      emitLoadStackSlot(os, function, instruction.operands[0].index, instruction.result.text,
-                        instruction.result.type);
+    const auto& frame = instruction.operands[0];
+    if (frame.kind == MachineOperandKind::FrameIndex) {
+      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), instruction.result.text, "s0",
+                         -stackObject(function, frame.index).offset);
     } else {
-      emitLoadStackSlot(os, function, instruction.operands[0].index, instruction.result.text,
-                        instruction.result.type);
+      emitLoadStackSlot(os, function, frame.index, instruction.result.text, instruction.result.type);
     }
     return;
   }
@@ -484,10 +503,20 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const auto& frame = instruction.operands[1];
     if (source.type.isFloat()) {
       emitLoadFloatOperand(os, function, source, "ft0");
-      emitStoreStackSlot(os, function, frame.index, "ft0", source.type);
+      if (frame.kind == MachineOperandKind::FrameIndex) {
+        emitStoreBaseOffset(os, storeMnemonic(source.type), "ft0", "s0",
+                            -stackObject(function, frame.index).offset);
+      } else {
+        emitStoreStackSlot(os, function, frame.index, "ft0", source.type);
+      }
     } else {
       emitLoadIntegerOperand(os, function, source, "t0");
-      emitStoreStackSlot(os, function, frame.index, "t0", source.type);
+      if (frame.kind == MachineOperandKind::FrameIndex) {
+        emitStoreBaseOffset(os, storeMnemonic(source.type), "t0", "s0",
+                            -stackObject(function, frame.index).offset);
+      } else {
+        emitStoreStackSlot(os, function, frame.index, "t0", source.type);
+      }
     }
     return;
   }
@@ -585,8 +614,38 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   if (opcode == "gep" || opcode == "gep.linear" || opcode == "getelementptr" ||
       opcode == "getelementptr.linear") {
     emitMaterializeAddress(os, function, instruction.operands[0], "t0");
-    emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
-    emitLi(os, "t2", instruction.operands[2].intValue);
+    const auto& index = instruction.operands[1];
+    const auto scale = instruction.operands[2].intValue;
+
+    if (index.kind == MachineOperandKind::ImmediateInt) {
+      const long long offset = index.intValue * scale;
+      if (offset == 0) {
+        emitStoreResult(os, function, instruction.result, "t0");
+      } else {
+        emitAddImmediate(os, "t2", "t0", offset, "t1");
+        emitStoreResult(os, function, instruction.result, "t2");
+      }
+      return;
+    }
+
+    emitLoadIntegerOperand(os, function, index, "t1");
+    if (scale == 0) {
+      emitStoreResult(os, function, instruction.result, "t0");
+      return;
+    }
+    if (scale == 1) {
+      os << "  add t2, t0, t1\n";
+      emitStoreResult(os, function, instruction.result, "t2");
+      return;
+    }
+    if (isPowerOfTwo(scale)) {
+      os << "  slli t1, t1, " << log2PowerOfTwo(scale) << '\n';
+      os << "  add t2, t0, t1\n";
+      emitStoreResult(os, function, instruction.result, "t2");
+      return;
+    }
+
+    emitLi(os, "t2", scale);
     os << "  mul t1, t1, t2\n";
     os << "  add t2, t0, t1\n";
     emitStoreResult(os, function, instruction.result, "t2");

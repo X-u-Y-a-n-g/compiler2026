@@ -8,7 +8,6 @@ import re
 import shutil
 import signal
 import subprocess
-import tempfile
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +19,37 @@ DEFAULT_BENCH_ROOT = Path("/workspace/benchmarks/nscscc-implementation")
 DEFAULT_OUTPUT_BASE = Path("/workspace/.nscscc-eval")
 DEFAULT_YEARS = ("2023", "2024", "2025")
 STOP_AFTER_CHOICES = ("ir", "asm", "link", "run")
+SAMPLE_STAGE_ALIASES = {
+    "全部": "all",
+    "all": "all",
+    "基础": "basic",
+    "basic": "basic",
+    "进阶": "advanced",
+    "advanced": "advanced",
+}
+SAMPLE_STAGE_LABELS = {
+    "all": "全部",
+    "basic": "基础",
+    "advanced": "进阶",
+}
+SAMPLE_STAGE_SUITES = {
+    "all": frozenset(
+        {
+            "functional",
+            "hidden_functional",
+            "h_functional",
+            "performance",
+            "h_performance",
+            "final_performance",
+            "riscv_performance",
+            "riscv_final_performance",
+        }
+    ),
+    "basic": frozenset({"functional", "hidden_functional", "h_functional"}),
+    "advanced": frozenset(
+        {"performance", "h_performance", "final_performance", "riscv_performance", "riscv_final_performance"}
+    ),
+}
 SUITE_PRIORITY = {
     "functional": 0,
     "hidden_functional": 1,
@@ -70,6 +100,11 @@ def parse_args() -> argparse.Namespace:
         "--years",
         default=",".join(DEFAULT_YEARS),
         help="年份列表，逗号分隔，默认 2023,2024,2025",
+    )
+    parser.add_argument(
+        "--stage",
+        default="全部",
+        help="样例阶段：全部/all、基础/basic、进阶/advanced。默认 全部。",
     )
     parser.add_argument(
         "--sample",
@@ -263,6 +298,20 @@ def normalize_sample_filters(filters: Iterable[str]) -> list[str]:
     return normalized
 
 
+def normalize_sample_stage(stage: str) -> str:
+    normalized = SAMPLE_STAGE_ALIASES.get(stage.strip().lower())
+    if normalized is None:
+        normalized = SAMPLE_STAGE_ALIASES.get(stage.strip())
+    if normalized is None:
+        choices = "、".join(("全部/all", "基础/basic", "进阶/advanced"))
+        raise SystemExit(f"错误: 不支持的样例阶段 {stage!r}，可选值为 {choices}")
+    return normalized
+
+
+def sample_stage_label(stage: str) -> str:
+    return SAMPLE_STAGE_LABELS.get(stage, stage)
+
+
 def sample_matches(path: Path, filters: list[str]) -> bool:
     if not filters:
         return True
@@ -272,6 +321,11 @@ def sample_matches(path: Path, filters: list[str]) -> bool:
         if pattern in rel or pattern == basename:
             return True
     return False
+
+
+def suite_matches_stage(path: Path, stage: str) -> bool:
+    suite = detect_suite(relative_to_workspace(path))
+    return suite in SAMPLE_STAGE_SUITES[stage]
 
 
 def source_sort_key(year: str, path: Path) -> tuple[object, ...]:
@@ -287,7 +341,9 @@ def source_sort_key(year: str, path: Path) -> tuple[object, ...]:
     )
 
 
-def discover_sources(bench_root: Path, years: Iterable[str], sample_filters: list[str]) -> list[Path]:
+def discover_sources(
+    bench_root: Path, years: Iterable[str], sample_filters: list[str], stage: str
+) -> list[Path]:
     sources: list[Path] = []
     seen: set[Path] = set()
     for year in years:
@@ -301,6 +357,8 @@ def discover_sources(bench_root: Path, years: Iterable[str], sample_filters: lis
         )
         for source in year_sources:
             if source in seen:
+                continue
+            if not suite_matches_stage(source, stage):
                 continue
             if not sample_matches(source, sample_filters):
                 continue
@@ -320,7 +378,7 @@ def make_output_dir(requested: Path | None) -> Path:
 
     latest_link = DEFAULT_OUTPUT_BASE / "latest"
     if latest_link.exists() or latest_link.is_symlink():
-        latest_link.unlink()
+        latest_link.unlink(missing_ok=True)
     latest_link.symlink_to(run_dir.name)
     return run_dir
 
@@ -350,44 +408,39 @@ def resolve_runtime_lib(bench_root: Path, year: str, target: str, override: Path
     raise SystemExit(f"错误: 找不到 {target} 对应的 runtime 库 {runtime_name}")
 
 
-def normalize_text(text: str) -> str:
+def normalize_text(text: str, *, strip_trailing_blank_lines: bool) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = [line.rstrip(" \t") for line in text.split("\n")]
-    while lines and lines[-1] == "":
-        lines.pop()
+    if strip_trailing_blank_lines:
+        while lines and lines[-1] == "":
+            lines.pop()
     if not lines:
         return ""
-    return "\n".join(lines) + "\n"
+    joined = "\n".join(lines)
+    if text.endswith("\n") and not joined.endswith("\n"):
+        joined += "\n"
+    return joined
 
 
 def build_actual_output(stdout: bytes, exit_code: int) -> str:
-    stdout_text = normalize_text(stdout.decode("utf-8", errors="ignore"))
-    lines: list[str] = []
-    if stdout_text:
-        lines.extend(stdout_text.rstrip("\n").split("\n"))
-    lines.append(str(exit_code))
-    return "\n".join(lines) + "\n"
+    stdout_text = normalize_text(
+        stdout.decode("utf-8", errors="ignore"),
+        strip_trailing_blank_lines=False,
+    )
+    if not stdout_text:
+        return f"{exit_code}\n"
+    if stdout_text.endswith("\n"):
+        return f"{stdout_text}{exit_code}\n"
+    return f"{stdout_text}\n{exit_code}\n"
 
 
 def compare_output(expected_path: Path, stdout: bytes, exit_code: int) -> tuple[str, str, str]:
-    expected_text = normalize_text(expected_path.read_text(encoding="utf-8", errors="ignore"))
+    expected_text = normalize_text(
+        expected_path.read_text(encoding="utf-8", errors="ignore"),
+        strip_trailing_blank_lines=False,
+    )
     actual_text = build_actual_output(stdout, exit_code)
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
-        tmp.write(actual_text)
-        tmp_path = Path(tmp.name)
-
-    try:
-        diff_result = subprocess.run(
-            ["diff", "--strip-trailing-cr", "-b", "-q", str(tmp_path), str(expected_path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        status = "MATCH" if diff_result.returncode == 0 else "MISMATCH"
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
+    status = "MATCH" if expected_text == actual_text else "MISMATCH"
     return status, expected_text, actual_text
 
 
@@ -415,6 +468,7 @@ def main() -> int:
     if not years:
         raise SystemExit("错误: 至少需要一个年份。")
 
+    sample_stage = normalize_sample_stage(args.stage)
     sample_filters = normalize_sample_filters(args.sample)
     verify_output = args.stop_after == "run" and args.verify_output
     need_link = STAGE_PRIORITY[args.stop_after] >= STAGE_PRIORITY["link"]
@@ -444,7 +498,7 @@ def main() -> int:
     dumps_path = output_dir / "dumps.tsv"
     summary_path = output_dir / "summary.txt"
 
-    sources = discover_sources(bench_root, years, sample_filters)
+    sources = discover_sources(bench_root, years, sample_filters, sample_stage)
     if not sources:
         raise SystemExit("错误: 没有找到任何样例文件。")
     if args.limit > 0:
@@ -687,6 +741,7 @@ def main() -> int:
         f"编译器: {compiler}",
         f"目标平台: {args.target}",
         f"年份: {','.join(years)}",
+        f"样例阶段: {sample_stage_label(sample_stage)}",
         f"样例过滤: {', '.join(sample_filters) if sample_filters else '全部'}",
         f"终止阶段: {args.stop_after}",
         f"编译/链接超时(秒): {args.timeout}",

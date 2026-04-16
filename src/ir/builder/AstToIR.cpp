@@ -248,6 +248,8 @@ class Lowerer {
     return type.isFloat() ? "0.0" : "0";
   }
 
+  static constexpr std::size_t kBulkZeroInitThreshold = 64;
+
   static LoweredType flattenedElementType(LoweredType type) {
     while (type.isArray()) {
       type = type.elementType();
@@ -592,6 +594,15 @@ class Lowerer {
       return std::nullopt;
     }
     return castConstant(*value, targetType);
+  }
+
+  bool isZeroConstant(const Expr& expression, const LoweredType& targetType) const {
+    auto value = evaluateConstantValue(expression);
+    if (!value.has_value()) {
+      return false;
+    }
+    const ConstantValue casted = castConstant(*value, targetType);
+    return casted.isFloat() ? casted.floating == 0.0 : casted.integer == 0;
   }
 
   std::string renderConstantOrExpression(const Expr& expression, const LoweredType& targetType) const {
@@ -1359,6 +1370,34 @@ class Lowerer {
       return castValue(lowerValue(expression), targetType).repr;
     };
 
+    auto emitBulkZeroInitializer = [&](const LoweredType& elementType, std::size_t elementCount) {
+      const LoweredType counterType{TypeKind::Int, 0, {}, false};
+      const std::string indexSlot = emitValue("alloca", {counterType.toString()}, "zero.idx");
+      emit("store", {counterType.toString(), "0", indexSlot});
+
+      auto& condBlock = createBlock("init.zero.cond");
+      auto& bodyBlock = createBlock("init.zero.body");
+      auto& endBlock = createBlock("init.zero.end");
+
+      emitJump(condBlock);
+
+      currentBlock_ = &condBlock;
+      const std::string indexValue = emitValue("load", {counterType.toString(), indexSlot}, "zero.idx");
+      const std::string limitValue = std::to_string(elementCount);
+      const std::string compareValue = emitValue("icmp.slt", {indexValue, limitValue}, "zero.cmp");
+      emit("br", {compareValue, bodyBlock.name(), endBlock.name()});
+
+      currentBlock_ = &bodyBlock;
+      const std::string elementAddress =
+          emitValue("getelementptr.linear", {info.storage, indexValue}, "gep");
+      emit("store", {elementType.toString(), zeroLiteral(elementType), elementAddress});
+      const std::string nextValue = emitValue("add", {indexValue, "1"}, "zero.next");
+      emit("store", {counterType.toString(), nextValue, indexSlot});
+      emitJump(condBlock);
+
+      currentBlock_ = &endBlock;
+    };
+
     if (!info.type.isArray()) {
       const auto& slot = variable.normalizedInitializer.slots.front();
       const std::string value = slot.isImplicitZero()
@@ -1369,8 +1408,27 @@ class Lowerer {
     }
 
     const LoweredType elementType = flattenedElementType(info.type);
-    for (std::size_t i = 0; i < variable.normalizedInitializer.slots.size(); ++i) {
-      const auto& slot = variable.normalizedInitializer.slots[i];
+    const auto& slots = variable.normalizedInitializer.slots;
+    std::size_t zeroSlotCount = 0;
+    for (const auto& slot : slots) {
+      if (slot.isImplicitZero() || isZeroConstant(*slot.expression, elementType)) {
+        ++zeroSlotCount;
+      }
+    }
+
+    const bool useBulkZeroInitializer =
+        slots.size() >= kBulkZeroInitThreshold && zeroSlotCount > 0;
+    if (useBulkZeroInitializer) {
+      emitBulkZeroInitializer(elementType, slots.size());
+    }
+
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      const auto& slot = slots[i];
+      if (useBulkZeroInitializer &&
+          (slot.isImplicitZero() || isZeroConstant(*slot.expression, elementType))) {
+        continue;
+      }
+
       std::string value = zeroLiteral(elementType);
       if (!slot.isImplicitZero()) {
         value = lowerInitializerValue(*slot.expression, elementType);
