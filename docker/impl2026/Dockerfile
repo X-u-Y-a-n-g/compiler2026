@@ -14,14 +14,19 @@ RUN set -eux; \
             file \
             gcc \
             g++ \
+            libc6-dev-arm64-cross \
+            libc6-dev-riscv64-cross \
             gcc-aarch64-linux-gnu \
             gcc-riscv64-linux-gnu \
             gdb \
             git \
             libc6-dev \
+            linux-libc-dev-arm64-cross \
+            linux-libc-dev-riscv64-cross \
             ninja-build \
             openjdk-21-jdk \
             python3 \
+            python-is-python3 \
             qemu-user \
             qemu-user-static \
             rustc && \

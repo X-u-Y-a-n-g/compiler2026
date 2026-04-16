@@ -59,6 +59,7 @@ __pycache__/
 
 # Local docker/container build outputs
 /.docker-build/
+/.local-build/
 /.nscscc-eval/
 
 # Large downloaded benchmark archives

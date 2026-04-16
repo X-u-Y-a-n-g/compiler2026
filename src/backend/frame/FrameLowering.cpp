@@ -7,14 +7,6 @@ namespace compiler::backend::frame {
 
 namespace {
 
-std::size_t alignTo(std::size_t value, std::size_t alignment) {
-  if (alignment == 0) {
-    return value;
-  }
-  const std::size_t remainder = value % alignment;
-  return remainder == 0 ? value : (value + alignment - remainder);
-}
-
 std::size_t requiredOutgoingArgSize(const compiler::backend::mir::MachineFunction& function,
                                     const compiler::backend::target::TargetInfo& target) {
   std::size_t maxBytes = 0;
@@ -31,13 +23,13 @@ std::size_t requiredOutgoingArgSize(const compiler::backend::mir::MachineFunctio
       for (std::size_t i = 1; i < instruction.operands.size(); ++i) {
         const auto& operand = instruction.operands[i];
         if (operand.type.isFloat()) {
-          if (floatRegs < 8) {
+          if (floatRegs < target.floatArgRegisters().size()) {
             ++floatRegs;
           } else {
             stackBytes += std::max<std::size_t>(8, target.pointerSize());
           }
         } else {
-          if (integerRegs < 8) {
+          if (integerRegs < target.integerArgRegisters().size()) {
             ++integerRegs;
           } else {
             stackBytes += std::max<std::size_t>(8, target.pointerSize());
@@ -54,25 +46,8 @@ std::size_t requiredOutgoingArgSize(const compiler::backend::mir::MachineFunctio
 }  // namespace
 
 void FrameLowering::lower(compiler::backend::mir::MachineModule& module) const {
-  const std::size_t saveArea = module.target.pointerSize() * 2;
-
   for (auto& function : module.functions) {
-    function.savedRaOffset = static_cast<int>(module.target.pointerSize());
-    function.savedFpOffset = static_cast<int>(module.target.pointerSize() * 2);
     function.outgoingArgSize = requiredOutgoingArgSize(function, module.target);
-
-    std::size_t cursor = saveArea;
-    for (auto& object : function.stackObjects) {
-      cursor = alignTo(cursor, object.alignment);
-      cursor += object.size;
-      object.offset = static_cast<int>(cursor);
-    }
-
-    cursor += function.outgoingArgSize;
-    function.frameSize = alignTo(cursor, module.target.stackAlignment());
-    if (function.frameSize == 0) {
-      function.frameSize = module.target.stackAlignment();
-    }
   }
 }
 

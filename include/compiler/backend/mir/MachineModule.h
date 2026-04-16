@@ -218,6 +218,8 @@ enum class MachineOperandKind {
   ImmediateInt,
   ImmediateFloat,
   VirtualRegister,
+  PhysicalRegister,
+  FrameIndex,
   StackSlot,
   StackObject,
   GlobalAddress,
@@ -254,6 +256,22 @@ struct MachineOperand {
     operand.kind = MachineOperandKind::VirtualRegister;
     operand.type = std::move(valueType);
     operand.text = std::move(name);
+    return operand;
+  }
+
+  static MachineOperand physicalRegister(std::string name, ValueType valueType) {
+    MachineOperand operand;
+    operand.kind = MachineOperandKind::PhysicalRegister;
+    operand.type = std::move(valueType);
+    operand.text = std::move(name);
+    return operand;
+  }
+
+  static MachineOperand frameIndex(int objectIndex, ValueType valueType) {
+    MachineOperand operand;
+    operand.kind = MachineOperandKind::FrameIndex;
+    operand.type = std::move(valueType);
+    operand.index = objectIndex;
     return operand;
   }
 
@@ -296,13 +314,114 @@ struct MachineOperand {
   }
 
   [[nodiscard]] bool isValid() const { return kind != MachineOperandKind::None; }
+  [[nodiscard]] bool isRegister() const {
+    return kind == MachineOperandKind::VirtualRegister ||
+           kind == MachineOperandKind::PhysicalRegister;
+  }
+};
+
+enum class MachineInstructionKind {
+  Target,
+  Copy,
+  Phi,
+  SpillReload,
+  SpillStore,
+  FrameLoad,
+  FrameStore,
+  StackAdjust,
+  StackSetFramePointer,
+  StackSave,
+  StackRestore,
+  StackParameterLoad,
+};
+
+struct MachinePhiIncoming {
+  std::string block;
+  MachineOperand value;
 };
 
 struct MachineInstruction {
+  MachineInstructionKind kind = MachineInstructionKind::Target;
   std::string opcode;
   bool hasResult = false;
   MachineOperand result;
   std::vector<MachineOperand> operands;
+  std::vector<MachinePhiIncoming> phiInputs;
+
+  static MachineInstruction target(std::string opcodeName, std::vector<MachineOperand> operands = {}) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::Target;
+    instruction.opcode = std::move(opcodeName);
+    instruction.operands = std::move(operands);
+    return instruction;
+  }
+
+  static MachineInstruction target(std::string opcodeName, MachineOperand resultOperand,
+                                   std::vector<MachineOperand> operands = {}) {
+    MachineInstruction instruction = target(std::move(opcodeName), std::move(operands));
+    instruction.hasResult = true;
+    instruction.result = std::move(resultOperand);
+    return instruction;
+  }
+
+  static MachineInstruction copy(MachineOperand resultOperand, MachineOperand source) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::Copy;
+    instruction.opcode = "copy";
+    instruction.hasResult = true;
+    instruction.result = std::move(resultOperand);
+    instruction.operands.push_back(std::move(source));
+    return instruction;
+  }
+
+  static MachineInstruction phi(MachineOperand resultOperand,
+                                std::vector<MachinePhiIncoming> incoming) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::Phi;
+    instruction.opcode = "phi";
+    instruction.hasResult = true;
+    instruction.result = std::move(resultOperand);
+    instruction.phiInputs = std::move(incoming);
+    return instruction;
+  }
+
+  static MachineInstruction spillReload(MachineOperand resultOperand, MachineOperand frameOperand) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::SpillReload;
+    instruction.opcode = "spill.reload";
+    instruction.hasResult = true;
+    instruction.result = std::move(resultOperand);
+    instruction.operands.push_back(std::move(frameOperand));
+    return instruction;
+  }
+
+  static MachineInstruction spillStore(MachineOperand source, MachineOperand frameOperand) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::SpillStore;
+    instruction.opcode = "spill.store";
+    instruction.operands.push_back(std::move(source));
+    instruction.operands.push_back(std::move(frameOperand));
+    return instruction;
+  }
+
+  static MachineInstruction frameLoad(MachineOperand resultOperand, MachineOperand frameOperand) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::FrameLoad;
+    instruction.opcode = "frame.load";
+    instruction.hasResult = true;
+    instruction.result = std::move(resultOperand);
+    instruction.operands.push_back(std::move(frameOperand));
+    return instruction;
+  }
+
+  static MachineInstruction frameStore(MachineOperand source, MachineOperand frameOperand) {
+    MachineInstruction instruction;
+    instruction.kind = MachineInstructionKind::FrameStore;
+    instruction.opcode = "frame.store";
+    instruction.operands.push_back(std::move(source));
+    instruction.operands.push_back(std::move(frameOperand));
+    return instruction;
+  }
 };
 
 struct MachineBlock {
@@ -324,6 +443,8 @@ enum class StackObjectKind {
 struct StackObject {
   StackObjectKind kind = StackObjectKind::Local;
   std::string name;
+  ObjectType objectType;
+  bool entryAllocated = false;
   std::size_t size = 0;
   std::size_t alignment = 1;
   int offset = 0;
@@ -334,7 +455,13 @@ struct MachineFunction {
   ValueType returnType;
   std::vector<MachineParameter> parameters;
   std::vector<MachineBlock> blocks;
+  std::vector<MachineInstruction> prologueInstructions;
+  std::vector<MachineInstruction> epilogueInstructions;
   std::vector<StackObject> stackObjects;
+  std::vector<std::string> usedIntegerCalleeSavedRegisters;
+  std::vector<std::string> usedFloatCalleeSavedRegisters;
+  std::vector<int> savedIntegerRegisterOffsets;
+  std::vector<int> savedFloatRegisterOffsets;
   std::size_t frameSize = 0;
   std::size_t outgoingArgSize = 0;
   int savedRaOffset = 0;

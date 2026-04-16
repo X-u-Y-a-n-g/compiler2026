@@ -5,10 +5,12 @@
 #include <string>
 #include <utility>
 
-#include "compiler/backend/asm/AsmPrinter.h"
 #include "compiler/backend/frame/FrameLowering.h"
 #include "compiler/backend/isel/InstructionSelector.h"
+#include "compiler/backend/opt/StackObjectPromotion.h"
 #include "compiler/backend/regalloc/RegisterAllocator.h"
+#include "compiler/backend/stack/StackLowering.h"
+#include "compiler/backend/target/TargetBackend.h"
 #include "compiler/backend/target/TargetInfo.h"
 #include "compiler/driver/CompilerInvocation.h"
 #include "compiler/driver/Pipeline.h"
@@ -29,7 +31,7 @@ namespace compiler::driver {
 namespace {
 
 void printUsage(std::ostream& os) {
-  os << "usage: compiler <input> [-o output] [-S] [-O0|-O1] [--target riscv64|aarch64]\n";
+  os << "usage: compiler <input> [-o output] [-S] [-O0|-O1] [--target riscv64]\n";
   os << "       compiler <input> [--dump-tokens] [--dump-ast] [--dump-ir]\n";
 }
 
@@ -174,10 +176,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   }
 
   const auto target = compiler::backend::target::TargetInfo::fromName(invocation.options().target);
-  auto machineModule = compiler::backend::isel::InstructionSelector{}.select(module, target);
-  compiler::backend::regalloc::RegisterAllocator{}.allocate(machineModule);
-  compiler::backend::frame::FrameLowering{}.lower(machineModule);
-  const auto assembly = compiler::backend::asmcode::AsmPrinter{}.print(machineModule);
+  const auto assembly = compiler::backend::target::backendFor(target).generateAssembly(module);
 
   if (invocation.options().outputPath.empty()) {
     std::cout << assembly;

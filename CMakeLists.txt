@@ -18,10 +18,17 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/pass/PassManager.cpp
+  src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
+  src/backend/target/TargetBackend.cpp
+  src/backend/target/TargetLoweringSupport.cpp
+  src/backend/target/Riscv64Target.cpp
   src/backend/isel/InstructionSelector.cpp
+  src/backend/opt/PhiElimination.cpp
+  src/backend/opt/StackObjectPromotion.cpp
   src/backend/regalloc/RegisterAllocator.cpp
   src/backend/frame/FrameLowering.cpp
+  src/backend/stack/StackLowering.cpp
   src/backend/asm/AsmPrinter.cpp
 )
 

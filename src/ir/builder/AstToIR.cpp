@@ -350,27 +350,33 @@ class Lowerer {
     return value.isFloat() ? value.floating != 0.0 : value.integer != 0;
   }
 
+  static double normalizeFloat32(double value) {
+    return static_cast<double>(static_cast<float>(value));
+  }
+
   ConstantValue castConstant(ConstantValue value, const LoweredType& targetType) const {
     if (targetType.kind == TypeKind::Unknown || targetType.isArray() || targetType.isVoid()) {
       return value;
     }
 
+    const bool sourceIsFloat = value.isFloat();
     value.type = targetType;
     if (targetType.isFloat()) {
-      value.floating = value.isFloat() ? value.floating : static_cast<double>(value.integer);
+      value.floating =
+          normalizeFloat32(sourceIsFloat ? value.floating : static_cast<double>(value.integer));
       return value;
     }
 
     if (targetType.isBool()) {
-      const long long integer = value.isFloat() ? (value.floating != 0.0 ? 1 : 0)
-                                                : (value.integer != 0 ? 1 : 0);
+      const long long integer = sourceIsFloat ? (value.floating != 0.0 ? 1 : 0)
+                                              : (value.integer != 0 ? 1 : 0);
       value.integer = integer;
       value.floating = static_cast<double>(integer);
       return value;
     }
 
     long long integer = 0;
-    if (value.isFloat()) {
+    if (sourceIsFloat) {
       integer = static_cast<long long>(value.floating);
     } else {
       integer = value.integer;
@@ -398,7 +404,8 @@ class Lowerer {
       if (!parseFloatLiteral(floating->value, value)) {
         return std::nullopt;
       }
-      return ConstantValue{LoweredType{TypeKind::Float, 0, {}, false}, 0, value};
+      const double normalized = normalizeFloat32(value);
+      return ConstantValue{LoweredType{TypeKind::Float, 0, {}, false}, 0, normalized};
     }
 
     if (const auto* identifier = dynamic_cast<const IdentifierExpr*>(&expression)) {
@@ -421,7 +428,7 @@ class Lowerer {
         case TokenKind::Minus: {
           auto value = castConstant(*operand, promotedArithmeticType(operand->type));
           if (value.isFloat()) {
-            value.floating = -value.floating;
+            value.floating = normalizeFloat32(-value.floating);
           } else {
             value.integer = -value.integer;
             value.floating = static_cast<double>(value.integer);
@@ -469,6 +476,7 @@ class Lowerer {
             } else {
               result = lhs->floating / rhs->floating;
             }
+            result = normalizeFloat32(result);
             return ConstantValue{resultType, static_cast<long long>(result), result};
           }
           if (binary->op == TokenKind::Slash && rhs->integer == 0) {
@@ -770,6 +778,10 @@ class Lowerer {
                                     {scalar(TypeKind::Int), array(TypeKind::Float)}});
     functions_.emplace("starttime", FunctionInfo{scalar(TypeKind::Void), {}});
     functions_.emplace("stoptime", FunctionInfo{scalar(TypeKind::Void), {}});
+    functions_.emplace("_sysy_starttime",
+                       FunctionInfo{scalar(TypeKind::Void), {scalar(TypeKind::Int)}});
+    functions_.emplace("_sysy_stoptime",
+                       FunctionInfo{scalar(TypeKind::Void), {scalar(TypeKind::Int)}});
   }
 
   void collectFunctionSignatures() {
@@ -1284,13 +1296,26 @@ class Lowerer {
         calleeName = calleeIdentifier->name;
       }
 
+      std::string emittedCalleeName = calleeName;
+
       FunctionInfo signature;
       if (const auto found = functions_.find(calleeName); found != functions_.end()) {
         signature = found->second;
       }
 
+      if (calleeName == "starttime" || calleeName == "stoptime") {
+        emittedCalleeName = calleeName == "starttime" ? "_sysy_starttime" : "_sysy_stoptime";
+        signature = FunctionInfo{LoweredType{TypeKind::Void, 0, {}, false},
+                                 {LoweredType{TypeKind::Int, 0, {}, false}}};
+      }
+
       std::vector<std::string> operands;
-      operands.push_back("@" + calleeName);
+      operands.push_back("@" + emittedCalleeName);
+
+      if (calleeName == "starttime" || calleeName == "stoptime") {
+        operands.push_back(std::to_string(call->location().line));
+      }
+
       for (std::size_t i = 0; i < call->arguments.size(); ++i) {
         LoweredValue argument = lowerValue(*call->arguments[i]);
         if (i < signature.parameters.size() && !signature.parameters[i].isArray()) {

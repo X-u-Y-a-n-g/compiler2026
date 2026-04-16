@@ -333,6 +333,8 @@ std::unordered_map<std::string, FunctionSignature> collectFunctionSignatures(
              {ValueType::int32Type(), ValueType::pointerTo(parseObjectType("float[]"))});
   addBuiltin("starttime", ValueType::voidType(), {});
   addBuiltin("stoptime", ValueType::voidType(), {});
+  addBuiltin("_sysy_starttime", ValueType::voidType(), {ValueType::int32Type()});
+  addBuiltin("_sysy_stoptime", ValueType::voidType(), {ValueType::int32Type()});
 
   return signatures;
 }

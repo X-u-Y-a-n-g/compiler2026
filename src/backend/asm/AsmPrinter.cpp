@@ -166,6 +166,14 @@ void emitStoreStackSlot(std::ostringstream& os, const MachineFunction& function,
 void emitMaterializeAddress(std::ostringstream& os, const MachineFunction& function,
                             const MachineOperand& operand, const std::string& dst) {
   switch (operand.kind) {
+    case MachineOperandKind::PhysicalRegister:
+      if (dst != operand.text) {
+        os << "  mv " << dst << ", " << operand.text << '\n';
+      }
+      return;
+    case MachineOperandKind::FrameIndex:
+      emitStackObjectAddress(os, function, operand.index, dst);
+      return;
     case MachineOperandKind::StackObject:
       emitStackObjectAddress(os, function, operand.index, dst);
       return;
@@ -187,6 +195,14 @@ void emitLoadIntegerOperand(std::ostringstream& os, const MachineFunction& funct
     case MachineOperandKind::ImmediateInt:
       emitLi(os, dst, operand.intValue);
       return;
+    case MachineOperandKind::PhysicalRegister:
+      if (dst != operand.text) {
+        os << "  mv " << dst << ", " << operand.text << '\n';
+      }
+      return;
+    case MachineOperandKind::FrameIndex:
+      emitLoadStackSlot(os, function, operand.index, dst, operand.type);
+      return;
     case MachineOperandKind::StackSlot:
       emitLoadStackSlot(os, function, operand.index, dst, operand.type);
       return;
@@ -206,6 +222,14 @@ void emitLoadFloatOperand(std::ostringstream& os, const MachineFunction& functio
     case MachineOperandKind::ImmediateFloat:
       emitLi(os, kImmScratch, static_cast<long long>(floatBits(operand.floatValue)));
       os << "  fmv.w.x " << dst << ", " << kImmScratch << '\n';
+      return;
+    case MachineOperandKind::PhysicalRegister:
+      if (dst != operand.text) {
+        os << "  fmv.s " << dst << ", " << operand.text << '\n';
+      }
+      return;
+    case MachineOperandKind::FrameIndex:
+      emitLoadStackSlot(os, function, operand.index, dst, operand.type);
       return;
     case MachineOperandKind::StackSlot:
       emitLoadStackSlot(os, function, operand.index, dst, operand.type);
@@ -233,10 +257,53 @@ void emitStoreToAddress(std::ostringstream& os, const MachineFunction& function,
 
 void emitStoreResult(std::ostringstream& os, const MachineFunction& function,
                      const MachineOperand& result, const std::string& src) {
-  if (result.kind != MachineOperandKind::StackSlot) {
+  if (result.kind == MachineOperandKind::PhysicalRegister) {
+    if (result.type.isFloat()) {
+      if (result.text != src) {
+        os << "  fmv.s " << result.text << ", " << src << '\n';
+      }
+      return;
+    }
+    if (result.type.isBool()) {
+      os << "  andi " << result.text << ", " << src << ", 1\n";
+      return;
+    }
+    if (result.type.isInt32()) {
+      os << "  sext.w " << result.text << ", " << src << '\n';
+      return;
+    }
+    if (result.text != src) {
+      os << "  mv " << result.text << ", " << src << '\n';
+    }
     return;
   }
-  emitStoreStackSlot(os, function, result.index, src, result.type);
+  if (result.kind == MachineOperandKind::StackSlot) {
+    emitStoreStackSlot(os, function, result.index, src, result.type);
+    return;
+  }
+  if (result.kind == MachineOperandKind::FrameIndex) {
+    emitStoreStackSlot(os, function, result.index, src, result.type);
+  }
+}
+
+void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function,
+                         const MachineInstruction& instruction) {
+  if (!instruction.hasResult || instruction.operands.size() != 1) {
+    return;
+  }
+
+  const auto& source = instruction.operands[0];
+  const auto& result = instruction.result;
+  if (result.type.isFloat()) {
+    emitLoadFloatOperand(os, function, source, "ft0");
+    if (result.kind == MachineOperandKind::StackSlot) {
+      emitStoreStackSlot(os, function, result.index, "ft0", result.type);
+    }
+    return;
+  }
+
+  emitLoadIntegerOperand(os, function, source, "t0");
+  emitStoreResult(os, function, result, "t0");
 }
 
 void emitIntegerCompare(std::ostringstream& os, const MachineInstruction& instruction) {
@@ -366,6 +433,65 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
                      const std::unordered_map<std::string, std::string>& labels) {
   const auto& opcode = instruction.opcode;
 
+  if (opcode == "stack.adjust") {
+    emitAdjustSp(os, instruction.operands[0].intValue);
+    return;
+  }
+
+  if (opcode == "stack.set_fp") {
+    emitAddImmediate(os, "s0", "sp", instruction.operands[0].intValue, kImmScratch);
+    return;
+  }
+
+  if (opcode == "stack.save") {
+    const auto& reg = instruction.operands[0];
+    const auto offset = instruction.operands[1].intValue;
+    emitStoreBaseOffset(os, storeMnemonic(reg.type), reg.text, "sp", offset);
+    return;
+  }
+
+  if (opcode == "stack.restore") {
+    const auto offset = instruction.operands[0].intValue;
+    emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), instruction.result.text, "s0", offset);
+    return;
+  }
+
+  if (opcode == "stack.param.load") {
+    const auto offset = instruction.operands[0].intValue;
+    if (instruction.result.type.isFloat()) {
+      emitLoadBaseOffset(os, "flw", "ft0", "s0", offset);
+      emitStoreResult(os, function, instruction.result, "ft0");
+    } else {
+      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), "t0", "s0", offset);
+      emitStoreResult(os, function, instruction.result, "t0");
+    }
+    return;
+  }
+
+  if (opcode == "spill.reload" || opcode == "frame.load") {
+    if (instruction.result.type.isFloat()) {
+      emitLoadStackSlot(os, function, instruction.operands[0].index, instruction.result.text,
+                        instruction.result.type);
+    } else {
+      emitLoadStackSlot(os, function, instruction.operands[0].index, instruction.result.text,
+                        instruction.result.type);
+    }
+    return;
+  }
+
+  if (opcode == "spill.store" || opcode == "frame.store") {
+    const auto& source = instruction.operands[0];
+    const auto& frame = instruction.operands[1];
+    if (source.type.isFloat()) {
+      emitLoadFloatOperand(os, function, source, "ft0");
+      emitStoreStackSlot(os, function, frame.index, "ft0", source.type);
+    } else {
+      emitLoadIntegerOperand(os, function, source, "t0");
+      emitStoreStackSlot(os, function, frame.index, "t0", source.type);
+    }
+    return;
+  }
+
   if (opcode == "load") {
     if (instruction.result.type.isFloat()) {
       emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type, "ft0");
@@ -374,6 +500,11 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type, "t0");
       emitStoreResult(os, function, instruction.result, "t0");
     }
+    return;
+  }
+
+  if (opcode == "copy") {
+    emitCopyInstruction(os, function, instruction);
     return;
   }
 
@@ -588,42 +719,8 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
 
   os << ".globl " << function.name << '\n';
   os << function.name << ":\n";
-  emitAdjustSp(os, -static_cast<long long>(function.frameSize));
-  emitStoreBaseOffset(os, "sd", "ra", "sp",
-                      static_cast<long long>(function.frameSize - module.target.pointerSize()));
-  emitStoreBaseOffset(os, "sd", "s0", "sp",
-                      static_cast<long long>(function.frameSize - module.target.pointerSize() * 2));
-  emitAddImmediate(os, "s0", "sp", static_cast<long long>(function.frameSize), kImmScratch);
-
-  std::size_t integerRegs = 0;
-  std::size_t floatRegs = 0;
-  std::size_t stackOffset = 0;
-  for (const auto& parameter : function.parameters) {
-    if (parameter.homeSlot < 0) {
-      continue;
-    }
-    if (parameter.type.isFloat()) {
-      if (floatRegs < 8) {
-        emitStoreStackSlot(os, function, parameter.homeSlot, "fa" + std::to_string(floatRegs),
-                           parameter.type);
-        ++floatRegs;
-      } else {
-        emitLoadBaseOffset(os, "flw", "ft0", "s0", static_cast<long long>(stackOffset));
-        emitStoreStackSlot(os, function, parameter.homeSlot, "ft0", parameter.type);
-        stackOffset += std::max<std::size_t>(8, module.target.pointerSize());
-      }
-    } else {
-      if (integerRegs < 8) {
-        emitStoreStackSlot(os, function, parameter.homeSlot, "a" + std::to_string(integerRegs),
-                           parameter.type);
-        ++integerRegs;
-      } else {
-        emitLoadBaseOffset(os, loadMnemonic(parameter.type), "t0", "s0",
-                           static_cast<long long>(stackOffset));
-        emitStoreStackSlot(os, function, parameter.homeSlot, "t0", parameter.type);
-        stackOffset += std::max<std::size_t>(8, module.target.pointerSize());
-      }
-    }
+  for (const auto& instruction : function.prologueInstructions) {
+    emitInstruction(os, module, function, instruction, retLabel, labels);
   }
 
   for (const auto& block : function.blocks) {
@@ -634,9 +731,9 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
   }
 
   os << retLabel << ":\n";
-  emitLoadBaseOffset(os, "ld", "ra", "s0", -function.savedRaOffset);
-  emitLoadBaseOffset(os, "ld", "s0", "s0", -function.savedFpOffset);
-  emitAdjustSp(os, static_cast<long long>(function.frameSize));
+  for (const auto& instruction : function.epilogueInstructions) {
+    emitInstruction(os, module, function, instruction, retLabel, labels);
+  }
   os << "  ret\n";
 }
 
