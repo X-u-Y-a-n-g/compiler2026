@@ -1,4 +1,4 @@
-#include "Lexer.h"
+#include "../../../include/compiler/frontend/lexer/Lexer.h"
 
 #include <cerrno>
 #include <cctype>

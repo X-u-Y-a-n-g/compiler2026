@@ -1,4 +1,4 @@
-#include "Diagnostic.h"
+#include "../../include/compiler/support/Diagnostic.h"
 
 #include <iostream>
 #include <sstream>

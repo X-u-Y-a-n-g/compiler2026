@@ -1,4 +1,4 @@
-#include "StackObjectPromotion.h"
+#include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
 
 #include <string>
 #include <unordered_map>

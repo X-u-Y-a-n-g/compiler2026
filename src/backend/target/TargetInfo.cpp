@@ -1,4 +1,4 @@
-#include "TargetInfo.h"
+#include "../../../include/compiler/backend/target/TargetInfo.h"
 
 namespace compiler::backend::target {
 

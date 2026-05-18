@@ -1,4 +1,4 @@
-#include "AstToIR.h"
+#include "../../../include/compiler/ir/builder/AstToIR.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -13,9 +13,9 @@
 #include <utility>
 #include <vector>
 
-#include "AstNode.h"
+#include "../../../include/compiler/frontend/ast/AstNode.h"
 #include "../../../include/compiler/frontend/lexer/Token.h"
-#include "IRBuilder.h"
+#include "../../../include/compiler/ir/builder/IRBuilder.h"
 
 namespace compiler::ir::builder {
 

@@ -1,4 +1,4 @@
-#include "AstPrinter.h"
+#include "../../../include/compiler/frontend/ast/AstPrinter.h"
 
 #include <sstream>
 #include <string>

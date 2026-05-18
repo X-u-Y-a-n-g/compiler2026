@@ -1,11 +1,11 @@
-#include "StackLowering.h"
+#include "../../../include/compiler/backend/stack/StackLowering.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <utility>
 #include <vector>
 
-#include "TargetBackend.h"
+#include "../../../include/compiler/backend/target/TargetBackend.h"
 
 namespace compiler::backend::stack {
 

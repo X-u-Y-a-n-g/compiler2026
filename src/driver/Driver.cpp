@@ -1,30 +1,30 @@
-#include "Driver.h"
+#include "../../include/compiler/driver/Driver.h"
 
 #include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "FrameLowering.h"
-#include "InstructionSelector.h"
-#include "StackObjectPromotion.h"
-#include "RegisterAllocator.h"
-#include "StackLowering.h"
-#include "TargetBackend.h"
-#include "TargetInfo.h"
-#include "CompilerInvocation.h"
-#include "Pipeline.h"
-#include "AstPrinter.h"
+#include "../../include/compiler/backend/frame/FrameLowering.h"
+#include "../../include/compiler/backend/isel/InstructionSelector.h"
+#include "../../include/compiler/backend/opt/StackObjectPromotion.h"
+#include "../../include/compiler/backend/regalloc/RegisterAllocator.h"
+#include "../../include/compiler/backend/stack/StackLowering.h"
+#include "../../include/compiler/backend/target/TargetBackend.h"
+#include "../../include/compiler/backend/target/TargetInfo.h"
+#include "../../include/compiler/driver/CompilerInvocation.h"
+#include "../../include/compiler/driver/Pipeline.h"
+#include "../../include/compiler/frontend/ast/AstPrinter.h"
 #include "../../include/compiler/frontend/lexer/Lexer.h"
 #include "../../include/compiler/frontend/lexer/Token.h"
 #include "../../include/compiler/frontend/parser/Parser.h"
-#include "SemanticAnalyzer.h"
-#include "TypeChecker.h"
-#include "AstToIR.h"
-#include "IRPrinter.h"
-#include "IRVerifier.h"
-#include "PassManager.h"
-#include "FileSystem.h"
+#include "../../include/compiler/frontend/sema/SemanticAnalyzer.h"
+#include "../../include/compiler/frontend/types/TypeChecker.h"
+#include "../../include/compiler/ir/builder/AstToIR.h"
+#include "../../include/compiler/ir/printer/IRPrinter.h"
+#include "../../include/compiler/ir/verify/IRVerifier.h"
+#include "../../include/compiler/midend/pass/PassManager.h"
+#include "../../include/compiler/support/FileSystem.h"
 
 namespace compiler::driver {
 

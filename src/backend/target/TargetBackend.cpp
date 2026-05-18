@@ -1,14 +1,14 @@
-#include "TargetBackend.h"
+#include "../../../include/compiler/backend/target/TargetBackend.h"
 
 #include <stdexcept>
 
-#include "AsmPrinter.h"
-#include "FrameLowering.h"
-#include "PhiElimination.h"
-#include "StackObjectPromotion.h"
-#include "RegisterAllocator.h"
-#include "StackLowering.h"
-#include "Riscv64Target.h"
+#include "../../../include/compiler/backend/asm/AsmPrinter.h"
+#include "../../../include/compiler/backend/frame/FrameLowering.h"
+#include "../../../include/compiler/backend/opt/PhiElimination.h"
+#include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
+#include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
+#include "../../../include/compiler/backend/stack/StackLowering.h"
+#include "../../../include/compiler/backend/target/Riscv64Target.h"
 
 namespace compiler::backend::target {
 

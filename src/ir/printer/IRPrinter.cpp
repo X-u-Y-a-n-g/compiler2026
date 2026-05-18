@@ -1,4 +1,4 @@
-#include "IRPrinter.h"
+#include "../../../include/compiler/ir/printer/IRPrinter.h"
 
 #include <cerrno>
 #include <cstdlib>
