@@ -1,8 +1,8 @@
 #pragma once
 
-#include "compiler/backend/mir/MachineModule.h"
-#include "compiler/backend/target/TargetInfo.h"
-#include "compiler/ir/core/Module.h"
+#include "MachineModule.h"
+#include "TargetInfo.h"
+#include "Module.h"
 
 namespace compiler::backend::target {
 

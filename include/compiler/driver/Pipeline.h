@@ -1,7 +1,7 @@
 #pragma once
 
-#include "compiler/driver/CompilerInvocation.h"
-#include "compiler/support/Diagnostic.h"
+#include "CompilerInvocation.h"
+#include "Diagnostic.h"
 
 namespace compiler::driver {
 

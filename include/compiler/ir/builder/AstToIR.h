@@ -2,9 +2,9 @@
 
 #include <string>
 
-#include "compiler/frontend/ast/AstNode.h"
-#include "compiler/ir/builder/LoweringContext.h"
-#include "compiler/ir/core/Module.h"
+#include "AstNode.h"
+#include "LoweringContext.h"
+#include "Module.h"
 
 namespace compiler::ir::builder {
 

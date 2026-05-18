@@ -4,8 +4,8 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/ir/core/Function.h"
-#include "compiler/ir/core/GlobalVariable.h"
+#include "Function.h"
+#include "GlobalVariable.h"
 
 namespace compiler::ir::core {
 

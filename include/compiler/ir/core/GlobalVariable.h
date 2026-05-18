@@ -3,7 +3,7 @@
 #include <string>
 #include <utility>
 
-#include "compiler/ir/core/Constant.h"
+#include "Constant.h"
 
 namespace compiler::ir::core {
 

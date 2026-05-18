@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/ir/core/BasicBlock.h"
+#include "BasicBlock.h"
 
 namespace compiler::ir::core {
 

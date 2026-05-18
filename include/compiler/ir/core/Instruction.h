@@ -4,7 +4,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/ir/core/Value.h"
+#include "Value.h"
 
 namespace compiler::ir::core {
 

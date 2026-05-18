@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "compiler/frontend/ast/AstNode.h"
+#include "AstNode.h"
 
 namespace compiler::frontend::ast {
 

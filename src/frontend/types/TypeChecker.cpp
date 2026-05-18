@@ -1,4 +1,4 @@
-#include "compiler/frontend/types/TypeChecker.h"
+#include "TypeChecker.h"
 
 #include <cerrno>
 #include <cstdlib>

@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "compiler/ir/core/Module.h"
+#include "Module.h"
 
 namespace compiler::midend::pass {
 

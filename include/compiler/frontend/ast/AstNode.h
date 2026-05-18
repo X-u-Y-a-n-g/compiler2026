@@ -5,9 +5,9 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/frontend/lexer/Token.h"
-#include "compiler/frontend/types/Type.h"
-#include "compiler/support/SourceLocation.h"
+#include "Token.h"
+#include "Type.h"
+#include "SourceLocation.h"
 
 namespace compiler::frontend::ast {
 

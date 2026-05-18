@@ -1,7 +1,7 @@
 #pragma once
 
-#include "compiler/frontend/ast/AstNode.h"
-#include "compiler/support/Diagnostic.h"
+#include "AstNode.h"
+#include "Diagnostic.h"
 
 namespace compiler::frontend::sema {
 

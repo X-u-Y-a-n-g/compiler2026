@@ -2,10 +2,10 @@
 
 #include <string>
 
-#include "compiler/backend/target/TargetInfo.h"
-#include "compiler/backend/target/TargetInstrAdapter.h"
-#include "compiler/backend/target/TargetLowering.h"
-#include "compiler/backend/target/TargetRegInfo.h"
+#include "TargetInfo.h"
+#include "TargetInstrAdapter.h"
+#include "TargetLowering.h"
+#include "TargetRegInfo.h"
 
 namespace compiler::ir::core {
 class Module;

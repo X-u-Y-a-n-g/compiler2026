@@ -1,4 +1,4 @@
-#include "compiler/ir/verify/IRVerifier.h"
+#include "IRVerifier.h"
 
 #include <unordered_set>
 

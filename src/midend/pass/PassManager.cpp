@@ -1,4 +1,4 @@
-#include "compiler/midend/pass/PassManager.h"
+#include "PassManager.h"
 
 namespace compiler::midend::pass {
 

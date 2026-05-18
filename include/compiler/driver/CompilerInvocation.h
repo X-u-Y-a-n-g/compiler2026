@@ -2,8 +2,8 @@
 
 #include <vector>
 
-#include "compiler/driver/Options.h"
-#include "compiler/support/Diagnostic.h"
+#include "Options.h"
+#include "Diagnostic.h"
 
 namespace compiler::driver {
 

@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "compiler/backend/mir/MachineModule.h"
+#include "MachineModule.h"
 
 namespace compiler::backend::asmcode {
 

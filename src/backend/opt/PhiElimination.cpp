@@ -1,4 +1,4 @@
-#include "compiler/backend/opt/PhiElimination.h"
+#include "PhiElimination.h"
 
 #include <cstddef>
 #include <string>
@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/backend/common/CFGBuilder.h"
-#include "compiler/backend/target/TargetBackend.h"
+#include "CFGBuilder.h"
+#include "TargetBackend.h"
 
 namespace compiler::backend::opt {
 

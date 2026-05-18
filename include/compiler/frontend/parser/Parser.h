@@ -3,9 +3,9 @@
 #include <initializer_list>
 #include <vector>
 
-#include "compiler/frontend/ast/AstNode.h"
-#include "compiler/frontend/lexer/Token.h"
-#include "compiler/support/Diagnostic.h"
+#include "AstNode.h"
+#include "Token.h"
+#include "Diagnostic.h"
 
 namespace compiler::frontend::parser {
 

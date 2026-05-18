@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "compiler/ir/core/Module.h"
+#include "Module.h"
 
 namespace compiler::ir::verify {
 

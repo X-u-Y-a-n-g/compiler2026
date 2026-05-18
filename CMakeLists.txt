@@ -32,7 +32,15 @@ add_library(compiler_lib
   src/backend/asm/AsmPrinter.cpp
 )
 
-target_include_directories(compiler_lib PUBLIC include)
+file(GLOB_RECURSE COMPILER_HEADERS CONFIGURE_DEPENDS include/compiler/*.h include/compiler/*.hpp)
+set(COMPILER_INCLUDE_DIRS include)
+foreach(header ${COMPILER_HEADERS})
+  get_filename_component(header_dir "${header}" DIRECTORY)
+  list(APPEND COMPILER_INCLUDE_DIRS "${header_dir}")
+endforeach()
+list(REMOVE_DUPLICATES COMPILER_INCLUDE_DIRS)
+
+target_include_directories(compiler_lib PUBLIC ${COMPILER_INCLUDE_DIRS})
 target_compile_options(compiler_lib PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(compiler src/main/main.cpp)

@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-#include "compiler/ir/core/Function.h"
+#include "Function.h"
 
 namespace compiler::ir::analysis {
 

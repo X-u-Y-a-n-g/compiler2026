@@ -7,8 +7,8 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/backend/target/TargetInfo.h"
-#include "compiler/ir/core/Constant.h"
+#include "TargetInfo.h"
+#include "Constant.h"
 
 namespace compiler::backend::mir {
 

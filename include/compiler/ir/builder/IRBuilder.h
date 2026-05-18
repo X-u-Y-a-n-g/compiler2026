@@ -4,7 +4,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/ir/core/Function.h"
+#include "Function.h"
 
 namespace compiler::ir::builder {
 

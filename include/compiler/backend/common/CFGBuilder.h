@@ -1,8 +1,8 @@
 #pragma once
 
-#include "compiler/backend/common/CFG.h"
-#include "compiler/backend/mir/MachineModule.h"
-#include "compiler/backend/target/TargetInstrAdapter.h"
+#include "CFG.h"
+#include "MachineModule.h"
+#include "TargetInstrAdapter.h"
 
 namespace compiler::backend::common {
 

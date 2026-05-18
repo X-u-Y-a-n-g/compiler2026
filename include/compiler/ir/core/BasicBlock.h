@@ -4,7 +4,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/ir/core/Instruction.h"
+#include "Instruction.h"
 
 namespace compiler::ir::core {
 

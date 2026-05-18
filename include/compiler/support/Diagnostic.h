@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "compiler/support/SourceLocation.h"
+#include "SourceLocation.h"
 
 namespace compiler::support {
 

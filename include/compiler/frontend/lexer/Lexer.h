@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-#include "compiler/frontend/lexer/Token.h"
-#include "compiler/support/Diagnostic.h"
+#include "Token.h"
+#include "Diagnostic.h"
 
 namespace compiler::frontend::lexer {
 

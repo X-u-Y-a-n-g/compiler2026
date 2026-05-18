@@ -1,4 +1,4 @@
-#include "compiler/backend/frame/FrameLowering.h"
+#include "FrameLowering.h"
 
 #include <algorithm>
 #include <cstddef>

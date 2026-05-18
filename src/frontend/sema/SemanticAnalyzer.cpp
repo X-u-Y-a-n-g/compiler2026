@@ -1,4 +1,4 @@
-#include "compiler/frontend/sema/SemanticAnalyzer.h"
+#include "SemanticAnalyzer.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/frontend/types/Type.h"
+#include "Type.h"
 
 namespace compiler::frontend::sema {
 

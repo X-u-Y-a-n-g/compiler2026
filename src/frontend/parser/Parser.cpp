@@ -1,4 +1,4 @@
-#include "compiler/frontend/parser/Parser.h"
+#include "Parser.h"
 
 #include <memory>
 #include <string>

@@ -1,9 +1,9 @@
-#include "compiler/frontend/ast/AstPrinter.h"
+#include "AstPrinter.h"
 
 #include <sstream>
 #include <string>
 
-#include "compiler/frontend/lexer/Token.h"
+#include "Token.h"
 
 namespace compiler::frontend::ast {
 

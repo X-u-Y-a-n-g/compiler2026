@@ -1,4 +1,4 @@
-#include "compiler/backend/regalloc/RegisterAllocator.h"
+#include "RegisterAllocator.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -8,8 +8,8 @@
 #include <utility>
 #include <vector>
 
-#include "compiler/backend/common/CFGBuilder.h"
-#include "compiler/backend/target/TargetBackend.h"
+#include "CFGBuilder.h"
+#include "TargetBackend.h"
 
 namespace compiler::backend::regalloc {
 

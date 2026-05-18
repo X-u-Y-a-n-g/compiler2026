@@ -1,8 +1,8 @@
 #pragma once
 
-#include "compiler/frontend/ast/AstNode.h"
-#include "compiler/frontend/types/Type.h"
-#include "compiler/support/Diagnostic.h"
+#include "AstNode.h"
+#include "Type.h"
+#include "Diagnostic.h"
 
 namespace compiler::frontend::types {
 

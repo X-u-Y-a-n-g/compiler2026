@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "compiler/support/Diagnostic.h"
+#include "Diagnostic.h"
 
 namespace compiler::support {
 

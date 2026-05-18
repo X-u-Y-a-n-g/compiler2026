@@ -1,8 +1,8 @@
-#include "compiler/backend/target/Riscv64Target.h"
+#include "Riscv64Target.h"
 
 #include <utility>
 
-#include "compiler/backend/target/TargetLoweringSupport.h"
+#include "TargetLoweringSupport.h"
 
 namespace compiler::backend::target::riscv64 {
 

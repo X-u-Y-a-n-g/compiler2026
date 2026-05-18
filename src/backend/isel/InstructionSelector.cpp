@@ -1,6 +1,6 @@
-#include "compiler/backend/isel/InstructionSelector.h"
+#include "InstructionSelector.h"
 
-#include "compiler/backend/target/TargetBackend.h"
+#include "TargetBackend.h"
 
 namespace compiler::backend::isel {
 

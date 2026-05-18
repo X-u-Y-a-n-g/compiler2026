@@ -1,4 +1,4 @@
-#include "compiler/support/FileSystem.h"
+#include "FileSystem.h"
 
 #include <fstream>
 #include <sstream>

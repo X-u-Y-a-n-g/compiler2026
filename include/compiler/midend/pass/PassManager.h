@@ -3,7 +3,7 @@
 #include <memory>
 #include <vector>
 
-#include "compiler/midend/pass/Pass.h"
+#include "Pass.h"
 
 namespace compiler::midend::pass {
 

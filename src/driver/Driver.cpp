@@ -1,30 +1,30 @@
-#include "compiler/driver/Driver.h"
+#include "Driver.h"
 
 #include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "compiler/backend/frame/FrameLowering.h"
-#include "compiler/backend/isel/InstructionSelector.h"
-#include "compiler/backend/opt/StackObjectPromotion.h"
-#include "compiler/backend/regalloc/RegisterAllocator.h"
-#include "compiler/backend/stack/StackLowering.h"
-#include "compiler/backend/target/TargetBackend.h"
-#include "compiler/backend/target/TargetInfo.h"
-#include "compiler/driver/CompilerInvocation.h"
-#include "compiler/driver/Pipeline.h"
-#include "compiler/frontend/ast/AstPrinter.h"
-#include "compiler/frontend/lexer/Lexer.h"
-#include "compiler/frontend/lexer/Token.h"
-#include "compiler/frontend/parser/Parser.h"
-#include "compiler/frontend/sema/SemanticAnalyzer.h"
-#include "compiler/frontend/types/TypeChecker.h"
-#include "compiler/ir/builder/AstToIR.h"
-#include "compiler/ir/printer/IRPrinter.h"
-#include "compiler/ir/verify/IRVerifier.h"
-#include "compiler/midend/pass/PassManager.h"
-#include "compiler/support/FileSystem.h"
+#include "FrameLowering.h"
+#include "InstructionSelector.h"
+#include "StackObjectPromotion.h"
+#include "RegisterAllocator.h"
+#include "StackLowering.h"
+#include "TargetBackend.h"
+#include "TargetInfo.h"
+#include "CompilerInvocation.h"
+#include "Pipeline.h"
+#include "AstPrinter.h"
+#include "Lexer.h"
+#include "Token.h"
+#include "Parser.h"
+#include "SemanticAnalyzer.h"
+#include "TypeChecker.h"
+#include "AstToIR.h"
+#include "IRPrinter.h"
+#include "IRVerifier.h"
+#include "PassManager.h"
+#include "FileSystem.h"
 
 namespace compiler::driver {
 
