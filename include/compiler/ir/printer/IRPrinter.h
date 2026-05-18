@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "Module.h"
+#include "../core/Module.h"
 
 namespace compiler::ir::printer {
 

@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "AstNode.h"
-#include "Token.h"
+#include "../../../include/compiler/frontend/lexer/Token.h"
 #include "IRBuilder.h"
 
 namespace compiler::ir::builder {

@@ -2,7 +2,7 @@
 
 #include "MachineModule.h"
 #include "TargetInfo.h"
-#include "Module.h"
+#include "../../ir/core/Module.h"
 
 namespace compiler::backend::target::detail {
 

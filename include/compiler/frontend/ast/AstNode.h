@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "Token.h"
+#include "../lexer/Token.h"
 #include "Type.h"
 #include "SourceLocation.h"
 

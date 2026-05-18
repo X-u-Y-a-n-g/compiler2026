@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "AstNode.h"
-#include "Token.h"
+#include "../lexer/Token.h"
 #include "Diagnostic.h"
 
 namespace compiler::frontend::parser {

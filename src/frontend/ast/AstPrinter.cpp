@@ -3,7 +3,7 @@
 #include <sstream>
 #include <string>
 
-#include "Token.h"
+#include "../../../include/compiler/frontend/lexer/Token.h"
 
 namespace compiler::frontend::ast {
 

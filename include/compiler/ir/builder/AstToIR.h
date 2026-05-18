@@ -4,7 +4,7 @@
 
 #include "AstNode.h"
 #include "LoweringContext.h"
-#include "Module.h"
+#include "../core/Module.h"
 
 namespace compiler::ir::builder {
 
