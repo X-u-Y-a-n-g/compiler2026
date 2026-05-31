@@ -18,6 +18,7 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/pass/ConstantFoldingPass.cpp
+  src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/PassManager.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
