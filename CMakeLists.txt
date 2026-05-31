@@ -20,6 +20,7 @@ add_library(compiler_lib
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/PassManager.cpp
+  src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
   src/backend/target/TargetBackend.cpp
