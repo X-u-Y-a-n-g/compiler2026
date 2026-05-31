@@ -24,6 +24,7 @@
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/LocalScalarCleanupPass.h"
+#include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
@@ -153,6 +154,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   compiler::midend::pass::PassManager passManager;
   if (invocation.options().optLevel > 0) {
     passManager.add(std::make_unique<compiler::midend::pass::LocalScalarCleanupPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }
   passManager.run(module);
