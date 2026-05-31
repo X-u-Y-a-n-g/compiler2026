@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -109,6 +110,28 @@ std::unordered_set<std::size_t> intersectSets(const std::unordered_set<std::size
   return result;
 }
 
+std::vector<bool> computeReachable(const CFG& cfg) {
+  std::vector<bool> reachable(cfg.names.size(), false);
+  if (cfg.names.empty()) {
+    return reachable;
+  }
+  std::deque<std::size_t> worklist;
+  reachable[0] = true;
+  worklist.push_back(0);
+  while (!worklist.empty()) {
+    const auto block = worklist.front();
+    worklist.pop_front();
+    for (const auto succ : cfg.successors[block]) {
+      if (reachable[succ]) {
+        continue;
+      }
+      reachable[succ] = true;
+      worklist.push_back(succ);
+    }
+  }
+  return reachable;
+}
+
 DominatorInfo computeDominators(const CFG& cfg) {
   DominatorInfo info;
   const std::size_t count = cfg.names.size();
@@ -117,19 +140,26 @@ DominatorInfo computeDominators(const CFG& cfg) {
     return info;
   }
 
+  const auto reachable = computeReachable(cfg);
   const auto allBlocks = allBlockIndices(count);
   info.dominators[0] = {0};
   for (std::size_t i = 1; i < count; ++i) {
-    info.dominators[i] = allBlocks;
+    info.dominators[i] = reachable[i] ? allBlocks : std::unordered_set<std::size_t>{i};
   }
 
   bool changed = true;
   while (changed) {
     changed = false;
     for (std::size_t block = 1; block < count; ++block) {
+      if (!reachable[block]) {
+        continue;
+      }
       std::unordered_set<std::size_t> next;
       bool initialized = false;
       for (const auto pred : cfg.predecessors[block]) {
+        if (!reachable[pred]) {
+          continue;
+        }
         if (!initialized) {
           next = info.dominators[pred];
           initialized = true;
@@ -151,29 +181,22 @@ DominatorInfo computeDominators(const CFG& cfg) {
   info.idom.assign(count, -1);
   info.children.resize(count);
   for (std::size_t block = 1; block < count; ++block) {
-    std::vector<std::size_t> strictDominators;
+    if (!reachable[block]) {
+      continue;
+    }
+    std::optional<std::size_t> best;
     for (const auto dom : info.dominators[block]) {
-      if (dom != block) {
-        strictDominators.push_back(dom);
+      if (dom == block || !reachable[dom]) {
+        continue;
+      }
+      if (!best.has_value() ||
+          info.dominators[dom].size() > info.dominators[*best].size()) {
+        best = dom;
       }
     }
-
-    for (const auto candidate : strictDominators) {
-      bool dominatedByAllOthers = true;
-      for (const auto other : strictDominators) {
-        if (other == candidate) {
-          continue;
-        }
-        if (info.dominators[candidate].find(other) == info.dominators[candidate].end()) {
-          dominatedByAllOthers = false;
-          break;
-        }
-      }
-      if (dominatedByAllOthers) {
-        info.idom[block] = static_cast<int>(candidate);
-        info.children[candidate].push_back(block);
-        break;
-      }
+    if (best.has_value()) {
+      info.idom[block] = static_cast<int>(*best);
+      info.children[*best].push_back(block);
     }
   }
 
@@ -197,8 +220,8 @@ DominatorInfo computeDominators(const CFG& cfg) {
 std::unordered_map<std::string, SlotInfo> collectSlotInfo(const Function& function,
                                                           const CFG& cfg) {
   std::unordered_map<std::string, SlotInfo> slots;
-  for (const auto& block : function.blocks()) {
-    for (const auto& instruction : block.instructions()) {
+  if (!function.blocks().empty()) {
+    for (const auto& instruction : function.blocks().front().instructions()) {
       if (isScalarAlloca(instruction)) {
         slots.emplace(instruction.result(), SlotInfo{instruction.operands().front(), false, {}, {}});
       }

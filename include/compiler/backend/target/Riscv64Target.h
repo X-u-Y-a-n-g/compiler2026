@@ -60,7 +60,9 @@ class RegInfo final : public TargetRegInfo {
                                         "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
                                         "ft0", "ft1", "ft2"};
   std::vector<std::string> allocatableInt_ = {"s1", "s2", "s3", "s4", "s5", "s6",
-                                              "s7", "s8", "s9", "s10", "s11"};
+                                              "s7", "s8", "s9", "s10", "s11",
+                                              "a0", "a1", "a2", "a3", "a4", "a5",
+                                              "a6", "a7"};
   std::vector<std::string> allocatableFloat_ = {"fs0", "fs1", "fs2", "fs3", "fs4", "fs5",
                                                 "fs6", "fs7", "fs8", "fs9", "fs10", "fs11",
                                                 "ft3", "ft4", "ft5", "ft6", "ft7", "ft8"};

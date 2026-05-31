@@ -270,6 +270,11 @@ std::vector<std::string> orderedFreeRegisters(const std::vector<std::string>& fr
   return ordered;
 }
 
+bool registerAllowedForInterval(const std::string& reg, const AllocationClass& klass,
+                                const Interval& interval) {
+  return !interval.crossesCall || klass.calleeSaved.find(reg) != klass.calleeSaved.end();
+}
+
 void allocateClassIntervals(const std::vector<Interval>& intervals, const AllocationClass& klass,
                             bool selectFloat,
                             std::unordered_map<std::string, std::string>& registerMap) {
@@ -283,8 +288,15 @@ void allocateClassIntervals(const std::vector<Interval>& intervals, const Alloca
     }
 
     expireOldIntervals(active, freeRegs, interval.begin());
+    std::vector<std::string> allowedFree;
+    allowedFree.reserve(freeRegs.size());
+    for (const auto& reg : freeRegs) {
+      if (registerAllowedForInterval(reg, klass, interval)) {
+        allowedFree.push_back(reg);
+      }
+    }
     const auto preferredFree =
-        orderedFreeRegisters(freeRegs, klass.calleeSaved, interval.crossesCall);
+        orderedFreeRegisters(allowedFree, klass.calleeSaved, interval.crossesCall);
 
     if (!preferredFree.empty()) {
       const std::string reg = preferredFree.front();
@@ -294,12 +306,22 @@ void allocateClassIntervals(const std::vector<Interval>& intervals, const Alloca
       continue;
     }
 
-    const auto spillIt =
-        std::max_element(active.begin(), active.end(), [](const ActiveInterval& lhs,
-                                                          const ActiveInterval& rhs) {
-          return lhs.end < rhs.end;
-        });
+    const auto spillIt = std::max_element(active.begin(), active.end(),
+                                          [&](const ActiveInterval& lhs,
+                                              const ActiveInterval& rhs) {
+                                            const bool lhsAllowed =
+                                                registerAllowedForInterval(lhs.reg, klass, interval);
+                                            const bool rhsAllowed =
+                                                registerAllowedForInterval(rhs.reg, klass, interval);
+                                            if (lhsAllowed != rhsAllowed) {
+                                              return lhsAllowed < rhsAllowed;
+                                            }
+                                            return lhs.end < rhs.end;
+                                          });
     if (spillIt != active.end() && spillIt->end > interval.end()) {
+      if (!registerAllowedForInterval(spillIt->reg, klass, interval)) {
+        continue;
+      }
       registerMap.erase(spillIt->name);
       registerMap.emplace(interval.name, spillIt->reg);
       *spillIt = ActiveInterval{interval.end(), interval.name, spillIt->reg};
@@ -424,6 +446,41 @@ void rewriteFunctionInstructions(
   }
 }
 
+void materializeRegisterParameters(
+    MachineFunction& function, std::unordered_set<std::string>& stackHomeParameters,
+    std::unordered_map<std::string, int>& slotMap,
+    const compiler::backend::target::TargetInfo& target,
+    const compiler::backend::target::TargetRegInfo& regInfo) {
+  if (function.blocks.empty()) {
+    return;
+  }
+
+  std::vector<MachineInstruction> copies;
+  std::size_t intRegs = 0;
+  std::size_t floatRegs = 0;
+  for (auto& parameter : function.parameters) {
+    const bool isFloat = parameter.type.isFloat();
+    const auto& argRegs =
+        isFloat ? regInfo.floatArgumentRegisters() : regInfo.integerArgumentRegisters();
+    auto& regIndex = isFloat ? floatRegs : intRegs;
+    if (regIndex < argRegs.size()) {
+      parameter.homeSlot = -1;
+      copies.push_back(MachineInstruction::copy(
+          MachineOperand::virtualRegister(parameter.name, parameter.type),
+          MachineOperand::physicalRegister(argRegs[regIndex], parameter.type)));
+      ++regIndex;
+      continue;
+    }
+
+    parameter.homeSlot = ensureSlot(function, slotMap, parameter.name, parameter.type, target);
+    stackHomeParameters.insert(parameter.name);
+    ++regIndex;
+  }
+
+  auto& entryInstructions = function.blocks.front().instructions;
+  entryInstructions.insert(entryInstructions.begin(), copies.begin(), copies.end());
+}
+
 }  // namespace
 
 void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) const {
@@ -432,11 +489,8 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
 
   for (auto& function : module.functions) {
     std::unordered_map<std::string, int> slotMap;
-    std::unordered_set<std::string> parameterNames;
-    for (auto& parameter : function.parameters) {
-      parameter.homeSlot = ensureSlot(function, slotMap, parameter.name, parameter.type, module.target);
-      parameterNames.insert(parameter.name);
-    }
+    std::unordered_set<std::string> stackHomeParameters;
+    materializeRegisterParameters(function, stackHomeParameters, slotMap, module.target, regInfo);
 
     std::vector<std::pair<std::size_t, std::size_t>> blockRanges(function.blocks.size());
     std::unordered_set<std::size_t> callPoints;
@@ -455,7 +509,7 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
     std::unordered_map<std::string, ValueType> regTypes;
     std::vector<std::unordered_set<std::string>> useSets;
     std::vector<std::unordered_set<std::string>> defSets;
-    collectBlockUsesAndDefs(adapter, function, parameterNames, regTypes, useSets, defSets);
+    collectBlockUsesAndDefs(adapter, function, stackHomeParameters, regTypes, useSets, defSets);
 
     const auto cfg = CFGBuilder{}.build(function, adapter);
     std::vector<std::unordered_set<std::string>> liveIn(function.blocks.size());
@@ -487,7 +541,8 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
     }
 
     const auto intervals =
-        buildIntervals(adapter, function, parameterNames, regTypes, liveOut, blockRanges, callPoints);
+        buildIntervals(adapter, function, stackHomeParameters, regTypes, liveOut, blockRanges,
+                       callPoints);
 
     std::unordered_map<std::string, std::string> registerMap;
     allocateClassIntervals(
