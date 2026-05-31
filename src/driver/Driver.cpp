@@ -23,11 +23,8 @@
 #include "../../include/compiler/ir/builder/AstToIR.h"
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
-#include "../../include/compiler/midend/pass/AlgebraicSimplificationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
-#include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
-#include "../../include/compiler/midend/pass/UnreachableBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 
 namespace compiler::driver {
@@ -155,10 +152,6 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   compiler::midend::pass::PassManager passManager;
   if (invocation.options().optLevel > 0) {
     passManager.add(std::make_unique<compiler::midend::pass::ConstantFoldingPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::ConstantFoldingPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::UnreachableBlockEliminationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
   }
   passManager.run(module);
 

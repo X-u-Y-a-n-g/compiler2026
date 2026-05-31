@@ -17,11 +17,8 @@ add_library(compiler_lib
   src/ir/builder/AstToIR.cpp
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
-  src/midend/pass/AlgebraicSimplificationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
-  src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/PassManager.cpp
-  src/midend/pass/UnreachableBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
   src/backend/target/TargetBackend.cpp
