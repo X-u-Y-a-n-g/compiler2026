@@ -1,5 +1,7 @@
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
 
+#include <algorithm>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -16,9 +18,25 @@ using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
 
+struct CFG {
+  std::unordered_map<std::string, std::size_t> indexByName;
+  std::vector<std::string> names;
+  std::vector<std::vector<std::size_t>> successors;
+  std::vector<std::vector<std::size_t>> predecessors;
+};
+
 struct SlotInfo {
-  std::unordered_set<std::string> usedBlocks;
+  std::string type;
   bool escaped = false;
+  std::unordered_set<std::size_t> defBlocks;
+  std::unordered_set<std::size_t> useBeforeDefBlocks;
+};
+
+struct DominatorInfo {
+  std::vector<std::unordered_set<std::size_t>> dominators;
+  std::vector<int> idom;
+  std::vector<std::vector<std::size_t>> children;
+  std::vector<std::unordered_set<std::size_t>> frontier;
 };
 
 bool isScalarAlloca(const Instruction& instruction) {
@@ -27,43 +45,148 @@ bool isScalarAlloca(const Instruction& instruction) {
          instruction.operands().front().find('[') == std::string::npos;
 }
 
-std::unordered_map<std::string, SlotInfo> collectSlotInfo(const Function& function) {
-  std::unordered_map<std::string, SlotInfo> info;
+std::string zeroValueForType(const std::string& type) {
+  return type == "float" ? "0.0" : "0";
+}
+
+std::vector<std::string> branchTargets(const BasicBlock& block) {
+  const auto* terminator = block.terminator();
+  if (terminator == nullptr || terminator->opcode() != "br") {
+    return {};
+  }
+  const auto& operands = terminator->operands();
+  if (operands.size() == 1) {
+    return {operands[0]};
+  }
+  if (operands.size() == 3) {
+    if (operands[1] == operands[2]) {
+      return {operands[1]};
+    }
+    return {operands[1], operands[2]};
+  }
+  return {};
+}
+
+CFG buildCFG(const Function& function) {
+  CFG cfg;
+  cfg.names.reserve(function.blocks().size());
   for (const auto& block : function.blocks()) {
-    for (const auto& instruction : block.instructions()) {
-      if (isScalarAlloca(instruction)) {
-        info.emplace(instruction.result(), SlotInfo{});
+    cfg.indexByName.emplace(block.name(), cfg.names.size());
+    cfg.names.push_back(block.name());
+  }
+
+  cfg.successors.resize(cfg.names.size());
+  cfg.predecessors.resize(cfg.names.size());
+  for (std::size_t i = 0; i < function.blocks().size(); ++i) {
+    for (const auto& target : branchTargets(function.blocks()[i])) {
+      const auto found = cfg.indexByName.find(target);
+      if (found == cfg.indexByName.end()) {
+        continue;
+      }
+      cfg.successors[i].push_back(found->second);
+      cfg.predecessors[found->second].push_back(i);
+    }
+  }
+  return cfg;
+}
+
+std::unordered_set<std::size_t> allBlockIndices(std::size_t count) {
+  std::unordered_set<std::size_t> result;
+  for (std::size_t i = 0; i < count; ++i) {
+    result.insert(i);
+  }
+  return result;
+}
+
+std::unordered_set<std::size_t> intersectSets(const std::unordered_set<std::size_t>& lhs,
+                                              const std::unordered_set<std::size_t>& rhs) {
+  std::unordered_set<std::size_t> result;
+  for (const auto value : lhs) {
+    if (rhs.find(value) != rhs.end()) {
+      result.insert(value);
+    }
+  }
+  return result;
+}
+
+DominatorInfo computeDominators(const CFG& cfg) {
+  DominatorInfo info;
+  const std::size_t count = cfg.names.size();
+  info.dominators.resize(count);
+  if (count == 0) {
+    return info;
+  }
+
+  const auto allBlocks = allBlockIndices(count);
+  info.dominators[0] = {0};
+  for (std::size_t i = 1; i < count; ++i) {
+    info.dominators[i] = allBlocks;
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block = 1; block < count; ++block) {
+      std::unordered_set<std::size_t> next;
+      bool initialized = false;
+      for (const auto pred : cfg.predecessors[block]) {
+        if (!initialized) {
+          next = info.dominators[pred];
+          initialized = true;
+        } else {
+          next = intersectSets(next, info.dominators[pred]);
+        }
+      }
+      if (!initialized) {
+        next.clear();
+      }
+      next.insert(block);
+      if (next != info.dominators[block]) {
+        info.dominators[block] = std::move(next);
+        changed = true;
       }
     }
   }
 
-  if (info.empty()) {
-    return info;
+  info.idom.assign(count, -1);
+  info.children.resize(count);
+  for (std::size_t block = 1; block < count; ++block) {
+    std::vector<std::size_t> strictDominators;
+    for (const auto dom : info.dominators[block]) {
+      if (dom != block) {
+        strictDominators.push_back(dom);
+      }
+    }
+
+    for (const auto candidate : strictDominators) {
+      bool dominatedByAllOthers = true;
+      for (const auto other : strictDominators) {
+        if (other == candidate) {
+          continue;
+        }
+        if (info.dominators[candidate].find(other) == info.dominators[candidate].end()) {
+          dominatedByAllOthers = false;
+          break;
+        }
+      }
+      if (dominatedByAllOthers) {
+        info.idom[block] = static_cast<int>(candidate);
+        info.children[candidate].push_back(block);
+        break;
+      }
+    }
   }
 
-  for (const auto& block : function.blocks()) {
-    for (const auto& instruction : block.instructions()) {
-      const auto& operands = instruction.operands();
-      if (instruction.opcode() == "load" && operands.size() == 2) {
-        auto found = info.find(operands[1]);
-        if (found != info.end()) {
-          found->second.usedBlocks.insert(block.name());
-        }
-        continue;
-      }
-      if (instruction.opcode() == "store" && operands.size() == 3) {
-        auto found = info.find(operands[2]);
-        if (found != info.end()) {
-          found->second.usedBlocks.insert(block.name());
-        }
-        continue;
-      }
-
-      for (const auto& operand : operands) {
-        auto found = info.find(operand);
-        if (found != info.end()) {
-          found->second.escaped = true;
-        }
+  info.frontier.resize(count);
+  for (std::size_t block = 0; block < count; ++block) {
+    if (cfg.predecessors[block].size() < 2) {
+      continue;
+    }
+    for (const auto pred : cfg.predecessors[block]) {
+      int runner = static_cast<int>(pred);
+      while (runner >= 0 && runner != info.idom[block]) {
+        info.frontier[static_cast<std::size_t>(runner)].insert(block);
+        runner = info.idom[static_cast<std::size_t>(runner)];
       }
     }
   }
@@ -71,134 +194,275 @@ std::unordered_map<std::string, SlotInfo> collectSlotInfo(const Function& functi
   return info;
 }
 
-std::unordered_set<std::string> collectPromotableSlots(const Function& function) {
-  std::unordered_set<std::string> promotable;
-  auto info = collectSlotInfo(function);
-  for (const auto& [slot, slotInfo] : info) {
-    if (!slotInfo.escaped && slotInfo.usedBlocks.size() <= 1) {
-      promotable.insert(slot);
-    }
-  }
-  return promotable;
-}
-
-struct BlockPromotionResult {
-  std::unordered_set<std::string> removableSlots;
-};
-
-BlockPromotionResult promoteBlock(BasicBlock& block,
-                                  const std::unordered_set<std::string>& promotableSlots) {
-  std::unordered_map<std::string, std::string> replacements;
-  std::unordered_map<std::string, std::string> currentValue;
-  std::unordered_map<std::string, bool> sawUnreplacedLoad;
-  std::unordered_map<std::string, bool> sawAnyLoad;
-  std::unordered_set<std::string> touchedSlots;
-  std::vector<Instruction> rewrittenInstructions;
-  rewrittenInstructions.reserve(block.instructions().size());
-
-  for (const auto& instruction : block.instructions()) {
-    auto operands = detail::rewriteOperands(instruction.operands(), replacements);
-    Instruction rewritten{instruction.opcode(), operands, instruction.result()};
-    bool removed = false;
-
-    if (rewritten.opcode() == "load" && rewritten.hasResult() && operands.size() == 2) {
-      const auto& slot = operands[1];
-      if (promotableSlots.find(slot) != promotableSlots.end()) {
-        sawAnyLoad[slot] = true;
-        touchedSlots.insert(slot);
-        const auto found = currentValue.find(slot);
-        if (found != currentValue.end()) {
-          replacements[rewritten.result()] = detail::resolveAlias(found->second, replacements);
-          removed = true;
-        } else {
-          sawUnreplacedLoad[slot] = true;
-          replacements.erase(rewritten.result());
-        }
-      } else {
-        replacements.erase(rewritten.result());
+std::unordered_map<std::string, SlotInfo> collectSlotInfo(const Function& function,
+                                                          const CFG& cfg) {
+  std::unordered_map<std::string, SlotInfo> slots;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (isScalarAlloca(instruction)) {
+        slots.emplace(instruction.result(), SlotInfo{instruction.operands().front(), false, {}, {}});
       }
-    } else if (rewritten.opcode() == "store" && operands.size() == 3) {
-      const auto& slot = operands[2];
-      if (promotableSlots.find(slot) != promotableSlots.end()) {
-        touchedSlots.insert(slot);
-        currentValue[slot] = operands[1];
-      }
-    } else if (rewritten.hasResult()) {
-      replacements.erase(rewritten.result());
-    }
-
-    if (!removed) {
-      rewrittenInstructions.push_back(std::move(rewritten));
     }
   }
 
-  BlockPromotionResult result;
-  for (const auto& slot : touchedSlots) {
-    if (!sawUnreplacedLoad[slot]) {
-      result.removableSlots.insert(slot);
-    }
+  if (slots.empty()) {
+    return slots;
   }
 
-  if (!result.removableSlots.empty()) {
-    std::vector<Instruction> kept;
-    kept.reserve(rewrittenInstructions.size());
-    for (const auto& instruction : rewrittenInstructions) {
-      const auto& operands = instruction.operands();
-      if (instruction.opcode() == "store" && operands.size() == 3 &&
-          result.removableSlots.find(operands[2]) != result.removableSlots.end()) {
-        continue;
-      }
-      if (instruction.hasResult() && instruction.opcode() == "alloca" &&
-          result.removableSlots.find(instruction.result()) != result.removableSlots.end()) {
-        continue;
-      }
-      kept.push_back(instruction);
-    }
-    block.instructions() = std::move(kept);
-  } else {
-    block.instructions() = std::move(rewrittenInstructions);
-  }
-
-  return result;
-}
-
-void cleanupPromotedSlots(Function& function,
-                          const std::unordered_set<std::string>& removableSlots) {
-  if (removableSlots.empty()) {
-    return;
-  }
-  for (auto& block : function.blocks()) {
-    std::vector<Instruction> kept;
-    kept.reserve(block.instructions().size());
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size(); ++blockIndex) {
+    std::unordered_set<std::string> definedInBlock;
+    const auto& block = function.blocks()[blockIndex];
     for (const auto& instruction : block.instructions()) {
       const auto& operands = instruction.operands();
-      if (instruction.opcode() == "store" && operands.size() == 3 &&
-          removableSlots.find(operands[2]) != removableSlots.end()) {
+      if (instruction.opcode() == "load" && operands.size() == 2) {
+        auto found = slots.find(operands[1]);
+        if (found != slots.end() && definedInBlock.find(operands[1]) == definedInBlock.end()) {
+          found->second.useBeforeDefBlocks.insert(blockIndex);
+        }
         continue;
       }
-      if (instruction.hasResult() && instruction.opcode() == "alloca" &&
-          removableSlots.find(instruction.result()) != removableSlots.end()) {
+      if (instruction.opcode() == "store" && operands.size() == 3) {
+        if (auto found = slots.find(operands[2]); found != slots.end()) {
+          found->second.defBlocks.insert(blockIndex);
+          definedInBlock.insert(operands[2]);
+        }
+        if (auto storedAddress = slots.find(operands[1]); storedAddress != slots.end()) {
+          storedAddress->second.escaped = true;
+        }
         continue;
       }
-      kept.push_back(instruction);
+
+      for (const auto& operand : operands) {
+        if (auto found = slots.find(operand); found != slots.end()) {
+          found->second.escaped = true;
+        }
+      }
     }
-    block.instructions() = std::move(kept);
+  }
+
+  (void)cfg;
+  return slots;
+}
+
+std::unordered_set<std::size_t> computeLiveInBlocks(const SlotInfo& slot, const CFG& cfg) {
+  std::unordered_set<std::size_t> liveIn = slot.useBeforeDefBlocks;
+  std::deque<std::size_t> worklist(slot.useBeforeDefBlocks.begin(), slot.useBeforeDefBlocks.end());
+
+  while (!worklist.empty()) {
+    const std::size_t block = worklist.front();
+    worklist.pop_front();
+    for (const auto pred : cfg.predecessors[block]) {
+      if (liveIn.find(pred) != liveIn.end()) {
+        continue;
+      }
+      liveIn.insert(pred);
+      if (slot.defBlocks.find(pred) == slot.defBlocks.end()) {
+        worklist.push_back(pred);
+      }
+    }
+  }
+
+  return liveIn;
+}
+
+struct PhiPlacement {
+  std::unordered_map<std::string, std::string> resultToSlot;
+};
+
+PhiPlacement insertPhiNodes(Function& function, const CFG& cfg, const DominatorInfo& dom,
+                            const std::unordered_map<std::string, SlotInfo>& slots) {
+  PhiPlacement placement;
+  std::size_t nextValueIndex = 0;
+  std::unordered_set<std::string> usedNames;
+  for (const auto& parameter : function.parameters()) {
+    usedNames.insert(parameter.name);
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) {
+        usedNames.insert(instruction.result());
+      }
+    }
+  }
+
+  auto fresh = [&]() {
+    while (true) {
+      const std::string candidate = "%m2r" + std::to_string(nextValueIndex++);
+      if (usedNames.insert(candidate).second) {
+        return candidate;
+      }
+    }
+  };
+
+  for (const auto& [slot, info] : slots) {
+    if (info.escaped || info.defBlocks.empty()) {
+      continue;
+    }
+
+    const auto liveInBlocks = computeLiveInBlocks(info, cfg);
+    std::deque<std::size_t> worklist(info.defBlocks.begin(), info.defBlocks.end());
+    std::unordered_set<std::size_t> hasPhi;
+
+    while (!worklist.empty()) {
+      const std::size_t block = worklist.front();
+      worklist.pop_front();
+      for (const auto frontierBlock : dom.frontier[block]) {
+        if (liveInBlocks.find(frontierBlock) == liveInBlocks.end()) {
+          continue;
+        }
+        if (!hasPhi.insert(frontierBlock).second) {
+          continue;
+        }
+        const std::string result = fresh();
+        auto& instructions = function.blocks()[frontierBlock].instructions();
+        instructions.insert(instructions.begin(), Instruction{"phi", {info.type}, result});
+        placement.resultToSlot.emplace(result, slot);
+        if (info.defBlocks.find(frontierBlock) == info.defBlocks.end()) {
+          worklist.push_back(frontierBlock);
+        }
+      }
+    }
+  }
+
+  return placement;
+}
+
+struct RenameState {
+  const CFG& cfg;
+  const DominatorInfo& dom;
+  const std::unordered_map<std::string, SlotInfo>& slots;
+  const PhiPlacement& placement;
+  std::unordered_map<std::string, std::vector<std::string>> valueStack;
+  std::unordered_map<std::string, std::string> aliases;
+};
+
+bool isPromotableSlot(const std::string& slot,
+                      const std::unordered_map<std::string, SlotInfo>& slots) {
+  const auto found = slots.find(slot);
+  return found != slots.end() && !found->second.escaped;
+}
+
+std::string currentValueForSlot(const std::string& slot, RenameState& state) {
+  auto& stack = state.valueStack[slot];
+  if (!stack.empty()) {
+    return stack.back();
+  }
+  const auto found = state.slots.find(slot);
+  if (found == state.slots.end()) {
+    return "0";
+  }
+  return zeroValueForType(found->second.type);
+}
+
+void addIncomingToSuccessorPhis(Function& function, std::size_t blockIndex, RenameState& state) {
+  for (const auto succ : state.cfg.successors[blockIndex]) {
+    auto& instructions = function.blocks()[succ].instructions();
+    for (auto& instruction : instructions) {
+      if (instruction.opcode() != "phi") {
+        break;
+      }
+      const auto slotIt = state.placement.resultToSlot.find(instruction.result());
+      if (slotIt == state.placement.resultToSlot.end()) {
+        continue;
+      }
+      const std::string value = currentValueForSlot(slotIt->second, state);
+      auto operands = instruction.operands();
+      operands.push_back(detail::resolveAlias(value, state.aliases));
+      operands.push_back(state.cfg.names[blockIndex]);
+      instruction = Instruction{"phi", std::move(operands), instruction.result()};
+    }
+  }
+}
+
+void renameBlock(Function& function, std::size_t blockIndex, RenameState& state) {
+  std::vector<std::string> pushedSlots;
+  auto& block = function.blocks()[blockIndex];
+  std::vector<Instruction> rewritten;
+  rewritten.reserve(block.instructions().size());
+
+  for (const auto& instruction : block.instructions()) {
+    if (instruction.opcode() != "phi") {
+      break;
+    }
+    const auto found = state.placement.resultToSlot.find(instruction.result());
+    if (found == state.placement.resultToSlot.end()) {
+      rewritten.push_back(instruction);
+      continue;
+    }
+    state.valueStack[found->second].push_back(instruction.result());
+    pushedSlots.push_back(found->second);
+    rewritten.push_back(instruction);
+  }
+
+  for (const auto& instruction : block.instructions()) {
+    if (instruction.opcode() == "phi") {
+      continue;
+    }
+
+    auto operands = detail::rewriteOperands(instruction.operands(), state.aliases);
+    Instruction rewrittenInstruction{instruction.opcode(), operands, instruction.result()};
+
+    if (rewrittenInstruction.opcode() == "alloca" && isPromotableSlot(rewrittenInstruction.result(), state.slots)) {
+      continue;
+    }
+
+    if (rewrittenInstruction.opcode() == "load" && rewrittenInstruction.hasResult() &&
+        operands.size() == 2 && isPromotableSlot(operands[1], state.slots)) {
+      state.aliases[rewrittenInstruction.result()] =
+          detail::resolveAlias(currentValueForSlot(operands[1], state), state.aliases);
+      continue;
+    }
+
+    if (rewrittenInstruction.opcode() == "store" && operands.size() == 3 &&
+        isPromotableSlot(operands[2], state.slots)) {
+      state.valueStack[operands[2]].push_back(operands[1]);
+      pushedSlots.push_back(operands[2]);
+      continue;
+    }
+
+    if (rewrittenInstruction.hasResult()) {
+      state.aliases.erase(rewrittenInstruction.result());
+    }
+    rewritten.push_back(std::move(rewrittenInstruction));
+  }
+
+  block.instructions() = std::move(rewritten);
+  addIncomingToSuccessorPhis(function, blockIndex, state);
+
+  for (const auto child : state.dom.children[blockIndex]) {
+    renameBlock(function, child, state);
+  }
+
+  for (auto it = pushedSlots.rbegin(); it != pushedSlots.rend(); ++it) {
+    auto& stack = state.valueStack[*it];
+    if (!stack.empty()) {
+      stack.pop_back();
+    }
   }
 }
 
 void runMem2Reg(Function& function) {
-  const auto promotable = collectPromotableSlots(function);
-  if (promotable.empty()) {
+  if (function.blocks().empty()) {
     return;
   }
 
-  std::unordered_set<std::string> removableSlots;
-  for (auto& block : function.blocks()) {
-    BlockPromotionResult result = promoteBlock(block, promotable);
-    removableSlots.insert(result.removableSlots.begin(), result.removableSlots.end());
+  const CFG cfg = buildCFG(function);
+  const DominatorInfo dom = computeDominators(cfg);
+  const auto slots = collectSlotInfo(function, cfg);
+  bool hasPromotableSlot = false;
+  for (const auto& [slot, info] : slots) {
+    if (!info.escaped) {
+      hasPromotableSlot = true;
+      break;
+    }
+  }
+  if (!hasPromotableSlot) {
+    return;
   }
 
-  cleanupPromotedSlots(function, removableSlots);
+  const PhiPlacement placement = insertPhiNodes(function, cfg, dom, slots);
+  RenameState state{cfg, dom, slots, placement, {}, {}};
+  renameBlock(function, 0, state);
 }
 
 }  // namespace

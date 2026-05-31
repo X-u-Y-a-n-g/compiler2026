@@ -394,6 +394,9 @@ ValueType inferInstructionResultType(const compiler::ir::core::Instruction& inst
   if (opcode == "load") {
     return scalarValueTypeFromObject(parseObjectType(operands[0]));
   }
+  if (opcode == "phi") {
+    return scalarValueTypeFromObject(parseObjectType(operands[0]));
+  }
   if (opcode == "call") {
     const std::string callee = operands[0].substr(1);
     if (const auto found = signatures.find(callee); found != signatures.end()) {
@@ -459,6 +462,18 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
   if (opcode == "load") {
     const ObjectType objectType = parseObjectType(operands[0]);
     os << "load " << printObjectType(objectType) << ", ptr " << operands[1];
+    return os.str();
+  }
+
+  if (opcode == "phi") {
+    const ValueType valueType = scalarValueTypeFromObject(parseObjectType(operands[0]));
+    os << "phi " << printValueType(valueType) << " ";
+    for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
+      if (i != 1) {
+        os << ", ";
+      }
+      os << "[" << renderOperand(operands[i], valueType) << ", %" << operands[i + 1] << "]";
+    }
     return os.str();
   }
 

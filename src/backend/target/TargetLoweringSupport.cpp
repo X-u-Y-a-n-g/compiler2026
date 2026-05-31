@@ -321,6 +321,19 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "phi") {
+      const ObjectType objectType = parseObjectType(operands[0]);
+      const ValueType resultType = scalarValueTypeFromObject(objectType);
+      std::vector<compiler::backend::mir::MachinePhiIncoming> incoming;
+      for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
+        incoming.push_back({operands[i + 1], lowerValueOperand(operands[i], resultType)});
+      }
+      block.instructions.push_back(
+          MachineInstruction::phi(bindVirtualResult(instruction.result(), resultType),
+                                  std::move(incoming)));
+      return;
+    }
+
     if (opcode == "store") {
       const ObjectType objectType = parseObjectType(operands[0]);
       const ValueType valueType = scalarValueTypeFromObject(objectType);
