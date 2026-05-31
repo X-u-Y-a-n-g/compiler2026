@@ -315,9 +315,7 @@ void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function
   const auto& result = instruction.result;
   if (result.type.isFloat()) {
     emitLoadFloatOperand(os, function, source, "ft0");
-    if (result.kind == MachineOperandKind::StackSlot) {
-      emitStoreStackSlot(os, function, result.index, "ft0", result.type);
-    }
+    emitStoreResult(os, function, result, "ft0");
     return;
   }
 

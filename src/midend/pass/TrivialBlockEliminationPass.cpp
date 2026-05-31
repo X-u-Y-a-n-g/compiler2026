@@ -61,6 +61,50 @@ std::unordered_map<std::string, std::vector<std::string>> computePredecessors(
   return predecessors;
 }
 
+const BasicBlock* findBlock(const Function& function, const std::string& name) {
+  for (const auto& block : function.blocks()) {
+    if (block.name() == name) {
+      return &block;
+    }
+  }
+  return nullptr;
+}
+
+bool phiConflictAfterRedirect(
+    const Function& function, const std::string& blockName, const std::string& targetName,
+    const std::unordered_map<std::string, std::vector<std::string>>& predecessors) {
+  const auto* target = findBlock(function, targetName);
+  if (target == nullptr) {
+    return false;
+  }
+
+  const auto predIt = predecessors.find(blockName);
+  if (predIt == predecessors.end()) {
+    return false;
+  }
+
+  for (const auto& instruction : target->instructions()) {
+    if (instruction.opcode() != "phi") {
+      break;
+    }
+    const auto& operands = instruction.operands();
+    for (std::size_t i = 2; i < operands.size(); i += 2) {
+      if (operands[i] != blockName) {
+        continue;
+      }
+      const auto& redirectedValue = operands[i - 1];
+      for (const auto& pred : predIt->second) {
+        for (std::size_t j = 2; j < operands.size(); j += 2) {
+          if (operands[j] == pred && operands[j - 1] != redirectedValue) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 void expandIncomingBlock(const std::string& block,
                          const std::unordered_map<std::string, std::string>& redirects,
                          const std::unordered_map<std::string, std::vector<std::string>>& predecessors,
@@ -129,7 +173,8 @@ void eliminateTrivialBlocks(Function& function) {
       continue;
     }
     const auto& target = block.instructions().front().operands().front();
-    if (target != block.name()) {
+    if (target != block.name() &&
+        !phiConflictAfterRedirect(function, block.name(), target, predecessors)) {
       redirects.emplace(block.name(), target);
     }
   }
