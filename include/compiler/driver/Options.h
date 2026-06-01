@@ -12,7 +12,7 @@ struct Options {
   bool dumpTokens = false;
   bool dumpAst = false;
   bool dumpIr = false;
-  int optLevel = 1;
+  int optLevel = 0;
 };
 
 }  // namespace compiler::driver
