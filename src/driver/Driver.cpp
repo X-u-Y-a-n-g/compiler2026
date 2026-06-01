@@ -23,6 +23,7 @@
 #include "../../include/compiler/ir/builder/AstToIR.h"
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
+#include "../../include/compiler/midend/pass/AlgebraicSimplificationPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
@@ -157,8 +158,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
 
   compiler::midend::pass::PassManager passManager;
   if (invocation.options().optLevel > 0) {
+    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
