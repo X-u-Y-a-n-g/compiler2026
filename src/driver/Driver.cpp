@@ -24,6 +24,7 @@
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AlgebraicSimplificationPass.h"
+#include "../../include/compiler/midend/pass/BranchSimplificationPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
@@ -170,6 +171,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }
