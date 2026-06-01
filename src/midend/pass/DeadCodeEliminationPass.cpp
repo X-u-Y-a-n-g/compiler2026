@@ -5,7 +5,10 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+
+#include "IRPassUtils.h"
 
 namespace compiler::midend::pass {
 
@@ -17,6 +20,20 @@ using compiler::ir::core::Instruction;
 
 bool isValueReference(const std::string& operand) {
   return !operand.empty() && (operand.front() == '%' || operand.front() == '@');
+}
+
+bool isTrueConstant(const std::string& operand) {
+  long long value = 0;
+  return detail::parseIntegerLiteral(operand, value) && value != 0;
+}
+
+bool isFalseConstant(const std::string& operand) {
+  long long value = 0;
+  return detail::parseIntegerLiteral(operand, value) && value == 0;
+}
+
+std::string zeroValueForType(const std::string& type) {
+  return type == "float" ? "0.0" : "0";
 }
 
 std::vector<std::string> branchTargets(const BasicBlock& block) {
@@ -80,6 +97,36 @@ std::unordered_map<std::string, std::unordered_set<std::string>> predecessorMap(
   return predecessors;
 }
 
+bool simplifyConstantBranches(Function& function) {
+  bool changed = false;
+  for (auto& block : function.blocks()) {
+    auto& instructions = block.instructions();
+    if (instructions.empty()) {
+      continue;
+    }
+    const auto& terminator = instructions.back();
+    if (terminator.opcode() != "br" || terminator.operands().size() != 3) {
+      continue;
+    }
+
+    const auto& operands = terminator.operands();
+    std::string target;
+    if (operands[1] == operands[2]) {
+      target = operands[1];
+    } else if (isTrueConstant(operands[0])) {
+      target = operands[1];
+    } else if (isFalseConstant(operands[0])) {
+      target = operands[2];
+    } else {
+      continue;
+    }
+
+    instructions.back() = Instruction{"br", {std::move(target)}};
+    changed = true;
+  }
+  return changed;
+}
+
 bool removeUnreachableBlocks(Function& function) {
   const auto reachable = reachableBlocks(function);
   const auto oldSize = function.blocks().size();
@@ -89,12 +136,13 @@ bool removeUnreachableBlocks(Function& function) {
                        return reachable.find(block.name()) == reachable.end();
                      }),
       function.blocks().end());
+  return oldSize != function.blocks().size();
+}
 
-  if (oldSize == function.blocks().size()) {
-    return false;
-  }
-
+bool prunePhiIncoming(Function& function) {
   const auto predecessors = predecessorMap(function);
+  bool changed = false;
+
   for (auto& block : function.blocks()) {
     const auto predIt = predecessors.find(block.name());
     std::vector<Instruction> rewritten;
@@ -106,22 +154,94 @@ bool removeUnreachableBlocks(Function& function) {
       }
 
       std::vector<std::string> operands;
-      if (!instruction.operands().empty()) {
-        operands.push_back(instruction.operands().front());
+      const auto& oldOperands = instruction.operands();
+      if (!oldOperands.empty()) {
+        operands.push_back(oldOperands.front());
       }
-      for (std::size_t i = 2; i < instruction.operands().size(); i += 2) {
-        if (predIt != predecessors.end() &&
-            predIt->second.find(instruction.operands()[i]) != predIt->second.end()) {
-          operands.push_back(instruction.operands()[i - 1]);
-          operands.push_back(instruction.operands()[i]);
+      for (std::size_t i = 1; i + 1 < oldOperands.size(); i += 2) {
+        const auto& value = oldOperands[i];
+        const auto& pred = oldOperands[i + 1];
+        if (predIt != predecessors.end() && predIt->second.find(pred) != predIt->second.end()) {
+          operands.push_back(value);
+          operands.push_back(pred);
         }
+      }
+
+      if (operands.size() != oldOperands.size()) {
+        changed = true;
       }
       rewritten.emplace_back(instruction.opcode(), std::move(operands), instruction.result());
     }
     block.instructions() = std::move(rewritten);
   }
 
-  return true;
+  return changed;
+}
+
+void rewriteFunctionOperands(
+    Function& function, const std::unordered_map<std::string, std::string>& aliases) {
+  if (aliases.empty()) {
+    return;
+  }
+
+  for (auto& block : function.blocks()) {
+    std::vector<Instruction> rewritten;
+    rewritten.reserve(block.instructions().size());
+    for (const auto& instruction : block.instructions()) {
+      rewritten.emplace_back(instruction.opcode(),
+                             detail::rewriteOperands(instruction.operands(), aliases),
+                             instruction.result());
+    }
+    block.instructions() = std::move(rewritten);
+  }
+}
+
+bool simplifyPhis(Function& function) {
+  std::unordered_map<std::string, std::string> aliases;
+  bool changed = false;
+
+  for (auto& block : function.blocks()) {
+    std::vector<Instruction> rewritten;
+    rewritten.reserve(block.instructions().size());
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "phi" || !instruction.hasResult()) {
+        rewritten.emplace_back(instruction.opcode(),
+                               detail::rewriteOperands(instruction.operands(), aliases),
+                               instruction.result());
+        continue;
+      }
+
+      std::vector<std::string> operands =
+          detail::rewriteOperands(instruction.operands(), aliases);
+      std::string commonValue;
+      bool hasIncoming = false;
+      bool allSame = true;
+      for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
+        const auto& value = operands[i];
+        if (!hasIncoming) {
+          commonValue = value;
+          hasIncoming = true;
+        } else if (value != commonValue) {
+          allSame = false;
+          break;
+        }
+      }
+
+      if (!hasIncoming || allSame) {
+        aliases[instruction.result()] =
+            hasIncoming ? commonValue
+                        : (operands.empty() ? "0" : zeroValueForType(operands.front()));
+        changed = true;
+        continue;
+      }
+
+      rewritten.emplace_back(instruction.opcode(), std::move(operands), instruction.result());
+    }
+    block.instructions() = std::move(rewritten);
+  }
+
+  rewriteFunctionOperands(function, aliases);
+  return changed;
 }
 
 std::vector<std::string> usedValues(const Instruction& instruction) {
@@ -205,11 +325,12 @@ bool eliminateDeadInstructions(Function& function) {
     std::vector<Instruction> kept;
     kept.reserve(block.instructions().size());
     for (const auto& instruction : block.instructions()) {
-      if (!instruction.hasResult() || live.find(&instruction) != live.end()) {
-        kept.push_back(instruction);
-      } else {
+      if (instruction.hasResult() && detail::isSideEffectFree(instruction) &&
+          live.find(&instruction) == live.end()) {
         changed = true;
+        continue;
       }
+      kept.push_back(instruction);
     }
     block.instructions() = std::move(kept);
   }
@@ -218,8 +339,15 @@ bool eliminateDeadInstructions(Function& function) {
 }
 
 void runDce(Function& function) {
-  removeUnreachableBlocks(function);
-  eliminateDeadInstructions(function);
+  bool changed = false;
+  do {
+    changed = false;
+    changed |= simplifyConstantBranches(function);
+    changed |= removeUnreachableBlocks(function);
+    changed |= prunePhiIncoming(function);
+    changed |= simplifyPhis(function);
+    changed |= eliminateDeadInstructions(function);
+  } while (changed);
 }
 
 }  // namespace
