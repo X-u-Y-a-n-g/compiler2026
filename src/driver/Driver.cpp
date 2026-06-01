@@ -31,6 +31,7 @@
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
+#include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 
 namespace compiler::driver {
 
@@ -160,6 +161,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(
