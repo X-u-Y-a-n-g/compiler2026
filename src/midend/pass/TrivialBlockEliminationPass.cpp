@@ -70,6 +70,12 @@ const BasicBlock* findBlock(const Function& function, const std::string& name) {
   return nullptr;
 }
 
+bool blockStartsWithPhi(const Function& function, const std::string& name) {
+  const auto* block = findBlock(function, name);
+  return block != nullptr && !block->instructions().empty() &&
+         block->instructions().front().opcode() == "phi";
+}
+
 bool phiConflictAfterRedirect(
     const Function& function, const std::string& blockName, const std::string& targetName,
     const std::unordered_map<std::string, std::vector<std::string>>& predecessors) {
@@ -174,6 +180,7 @@ void eliminateTrivialBlocks(Function& function) {
     }
     const auto& target = block.instructions().front().operands().front();
     if (target != block.name() &&
+        !blockStartsWithPhi(function, target) &&
         !phiConflictAfterRedirect(function, block.name(), target, predecessors)) {
       redirects.emplace(block.name(), target);
     }
