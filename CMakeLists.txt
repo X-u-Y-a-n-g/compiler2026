@@ -19,6 +19,7 @@ add_library(compiler_lib
   src/ir/verify/IRVerifier.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
+  src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp

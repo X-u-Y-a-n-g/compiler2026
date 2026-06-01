@@ -1,7 +1,9 @@
 #include "../../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 
 #include <algorithm>
+#include <deque>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -66,17 +68,68 @@ std::vector<BlockInfo> buildCFG(const Function& function) {
   return cfg;
 }
 
-std::unordered_set<std::size_t> intersect(const std::unordered_set<std::size_t>& lhs,
-                                          const std::unordered_set<std::size_t>& rhs) {
-  std::unordered_set<std::size_t> out;
-  const auto& smaller = lhs.size() < rhs.size() ? lhs : rhs;
-  const auto& larger = lhs.size() < rhs.size() ? rhs : lhs;
-  for (const auto value : smaller) {
-    if (larger.find(value) != larger.end()) {
-      out.insert(value);
+std::vector<bool> computeReachable(const std::vector<BlockInfo>& cfg) {
+  std::vector<bool> reachable(cfg.size(), false);
+  if (cfg.empty()) {
+    return reachable;
+  }
+
+  std::deque<std::size_t> worklist;
+  reachable[0] = true;
+  worklist.push_back(0);
+  while (!worklist.empty()) {
+    const auto block = worklist.front();
+    worklist.pop_front();
+    for (const auto succ : cfg[block].succs) {
+      if (reachable[succ]) {
+        continue;
+      }
+      reachable[succ] = true;
+      worklist.push_back(succ);
     }
   }
-  return out;
+  return reachable;
+}
+
+std::vector<std::size_t> computeReversePostOrder(const std::vector<BlockInfo>& cfg,
+                                                 const std::vector<bool>& reachable) {
+  std::vector<std::size_t> order;
+  if (cfg.empty()) {
+    return order;
+  }
+
+  std::vector<bool> visited(cfg.size(), false);
+  std::vector<std::pair<std::size_t, std::size_t>> stack;
+  stack.emplace_back(0, 0);
+  visited[0] = true;
+  while (!stack.empty()) {
+    auto& [block, nextSucc] = stack.back();
+    if (nextSucc < cfg[block].succs.size()) {
+      const auto succ = cfg[block].succs[nextSucc++];
+      if (reachable[succ] && !visited[succ]) {
+        visited[succ] = true;
+        stack.emplace_back(succ, 0);
+      }
+      continue;
+    }
+    order.push_back(block);
+    stack.pop_back();
+  }
+  std::reverse(order.begin(), order.end());
+  return order;
+}
+
+std::size_t intersectIdoms(std::size_t lhs, std::size_t rhs, const std::vector<int>& idom,
+                           const std::vector<std::size_t>& rpoIndex) {
+  while (lhs != rhs) {
+    while (rpoIndex[lhs] > rpoIndex[rhs]) {
+      lhs = static_cast<std::size_t>(idom[lhs]);
+    }
+    while (rpoIndex[rhs] > rpoIndex[lhs]) {
+      rhs = static_cast<std::size_t>(idom[rhs]);
+    }
+  }
+  return lhs;
 }
 
 std::vector<std::vector<std::size_t>> buildDominatorTree(const std::vector<BlockInfo>& cfg) {
@@ -86,63 +139,45 @@ std::vector<std::vector<std::size_t>> buildDominatorTree(const std::vector<Block
     return tree;
   }
 
-  std::vector<std::unordered_set<std::size_t>> doms(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    if (i == 0) {
-      doms[i].insert(0);
-    } else {
-      for (std::size_t j = 0; j < n; ++j) {
-        doms[i].insert(j);
-      }
-    }
+  const auto reachable = computeReachable(cfg);
+  const auto rpo = computeReversePostOrder(cfg, reachable);
+  std::vector<std::size_t> rpoIndex(n, n);
+  for (std::size_t i = 0; i < rpo.size(); ++i) {
+    rpoIndex[rpo[i]] = i;
   }
 
+  std::vector<int> idom(n, -1);
+  idom[0] = 0;
   bool changed = true;
   while (changed) {
     changed = false;
-    for (std::size_t block = 1; block < n; ++block) {
-      if (cfg[block].preds.empty()) {
+    for (const auto block : rpo) {
+      if (block == 0) {
         continue;
       }
 
-      auto next = doms[cfg[block].preds.front()];
-      for (std::size_t i = 1; i < cfg[block].preds.size(); ++i) {
-        next = intersect(next, doms[cfg[block].preds[i]]);
+      std::optional<std::size_t> next;
+      for (const auto pred : cfg[block].preds) {
+        if (!reachable[pred] || idom[pred] < 0) {
+          continue;
+        }
+        if (!next.has_value()) {
+          next = pred;
+        } else {
+          next = intersectIdoms(pred, *next, idom, rpoIndex);
+        }
       }
-      next.insert(block);
-      if (next != doms[block]) {
-        doms[block] = std::move(next);
+      if (next.has_value() && idom[block] != static_cast<int>(*next)) {
+        idom[block] = static_cast<int>(*next);
         changed = true;
       }
     }
   }
 
   for (std::size_t block = 1; block < n; ++block) {
-    std::size_t idom = 0;
-    bool foundIdom = false;
-    for (const auto candidate : doms[block]) {
-      if (candidate == block) {
-        continue;
-      }
-
-      bool dominatedByAnotherCandidate = false;
-      for (const auto other : doms[block]) {
-        if (other == block || other == candidate) {
-          continue;
-        }
-        if (doms[candidate].find(other) != doms[candidate].end()) {
-          dominatedByAnotherCandidate = true;
-          break;
-        }
-      }
-
-      if (!dominatedByAnotherCandidate) {
-        idom = candidate;
-        foundIdom = true;
-        break;
-      }
+    if (reachable[block] && idom[block] >= 0) {
+      tree[static_cast<std::size_t>(idom[block])].push_back(block);
     }
-    tree[foundIdom ? idom : 0].push_back(block);
   }
 
   return tree;
