@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -260,7 +261,8 @@ def write_bytes(path: Path, data: bytes | None) -> None:
 
 def run_command(
     cmd: list[str], timeout_sec: int, stdin_data: bytes | None = None
-) -> tuple[int, bytes, bytes]:
+) -> tuple[int, bytes, bytes, float]:
+    start = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd,
@@ -270,9 +272,13 @@ def run_command(
             timeout=timeout_sec,
             check=False,
         )
-        return proc.returncode, proc.stdout, proc.stderr
+        return proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - start
     except subprocess.TimeoutExpired as exc:
-        return 124, exc.stdout or b"", exc.stderr or b""
+        return 124, exc.stdout or b"", exc.stderr or b"", time.perf_counter() - start
+
+
+def format_seconds(seconds: float) -> str:
+    return f"{seconds:.6f}"
 
 
 def split_natural(text: str) -> list[tuple[int, object]]:
@@ -513,6 +519,9 @@ def main() -> int:
     final_year_counter: Counter[tuple[str, str]] = Counter()
     final_suite_counter: Counter[tuple[str, str]] = Counter()
     dump_counter: Counter[tuple[str, str]] = Counter()
+    total_compile_seconds = 0.0
+    total_link_seconds = 0.0
+    total_run_seconds = 0.0
 
     with results_path.open("w", newline="", encoding="utf-8") as results_file, dumps_path.open(
         "w", newline="", encoding="utf-8"
@@ -525,10 +534,14 @@ def main() -> int:
                 "final_status",
                 "compile_status",
                 "compile_exit_code",
+                "compile_seconds",
                 "link_status",
                 "link_exit_code",
+                "link_seconds",
                 "run_status",
                 "run_exit_code",
+                "run_seconds",
+                "total_seconds",
                 "compare_status",
                 "year",
                 "suite",
@@ -574,14 +587,18 @@ def main() -> int:
                     str(asm_file),
                 ]
 
-            compile_code, compile_stdout, compile_stderr = run_command(compile_cmd, args.timeout)
+            compile_code, compile_stdout, compile_stderr, compile_seconds = run_command(
+                compile_cmd, args.timeout
+            )
             compile_status = classify_exit(compile_code)
             compile_status_counter[compile_status] += 1
 
             link_status = "SKIP"
             link_code = -1
+            link_seconds = 0.0
             run_status = "SKIP"
             run_code = -1
+            run_seconds = 0.0
             compare_status = "SKIP"
             compare_expected = ""
             compare_actual = ""
@@ -617,7 +634,9 @@ def main() -> int:
                     )
                 else:
                     link_cmd.append("-static")
-                link_code, link_stdout, link_stderr = run_command(link_cmd, args.timeout)
+                link_code, link_stdout, link_stderr, link_seconds = run_command(
+                    link_cmd, args.timeout
+                )
                 link_status = classify_exit(link_code)
                 link_status_counter[link_status] += 1
 
@@ -634,7 +653,7 @@ def main() -> int:
                 stdin_data = input_file.read_bytes() if input_file.exists() else b""
                 print_case_status(case_name, f"[{index}/{len(sources)}] Executing")
                 run_cmd = [qemu, str(bin_file)]
-                run_code, run_stdout, run_stderr = run_command(
+                run_code, run_stdout, run_stderr, run_seconds = run_command(
                     run_cmd, args.run_timeout, stdin_data=stdin_data
                 )
                 run_status = classify_run_exit(run_code)
@@ -674,6 +693,10 @@ def main() -> int:
             final_status_counter[row_final_status] += 1
             final_year_counter[(year, row_final_status)] += 1
             final_suite_counter[(suite, row_final_status)] += 1
+            total_seconds = compile_seconds + link_seconds + run_seconds
+            total_compile_seconds += compile_seconds
+            total_link_seconds += link_seconds
+            total_run_seconds += run_seconds
 
             if row_final_status == "OK":
                 final_label = "\033[92mAccepted\033[0m"
@@ -696,10 +719,14 @@ def main() -> int:
                     row_final_status,
                     compile_status,
                     compile_code,
+                    format_seconds(compile_seconds),
                     link_status,
                     link_code,
+                    format_seconds(link_seconds),
                     run_status,
                     run_code,
+                    format_seconds(run_seconds),
+                    format_seconds(total_seconds),
                     compare_status,
                     year,
                     suite,
@@ -721,7 +748,9 @@ def main() -> int:
                         args.target,
                         f"--dump-{dump_name}",
                     ]
-                    dump_code, dump_stdout, dump_stderr = run_command(dump_cmd, args.timeout)
+                    dump_code, dump_stdout, dump_stderr, _dump_seconds = run_command(
+                        dump_cmd, args.timeout
+                    )
                     dump_status = classify_exit(dump_code)
                     write_bytes(dump_file, dump_stdout)
                     write_bytes(dump_stderr_path, dump_stderr)
@@ -748,6 +777,10 @@ def main() -> int:
         f"运行超时(秒): {args.run_timeout}",
         f"输出对拍: {'开启' if verify_output else '关闭'}",
         f"中间产物模式: {args.dump_mode}",
+        f"累计编译耗时(秒): {format_seconds(total_compile_seconds)}",
+        f"累计链接耗时(秒): {format_seconds(total_link_seconds)}",
+        f"累计运行耗时(秒): {format_seconds(total_run_seconds)}",
+        f"累计评测耗时(秒): {format_seconds(total_compile_seconds + total_link_seconds + total_run_seconds)}",
         "",
         "[最终结果汇总]",
         f"TOTAL={sum(final_status_counter.values())}",
