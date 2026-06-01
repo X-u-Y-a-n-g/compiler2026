@@ -17,10 +17,9 @@ namespace {
 using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
-using compiler::ir::core::Module;
 
 bool isValueReference(const std::string& operand) {
-  return !operand.empty() && operand.front() == '%';
+  return !operand.empty() && (operand.front() == '%' || operand.front() == '@');
 }
 
 bool isTrueConstant(const std::string& operand) {
@@ -96,77 +95,6 @@ std::unordered_map<std::string, std::unordered_set<std::string>> predecessorMap(
     }
   }
   return predecessors;
-}
-
-std::string calleeName(const Instruction& instruction) {
-  if (instruction.opcode() != "call" || instruction.operands().empty()) {
-    return {};
-  }
-  const auto& operand = instruction.operands().front();
-  return !operand.empty() && operand.front() == '@' ? operand.substr(1) : operand;
-}
-
-std::unordered_map<std::string, const Function*> functionMap(const Module& module) {
-  std::unordered_map<std::string, const Function*> functions;
-  for (const auto& function : module.functions()) {
-    functions.emplace(function.name(), &function);
-  }
-  return functions;
-}
-
-std::unordered_map<std::string, bool> computeFunctionPurity(const Module& module) {
-  const auto functions = functionMap(module);
-  std::unordered_map<std::string, bool> pure;
-  for (const auto& function : module.functions()) {
-    pure.emplace(function.name(), true);
-  }
-
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    for (const auto& function : module.functions()) {
-      bool isPure = true;
-      for (const auto& block : function.blocks()) {
-        for (const auto& instruction : block.instructions()) {
-          const auto& opcode = instruction.opcode();
-          if (opcode == "store") {
-            isPure = false;
-            break;
-          }
-          if (opcode == "call") {
-            const auto callee = calleeName(instruction);
-            if (functions.find(callee) == functions.end()) {
-              isPure = false;
-              break;
-            }
-            const auto calleePurity = pure.find(callee);
-            if (calleePurity == pure.end() || !calleePurity->second) {
-              isPure = false;
-              break;
-            }
-          }
-        }
-        if (!isPure) {
-          break;
-        }
-      }
-
-      auto& cached = pure[function.name()];
-      if (cached != isPure) {
-        cached = isPure;
-        changed = true;
-      }
-    }
-  }
-
-  return pure;
-}
-
-bool isPureCall(const Instruction& instruction,
-                const std::unordered_map<std::string, bool>& pureFunctions) {
-  const auto callee = calleeName(instruction);
-  const auto found = pureFunctions.find(callee);
-  return found != pureFunctions.end() && found->second;
 }
 
 bool simplifyConstantBranches(Function& function) {
@@ -345,9 +273,7 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
     return uses;
   }
 
-  const std::size_t firstOperand = instruction.opcode() == "call" ? 1 : 0;
-  for (std::size_t i = firstOperand; i < operands.size(); ++i) {
-    const auto& operand = operands[i];
+  for (const auto& operand : operands) {
     if (isValueReference(operand)) {
       uses.push_back(operand);
     }
@@ -355,28 +281,12 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
   return uses;
 }
 
-bool isEssential(const Instruction& instruction,
-                 const std::unordered_map<std::string, bool>& pureFunctions) {
+bool isEssential(const Instruction& instruction) {
   const auto& opcode = instruction.opcode();
-  if (opcode == "call") {
-    return !isPureCall(instruction, pureFunctions);
-  }
-  return opcode == "br" || opcode == "ret" || opcode == "store";
+  return opcode == "br" || opcode == "ret" || opcode == "store" || opcode == "call";
 }
 
-bool isRemovableWhenDead(const Instruction& instruction,
-                         const std::unordered_map<std::string, bool>& pureFunctions) {
-  if (instruction.opcode() == "call") {
-    return isPureCall(instruction, pureFunctions);
-  }
-  if (!instruction.hasResult()) {
-    return false;
-  }
-  return instruction.opcode() == "phi" || detail::isSideEffectFree(instruction);
-}
-
-bool eliminateDeadInstructions(Function& function,
-                               const std::unordered_map<std::string, bool>& pureFunctions) {
+bool eliminateDeadInstructions(Function& function) {
   std::unordered_map<std::string, const Instruction*> definitions;
   std::vector<const Instruction*> roots;
 
@@ -385,7 +295,7 @@ bool eliminateDeadInstructions(Function& function,
       if (instruction.hasResult()) {
         definitions[instruction.result()] = &instruction;
       }
-      if (isEssential(instruction, pureFunctions)) {
+      if (isEssential(instruction)) {
         roots.push_back(&instruction);
       }
     }
@@ -415,8 +325,8 @@ bool eliminateDeadInstructions(Function& function,
     std::vector<Instruction> kept;
     kept.reserve(block.instructions().size());
     for (const auto& instruction : block.instructions()) {
-      if (isRemovableWhenDead(instruction, pureFunctions) &&
-          (!instruction.hasResult() || live.find(&instruction) == live.end())) {
+      if (instruction.hasResult() && detail::isSideEffectFree(instruction) &&
+          live.find(&instruction) == live.end()) {
         changed = true;
         continue;
       }
@@ -428,60 +338,7 @@ bool eliminateDeadInstructions(Function& function,
   return changed;
 }
 
-std::unordered_map<std::string, std::unordered_set<std::string>> callerMap(const Module& module) {
-  std::unordered_map<std::string, std::unordered_set<std::string>> callers;
-  for (const auto& function : module.functions()) {
-    callers.emplace(function.name(), std::unordered_set<std::string>{});
-  }
-
-  for (const auto& function : module.functions()) {
-    for (const auto& block : function.blocks()) {
-      for (const auto& instruction : block.instructions()) {
-        const auto callee = calleeName(instruction);
-        if (callee.empty()) {
-          continue;
-        }
-        if (callers.find(callee) != callers.end()) {
-          callers[callee].insert(function.name());
-        }
-      }
-    }
-  }
-  return callers;
-}
-
-bool removeUnusedFunctions(Module& module) {
-  bool changed = false;
-  bool removed = true;
-  while (removed) {
-    removed = false;
-    const auto callers = callerMap(module);
-    auto& functions = module.functions();
-    const auto oldSize = functions.size();
-    functions.erase(std::remove_if(functions.begin(), functions.end(),
-                                   [&](const Function& function) {
-                                     if (function.name() == "main") {
-                                       return false;
-                                     }
-                                     const auto found = callers.find(function.name());
-                                     if (found == callers.end() || found->second.empty()) {
-                                       removed = true;
-                                       return true;
-                                     }
-                                     if (found->second.size() == 1 &&
-                                         found->second.find(function.name()) != found->second.end()) {
-                                       removed = true;
-                                       return true;
-                                     }
-                                     return false;
-                                   }),
-                    functions.end());
-    changed = changed || oldSize != functions.size();
-  }
-  return changed;
-}
-
-void runDce(Function& function, const std::unordered_map<std::string, bool>& pureFunctions) {
+void runDce(Function& function) {
   bool changed = false;
   do {
     changed = false;
@@ -489,7 +346,7 @@ void runDce(Function& function, const std::unordered_map<std::string, bool>& pur
     changed |= removeUnreachableBlocks(function);
     changed |= prunePhiIncoming(function);
     changed |= simplifyPhis(function);
-    changed |= eliminateDeadInstructions(function, pureFunctions);
+    changed |= eliminateDeadInstructions(function);
   } while (changed);
 }
 
@@ -497,15 +354,9 @@ void runDce(Function& function, const std::unordered_map<std::string, bool>& pur
 
 bool DeadCodeEliminationPass::run(compiler::ir::core::Module& module) {
   const auto before = detail::moduleFingerprint(module);
-  bool changed = false;
-  do {
-    changed = false;
-    const auto pureFunctions = computeFunctionPurity(module);
-    for (auto& function : module.functions()) {
-      runDce(function, pureFunctions);
-    }
-    changed |= removeUnusedFunctions(module);
-  } while (changed);
+  for (auto& function : module.functions()) {
+    runDce(function);
+  }
   return before != detail::moduleFingerprint(module);
 }
 
