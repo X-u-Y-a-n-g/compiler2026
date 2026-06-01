@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../include/compiler/ir/core/Instruction.h"
+#include "../../../include/compiler/ir/core/Module.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -122,6 +123,27 @@ inline bool isSideEffectFree(const compiler::ir::core::Instruction& instruction)
          opcode == "and" || opcode == "or" || opcode == "fadd" || opcode == "fsub" ||
          opcode == "fmul" || opcode == "fdiv" || opcode.rfind("icmp.", 0) == 0 ||
          opcode.rfind("fcmp.", 0) == 0;
+}
+
+inline std::string moduleFingerprint(const compiler::ir::core::Module& module) {
+  std::ostringstream os;
+  for (const auto& function : module.functions()) {
+    os << "func " << function.name() << ' ' << function.returnType() << '\n';
+    for (const auto& parameter : function.parameters()) {
+      os << "param " << parameter.type << ' ' << parameter.name << '\n';
+    }
+    for (const auto& block : function.blocks()) {
+      os << "block " << block.name() << '\n';
+      for (const auto& instruction : block.instructions()) {
+        os << instruction.result() << " = " << instruction.opcode();
+        for (const auto& operand : instruction.operands()) {
+          os << ' ' << operand;
+        }
+        os << '\n';
+      }
+    }
+  }
+  return os.str();
 }
 
 }  // namespace compiler::midend::pass::detail

@@ -495,7 +495,8 @@ void runDce(Function& function, const std::unordered_map<std::string, bool>& pur
 
 }  // namespace
 
-void DeadCodeEliminationPass::run(compiler::ir::core::Module& module) {
+bool DeadCodeEliminationPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   bool changed = false;
   do {
     changed = false;
@@ -505,6 +506,7 @@ void DeadCodeEliminationPass::run(compiler::ir::core::Module& module) {
     }
     changed |= removeUnusedFunctions(module);
   } while (changed);
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

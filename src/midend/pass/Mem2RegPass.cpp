@@ -497,10 +497,12 @@ void runMem2Reg(Function& function) {
 
 }  // namespace
 
-void Mem2RegPass::run(compiler::ir::core::Module& module) {
+bool Mem2RegPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     runMem2Reg(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

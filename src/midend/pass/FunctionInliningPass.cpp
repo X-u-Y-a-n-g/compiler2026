@@ -224,15 +224,17 @@ bool inlineFunctionCalls(
 
 }  // namespace
 
-void FunctionInliningPass::run(compiler::ir::core::Module& module) {
+bool FunctionInliningPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   const auto candidates = collectInlineCandidates(module);
   if (candidates.empty()) {
-    return;
+    return false;
   }
 
   for (auto& function : module.functions()) {
     inlineFunctionCalls(function, candidates);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

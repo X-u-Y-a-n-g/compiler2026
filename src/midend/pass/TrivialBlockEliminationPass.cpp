@@ -6,6 +6,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "IRPassUtils.h"
+
 namespace compiler::midend::pass {
 
 namespace {
@@ -198,10 +200,12 @@ void eliminateTrivialBlocks(Function& function) {
 
 }  // namespace
 
-void TrivialBlockEliminationPass::run(compiler::ir::core::Module& module) {
+bool TrivialBlockEliminationPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     eliminateTrivialBlocks(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

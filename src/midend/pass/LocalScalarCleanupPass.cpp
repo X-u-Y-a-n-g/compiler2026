@@ -193,10 +193,12 @@ void cleanupFunction(Function& function) {
 
 }  // namespace
 
-void LocalScalarCleanupPass::run(compiler::ir::core::Module& module) {
+bool LocalScalarCleanupPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     cleanupFunction(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

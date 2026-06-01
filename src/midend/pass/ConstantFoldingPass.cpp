@@ -267,10 +267,12 @@ void foldFunction(Function& function) {
 
 }  // namespace
 
-void ConstantFoldingPass::run(compiler::ir::core::Module& module) {
+bool ConstantFoldingPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     foldFunction(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

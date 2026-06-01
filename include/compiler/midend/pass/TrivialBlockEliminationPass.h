@@ -7,7 +7,7 @@ namespace compiler::midend::pass {
 class TrivialBlockEliminationPass final : public ModulePass {
  public:
   std::string name() const override { return "trivial-block-elimination"; }
-  void run(compiler::ir::core::Module& module) override;
+  bool run(compiler::ir::core::Module& module) override;
 };
 
 }  // namespace compiler::midend::pass
