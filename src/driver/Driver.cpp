@@ -160,7 +160,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
 
   compiler::midend::pass::PassManager passManager;
   if (invocation.options().optLevel > 0) {
-    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
+   // passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     //passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
