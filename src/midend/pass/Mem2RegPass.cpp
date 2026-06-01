@@ -91,25 +91,6 @@ CFG buildCFG(const Function& function) {
   return cfg;
 }
 
-std::unordered_set<std::size_t> allBlockIndices(std::size_t count) {
-  std::unordered_set<std::size_t> result;
-  for (std::size_t i = 0; i < count; ++i) {
-    result.insert(i);
-  }
-  return result;
-}
-
-std::unordered_set<std::size_t> intersectSets(const std::unordered_set<std::size_t>& lhs,
-                                              const std::unordered_set<std::size_t>& rhs) {
-  std::unordered_set<std::size_t> result;
-  for (const auto value : lhs) {
-    if (rhs.find(value) != rhs.end()) {
-      result.insert(value);
-    }
-  }
-  return result;
-}
-
 std::vector<bool> computeReachable(const CFG& cfg) {
   std::vector<bool> reachable(cfg.names.size(), false);
   if (cfg.names.empty()) {
@@ -132,80 +113,106 @@ std::vector<bool> computeReachable(const CFG& cfg) {
   return reachable;
 }
 
+std::vector<std::size_t> computeReversePostOrder(const CFG& cfg,
+                                                 const std::vector<bool>& reachable) {
+  std::vector<std::size_t> order;
+  if (cfg.names.empty()) {
+    return order;
+  }
+
+  std::vector<bool> visited(cfg.names.size(), false);
+  std::vector<std::pair<std::size_t, std::size_t>> stack;
+  stack.emplace_back(0, 0);
+  visited[0] = true;
+  while (!stack.empty()) {
+    auto& [block, nextSucc] = stack.back();
+    if (nextSucc < cfg.successors[block].size()) {
+      const auto succ = cfg.successors[block][nextSucc++];
+      if (reachable[succ] && !visited[succ]) {
+        visited[succ] = true;
+        stack.emplace_back(succ, 0);
+      }
+      continue;
+    }
+    order.push_back(block);
+    stack.pop_back();
+  }
+  std::reverse(order.begin(), order.end());
+  return order;
+}
+
+std::size_t intersectIdoms(std::size_t lhs, std::size_t rhs, const std::vector<int>& idom,
+                           const std::vector<std::size_t>& rpoIndex) {
+  while (lhs != rhs) {
+    while (rpoIndex[lhs] > rpoIndex[rhs]) {
+      lhs = static_cast<std::size_t>(idom[lhs]);
+    }
+    while (rpoIndex[rhs] > rpoIndex[lhs]) {
+      rhs = static_cast<std::size_t>(idom[rhs]);
+    }
+  }
+  return lhs;
+}
+
 DominatorInfo computeDominators(const CFG& cfg) {
   DominatorInfo info;
   const std::size_t count = cfg.names.size();
-  info.dominators.resize(count);
+  info.idom.assign(count, -1);
+  info.children.resize(count);
+  info.frontier.resize(count);
   if (count == 0) {
     return info;
   }
 
   const auto reachable = computeReachable(cfg);
-  const auto allBlocks = allBlockIndices(count);
-  info.dominators[0] = {0};
-  for (std::size_t i = 1; i < count; ++i) {
-    info.dominators[i] = reachable[i] ? allBlocks : std::unordered_set<std::size_t>{i};
+  const auto rpo = computeReversePostOrder(cfg, reachable);
+  std::vector<std::size_t> rpoIndex(count, count);
+  for (std::size_t i = 0; i < rpo.size(); ++i) {
+    rpoIndex[rpo[i]] = i;
   }
 
+  info.idom[0] = 0;
   bool changed = true;
   while (changed) {
     changed = false;
-    for (std::size_t block = 1; block < count; ++block) {
-      if (!reachable[block]) {
+    for (const auto block : rpo) {
+      if (block == 0) {
         continue;
       }
-      std::unordered_set<std::size_t> next;
-      bool initialized = false;
+      std::optional<std::size_t> next;
       for (const auto pred : cfg.predecessors[block]) {
-        if (!reachable[pred]) {
+        if (!reachable[pred] || info.idom[pred] < 0) {
           continue;
         }
-        if (!initialized) {
-          next = info.dominators[pred];
-          initialized = true;
+        if (!next.has_value()) {
+          next = pred;
         } else {
-          next = intersectSets(next, info.dominators[pred]);
+          next = intersectIdoms(pred, *next, info.idom, rpoIndex);
         }
       }
-      if (!initialized) {
-        next.clear();
-      }
-      next.insert(block);
-      if (next != info.dominators[block]) {
-        info.dominators[block] = std::move(next);
+      if (next.has_value() && info.idom[block] != static_cast<int>(*next)) {
+        info.idom[block] = static_cast<int>(*next);
         changed = true;
       }
     }
   }
 
-  info.idom.assign(count, -1);
-  info.children.resize(count);
+  info.idom[0] = -1;
   for (std::size_t block = 1; block < count; ++block) {
-    if (!reachable[block]) {
+    if (!reachable[block] || info.idom[block] < 0) {
       continue;
     }
-    std::optional<std::size_t> best;
-    for (const auto dom : info.dominators[block]) {
-      if (dom == block || !reachable[dom]) {
-        continue;
-      }
-      if (!best.has_value() ||
-          info.dominators[dom].size() > info.dominators[*best].size()) {
-        best = dom;
-      }
-    }
-    if (best.has_value()) {
-      info.idom[block] = static_cast<int>(*best);
-      info.children[*best].push_back(block);
-    }
+    info.children[static_cast<std::size_t>(info.idom[block])].push_back(block);
   }
 
-  info.frontier.resize(count);
   for (std::size_t block = 0; block < count; ++block) {
-    if (cfg.predecessors[block].size() < 2) {
+    if (!reachable[block] || cfg.predecessors[block].size() < 2) {
       continue;
     }
     for (const auto pred : cfg.predecessors[block]) {
+      if (!reachable[pred]) {
+        continue;
+      }
       int runner = static_cast<int>(pred);
       while (runner >= 0 && runner != info.idom[block]) {
         info.frontier[static_cast<std::size_t>(runner)].insert(block);

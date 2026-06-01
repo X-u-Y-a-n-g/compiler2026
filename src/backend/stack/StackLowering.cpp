@@ -166,35 +166,40 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
     std::size_t floatRegs = 0;
     std::size_t stackOffset = 0;
     for (const auto& parameter : function.parameters) {
-      if (parameter.homeSlot < 0) {
-        continue;
-      }
       if (parameter.type.isFloat()) {
         if (floatRegs < regInfo.floatArgumentRegisters().size()) {
-          function.prologueInstructions.push_back(
-              makeParamCopy(parameter.homeSlot,
-                            MachineOperand::physicalRegister(regInfo.floatArgumentRegisters()[floatRegs],
-                                                            parameter.type),
-                            parameter.type));
+          if (parameter.homeSlot >= 0) {
+            function.prologueInstructions.push_back(
+                makeParamCopy(parameter.homeSlot,
+                              MachineOperand::physicalRegister(regInfo.floatArgumentRegisters()[floatRegs],
+                                                              parameter.type),
+                              parameter.type));
+          }
           ++floatRegs;
         } else {
-          function.prologueInstructions.push_back(
-              makeIncomingStackParamLoad(parameter.homeSlot, parameter.type,
-                                         static_cast<long long>(stackOffset)));
+          if (parameter.homeSlot >= 0) {
+            function.prologueInstructions.push_back(
+                makeIncomingStackParamLoad(parameter.homeSlot, parameter.type,
+                                           static_cast<long long>(stackOffset)));
+          }
           stackOffset += std::max<std::size_t>(8, module.target.pointerSize());
         }
       } else {
         if (intRegs < regInfo.integerArgumentRegisters().size()) {
-          function.prologueInstructions.push_back(
-              makeParamCopy(parameter.homeSlot,
-                            MachineOperand::physicalRegister(regInfo.integerArgumentRegisters()[intRegs],
-                                                            parameter.type),
-                            parameter.type));
+          if (parameter.homeSlot >= 0) {
+            function.prologueInstructions.push_back(
+                makeParamCopy(parameter.homeSlot,
+                              MachineOperand::physicalRegister(regInfo.integerArgumentRegisters()[intRegs],
+                                                              parameter.type),
+                              parameter.type));
+          }
           ++intRegs;
         } else {
-          function.prologueInstructions.push_back(
-              makeIncomingStackParamLoad(parameter.homeSlot, parameter.type,
-                                         static_cast<long long>(stackOffset)));
+          if (parameter.homeSlot >= 0) {
+            function.prologueInstructions.push_back(
+                makeIncomingStackParamLoad(parameter.homeSlot, parameter.type,
+                                           static_cast<long long>(stackOffset)));
+          }
           stackOffset += std::max<std::size_t>(8, module.target.pointerSize());
         }
       }
