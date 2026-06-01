@@ -35,6 +35,7 @@ struct Interval {
   ValueType type;
   std::vector<Segment> segments;
   bool crossesCall = false;
+  bool isRegisterParameter = false;
 
   void addSegment(std::size_t start, std::size_t end) {
     if (start >= end) {
@@ -84,6 +85,7 @@ struct ActiveInterval {
 struct AllocationClass {
   std::vector<std::string> allocatable;
   std::unordered_set<std::string> calleeSaved;
+  std::unordered_set<std::string> argumentRegisters;
 };
 
 bool isVirtualRegister(const MachineOperand& operand) {
@@ -155,13 +157,16 @@ void collectBlockUsesAndDefs(
 std::vector<Interval> buildIntervals(
     const compiler::backend::target::TargetInstrAdapter& adapter, const MachineFunction& function,
     const std::unordered_set<std::string>& parameterNames,
+    const std::unordered_set<std::string>& registerParameterNames,
     const std::unordered_map<std::string, ValueType>& regTypes,
     const std::vector<std::unordered_set<std::string>>& liveOut,
     const std::vector<std::pair<std::size_t, std::size_t>>& blockRanges,
     const std::unordered_set<std::size_t>& callPoints) {
   std::unordered_map<std::string, Interval> intervals;
   for (const auto& [name, type] : regTypes) {
-    intervals.emplace(name, Interval{name, type, {}, false});
+    intervals.emplace(name, Interval{name, type, {}, false,
+                                     registerParameterNames.find(name) !=
+                                         registerParameterNames.end()});
   }
 
   for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
@@ -272,6 +277,10 @@ std::vector<std::string> orderedFreeRegisters(const std::vector<std::string>& fr
 
 bool registerAllowedForInterval(const std::string& reg, const AllocationClass& klass,
                                 const Interval& interval) {
+  if (interval.isRegisterParameter &&
+      klass.argumentRegisters.find(reg) != klass.argumentRegisters.end()) {
+    return false;
+  }
   return !interval.crossesCall || klass.calleeSaved.find(reg) != klass.calleeSaved.end();
 }
 
@@ -448,6 +457,7 @@ void rewriteFunctionInstructions(
 
 void materializeRegisterParameters(
     MachineFunction& function, std::unordered_set<std::string>& stackHomeParameters,
+    std::unordered_set<std::string>& registerHomeParameters,
     std::unordered_map<std::string, int>& slotMap,
     const compiler::backend::target::TargetInfo& target,
     const compiler::backend::target::TargetRegInfo& regInfo) {
@@ -465,6 +475,7 @@ void materializeRegisterParameters(
     auto& regIndex = isFloat ? floatRegs : intRegs;
     if (regIndex < argRegs.size()) {
       parameter.homeSlot = -1;
+      registerHomeParameters.insert(parameter.name);
       copies.push_back(MachineInstruction::copy(
           MachineOperand::virtualRegister(parameter.name, parameter.type),
           MachineOperand::physicalRegister(argRegs[regIndex], parameter.type)));
@@ -490,7 +501,9 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
   for (auto& function : module.functions) {
     std::unordered_map<std::string, int> slotMap;
     std::unordered_set<std::string> stackHomeParameters;
-    materializeRegisterParameters(function, stackHomeParameters, slotMap, module.target, regInfo);
+    std::unordered_set<std::string> registerHomeParameters;
+    materializeRegisterParameters(function, stackHomeParameters, registerHomeParameters, slotMap,
+                                  module.target, regInfo);
 
     std::vector<std::pair<std::size_t, std::size_t>> blockRanges(function.blocks.size());
     std::unordered_set<std::size_t> callPoints;
@@ -541,21 +554,25 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
     }
 
     const auto intervals =
-        buildIntervals(adapter, function, stackHomeParameters, regTypes, liveOut, blockRanges,
-                       callPoints);
+        buildIntervals(adapter, function, stackHomeParameters, registerHomeParameters, regTypes,
+                       liveOut, blockRanges, callPoints);
 
     std::unordered_map<std::string, std::string> registerMap;
     allocateClassIntervals(
         intervals,
         AllocationClass{regInfo.allocatableIntegerRegisters(),
                         std::unordered_set<std::string>(regInfo.calleeSavedIntegerRegisters().begin(),
-                                                        regInfo.calleeSavedIntegerRegisters().end())},
+                                                        regInfo.calleeSavedIntegerRegisters().end()),
+                        std::unordered_set<std::string>(regInfo.integerArgumentRegisters().begin(),
+                                                        regInfo.integerArgumentRegisters().end())},
         false, registerMap);
     allocateClassIntervals(
         intervals,
         AllocationClass{regInfo.allocatableFloatRegisters(),
                         std::unordered_set<std::string>(regInfo.calleeSavedFloatRegisters().begin(),
-                                                        regInfo.calleeSavedFloatRegisters().end())},
+                                                        regInfo.calleeSavedFloatRegisters().end()),
+                        std::unordered_set<std::string>(regInfo.floatArgumentRegisters().begin(),
+                                                        regInfo.floatArgumentRegisters().end())},
         true, registerMap);
 
     std::unordered_set<std::string> usedRegs;
