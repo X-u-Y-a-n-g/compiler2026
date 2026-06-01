@@ -31,6 +31,7 @@
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
+#include "../../include/compiler/midend/pass/SparseConditionalConstantPropagationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
@@ -164,6 +165,9 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::SparseConditionalConstantPropagationPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());

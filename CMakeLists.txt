@@ -28,6 +28,7 @@ add_library(compiler_lib
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
+  src/midend/pass/SparseConditionalConstantPropagationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
