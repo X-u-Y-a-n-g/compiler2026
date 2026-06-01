@@ -162,12 +162,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   if (invocation.options().optLevel > 0) {
     passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
+    //passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
+   // passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::SparseConditionalConstantPropagationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
+   // passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
@@ -175,7 +175,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
+  //  passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }
