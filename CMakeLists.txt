@@ -20,13 +20,18 @@ add_library(compiler_lib
   src/midend/pass/AlgebraicSimplificationPass.cpp
   src/midend/pass/BranchSimplificationPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
+  src/midend/pass/CompareSimplificationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
+  src/midend/pass/GlobalValueNumberingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
+  src/midend/pass/PhiSimplificationPass.cpp
+  src/midend/pass/PipelineBuilder.cpp
+  src/midend/pass/ReassociatePass.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/SparseConditionalConstantPropagationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp

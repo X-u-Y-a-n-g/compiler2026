@@ -412,10 +412,12 @@ void runLicm(Function& function) {
 
 }  // namespace
 
-void LoopInvariantCodeMotionPass::run(compiler::ir::core::Module& module) {
+bool LoopInvariantCodeMotionPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     runLicm(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

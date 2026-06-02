@@ -23,16 +23,7 @@
 #include "../../include/compiler/ir/builder/AstToIR.h"
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
-#include "../../include/compiler/midend/pass/AlgebraicSimplificationPass.h"
-#include "../../include/compiler/midend/pass/BranchSimplificationPass.h"
-#include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
-#include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
-#include "../../include/compiler/midend/pass/FunctionInliningPass.h"
-#include "../../include/compiler/midend/pass/Mem2RegPass.h"
-#include "../../include/compiler/midend/pass/PassManager.h"
-#include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
-#include "../../include/compiler/midend/pass/SparseConditionalConstantPropagationPass.h"
-#include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
+#include "../../include/compiler/midend/pass/PipelineBuilder.h"
 #include "../../include/compiler/support/FileSystem.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 
@@ -158,27 +149,9 @@ int Pipeline::execute(const CompilerInvocation& invocation,
 
   auto module = compiler::ir::builder::AstToIR{}.lower(*ast, invocation.options().inputPath);
 
-  compiler::midend::pass::PassManager passManager;
-  if (invocation.options().optLevel > 0) {
-   // passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
-    //passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
-   // passManager.add(std::make_unique<compiler::midend::pass::AlgebraicSimplificationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::SparseConditionalConstantPropagationPass>());
-   // passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
-  //  passManager.add(std::make_unique<compiler::midend::pass::BranchSimplificationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
-  }
+  auto passManager = invocation.options().optLevel > 0
+                         ? compiler::midend::pass::PipelineBuilder::buildO1Pipeline()
+                         : compiler::midend::pass::PipelineBuilder::buildO0Pipeline();
   passManager.run(module);
 
   const auto irErrors = compiler::ir::verify::IRVerifier{}.verify(module);

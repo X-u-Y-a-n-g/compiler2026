@@ -291,10 +291,12 @@ void runCse(Function& function) {
 
 }  // namespace
 
-void CommonSubexpressionEliminationPass::run(compiler::ir::core::Module& module) {
+bool CommonSubexpressionEliminationPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     runCse(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

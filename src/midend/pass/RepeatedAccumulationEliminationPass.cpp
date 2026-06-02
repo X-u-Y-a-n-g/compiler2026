@@ -551,11 +551,13 @@ bool runRepeatedAccumulationElimination(Function& function) {
 
 }  // namespace
 
-void RepeatedAccumulationEliminationPass::run(compiler::ir::core::Module& module) {
+bool RepeatedAccumulationEliminationPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     while (runRepeatedAccumulationElimination(function)) {
     }
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

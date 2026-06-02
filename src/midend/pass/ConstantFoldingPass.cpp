@@ -12,11 +12,28 @@ namespace compiler::midend::pass {
 
 namespace {
 
+using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
 
-std::optional<std::string> foldIntegerBinary(const std::string& opcode,
-                                             const std::vector<std::string>& operands) {
+using ValueMap = std::unordered_map<std::string, std::string>;
+
+bool isSameValue(const std::string &lhs, const std::string &rhs) {
+  return !lhs.empty() && lhs == rhs;
+}
+
+bool isLiteralValue(const std::string &value) {
+  long long integerValue = 0;
+  if (detail::parseIntegerLiteral(value, integerValue)) {
+    return true;
+  }
+  double floatValue = 0.0;
+  return detail::parseFloatLiteral(value, floatValue);
+}
+
+std::optional<std::string>
+foldIntegerBinary(const std::string &opcode,
+                  const std::vector<std::string> &operands) {
   if (operands.size() != 2) {
     return std::nullopt;
   }
@@ -38,10 +55,14 @@ std::optional<std::string> foldIntegerBinary(const std::string& opcode,
     return detail::formatIntegerLiteral(lhs * rhs);
   }
   if (opcode == "div" || opcode == "sdiv") {
-    return rhs == 0 ? std::nullopt : std::optional<std::string>{detail::formatIntegerLiteral(lhs / rhs)};
+    return rhs == 0 ? std::nullopt
+                    : std::optional<std::string>{
+                          detail::formatIntegerLiteral(lhs / rhs)};
   }
   if (opcode == "mod" || opcode == "srem") {
-    return rhs == 0 ? std::nullopt : std::optional<std::string>{detail::formatIntegerLiteral(lhs % rhs)};
+    return rhs == 0 ? std::nullopt
+                    : std::optional<std::string>{
+                          detail::formatIntegerLiteral(lhs % rhs)};
   }
   if (opcode == "and") {
     return detail::formatIntegerLiteral(lhs & rhs);
@@ -52,8 +73,73 @@ std::optional<std::string> foldIntegerBinary(const std::string& opcode,
   return std::nullopt;
 }
 
-std::optional<std::string> foldFloatBinary(const std::string& opcode,
-                                           const std::vector<std::string>& operands) {
+std::optional<std::string>
+simplifyIntegerBinary(const std::string &opcode,
+                      const std::vector<std::string> &operands) {
+  if (operands.size() != 2) {
+    return std::nullopt;
+  }
+
+  const auto &lhs = operands[0];
+  const auto &rhs = operands[1];
+  if (opcode == "add") {
+    if (detail::isZero(rhs)) {
+      return lhs;
+    }
+    if (detail::isZero(lhs)) {
+      return rhs;
+    }
+  }
+  if (opcode == "sub") {
+    if (detail::isZero(rhs)) {
+      return lhs;
+    }
+    if (isSameValue(lhs, rhs)) {
+      return "0";
+    }
+  }
+  if (opcode == "mul") {
+    if (detail::isZero(lhs) || detail::isZero(rhs)) {
+      return "0";
+    }
+    if (detail::isOne(rhs)) {
+      return lhs;
+    }
+    if (detail::isOne(lhs)) {
+      return rhs;
+    }
+  }
+  if ((opcode == "div" || opcode == "sdiv") && detail::isOne(rhs)) {
+    return lhs;
+  }
+  if ((opcode == "mod" || opcode == "srem") && detail::isOne(rhs)) {
+    return "0";
+  }
+  if (opcode == "and") {
+    if (detail::isZero(lhs) || detail::isZero(rhs)) {
+      return "0";
+    }
+    if (isSameValue(lhs, rhs)) {
+      return lhs;
+    }
+  }
+  if (opcode == "or") {
+    if (detail::isZero(rhs)) {
+      return lhs;
+    }
+    if (detail::isZero(lhs)) {
+      return rhs;
+    }
+    if (isSameValue(lhs, rhs)) {
+      return lhs;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+foldFloatBinary(const std::string &opcode,
+                const std::vector<std::string> &operands) {
   if (operands.size() != 2) {
     return std::nullopt;
   }
@@ -75,13 +161,39 @@ std::optional<std::string> foldFloatBinary(const std::string& opcode,
     return detail::formatFloatLiteral(lhs * rhs);
   }
   if (opcode == "fdiv") {
-    return rhs == 0.0 ? std::nullopt : std::optional<std::string>{detail::formatFloatLiteral(lhs / rhs)};
+    return rhs == 0.0 ? std::nullopt
+                      : std::optional<std::string>{
+                            detail::formatFloatLiteral(lhs / rhs)};
   }
   return std::nullopt;
 }
 
-std::optional<std::string> foldIntegerCompare(const std::string& opcode,
-                                              const std::vector<std::string>& operands) {
+std::optional<std::string>
+simplifyFloatBinary(const std::string &opcode,
+                    const std::vector<std::string> &operands) {
+  if (operands.size() != 2) {
+    return std::nullopt;
+  }
+
+  const auto &lhs = operands[0];
+  const auto &rhs = operands[1];
+  if (opcode == "fmul") {
+    if (detail::isOne(rhs)) {
+      return lhs;
+    }
+    if (detail::isOne(lhs)) {
+      return rhs;
+    }
+  }
+  if (opcode == "fdiv" && detail::isOne(rhs)) {
+    return lhs;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+foldIntegerCompare(const std::string &opcode,
+                   const std::vector<std::string> &operands) {
   if (operands.size() != 2 || opcode.rfind("icmp.", 0) != 0) {
     return std::nullopt;
   }
@@ -115,8 +227,27 @@ std::optional<std::string> foldIntegerCompare(const std::string& opcode,
   return std::nullopt;
 }
 
-std::optional<std::string> foldFloatCompare(const std::string& opcode,
-                                            const std::vector<std::string>& operands) {
+std::optional<std::string>
+simplifyIntegerCompare(const std::string &opcode,
+                       const std::vector<std::string> &operands) {
+  if (operands.size() != 2 || opcode.rfind("icmp.", 0) != 0 ||
+      !isSameValue(operands[0], operands[1])) {
+    return std::nullopt;
+  }
+
+  const std::string predicate = opcode.substr(5);
+  if (predicate == "eq" || predicate == "sle" || predicate == "sge") {
+    return detail::formatBooleanLiteral(true);
+  }
+  if (predicate == "ne" || predicate == "slt" || predicate == "sgt") {
+    return detail::formatBooleanLiteral(false);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+foldFloatCompare(const std::string &opcode,
+                 const std::vector<std::string> &operands) {
   if (operands.size() != 2 || opcode.rfind("fcmp.", 0) != 0) {
     return std::nullopt;
   }
@@ -150,17 +281,18 @@ std::optional<std::string> foldFloatCompare(const std::string& opcode,
   return std::nullopt;
 }
 
-std::optional<std::string> foldCast(const std::string& opcode,
-                                    const std::vector<std::string>& operands) {
+std::optional<std::string> foldCast(const std::string &opcode,
+                                    const std::vector<std::string> &operands) {
   if (operands.size() != 2) {
     return std::nullopt;
   }
 
-  const auto& value = operands[0];
-  const auto& targetType = operands[1];
+  const auto &value = operands[0];
+  const auto &targetType = operands[1];
   if (opcode == "sitofp" || opcode == "uitofp") {
     long long integerValue = 0;
-    if (targetType == "float" && detail::parseIntegerLiteral(value, integerValue)) {
+    if (targetType == "float" &&
+        detail::parseIntegerLiteral(value, integerValue)) {
       return detail::formatFloatLiteral(static_cast<double>(integerValue));
     }
     return std::nullopt;
@@ -172,7 +304,8 @@ std::optional<std::string> foldCast(const std::string& opcode,
     }
     return std::nullopt;
   }
-  if (opcode == "zext" || opcode == "sext" || opcode == "trunc" || opcode == "cast") {
+  if (opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
+      opcode == "cast") {
     long long integerValue = 0;
     if (!detail::parseIntegerLiteral(value, integerValue)) {
       return std::nullopt;
@@ -185,9 +318,9 @@ std::optional<std::string> foldCast(const std::string& opcode,
   return std::nullopt;
 }
 
-std::optional<std::string> foldInstruction(const Instruction& instruction) {
-  const auto& opcode = instruction.opcode();
-  const auto& operands = instruction.operands();
+std::optional<std::string> foldInstruction(const Instruction &instruction) {
+  const auto &opcode = instruction.opcode();
+  const auto &operands = instruction.operands();
   if (!instruction.hasResult()) {
     return std::nullopt;
   }
@@ -205,72 +338,239 @@ std::optional<std::string> foldInstruction(const Instruction& instruction) {
     }
   }
 
-  if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
-      opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-      opcode == "or") {
+  if (opcode == "add" || opcode == "sub" || opcode == "mul" ||
+      opcode == "div" || opcode == "mod" || opcode == "sdiv" ||
+      opcode == "srem" || opcode == "and" || opcode == "or") {
     if (auto folded = foldIntegerBinary(opcode, operands); folded.has_value()) {
       return folded;
     }
+    if (auto simplified = simplifyIntegerBinary(opcode, operands);
+        simplified.has_value()) {
+      return simplified;
+    }
   }
-  if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" || opcode == "fdiv") {
+  if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" ||
+      opcode == "fdiv") {
     if (auto folded = foldFloatBinary(opcode, operands); folded.has_value()) {
       return folded;
+    }
+    if (auto simplified = simplifyFloatBinary(opcode, operands);
+        simplified.has_value()) {
+      return simplified;
     }
   }
   if (auto folded = foldIntegerCompare(opcode, operands); folded.has_value()) {
     return folded;
   }
+  if (auto simplified = simplifyIntegerCompare(opcode, operands);
+      simplified.has_value()) {
+    return simplified;
+  }
   if (auto folded = foldFloatCompare(opcode, operands); folded.has_value()) {
     return folded;
   }
-  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
-      opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
+      opcode == "trunc" || opcode == "sitofp" || opcode == "uitofp" ||
+      opcode == "fptosi") {
     return foldCast(opcode, operands);
   }
 
   return std::nullopt;
 }
 
-void foldFunction(Function& function) {
-  std::unordered_map<std::string, std::string> constants;
-  for (auto& block : function.blocks()) {
-    std::vector<Instruction> rewrittenInstructions;
-    rewrittenInstructions.reserve(block.instructions().size());
+std::vector<std::string> branchTargets(const BasicBlock &block) {
+  const auto *terminator = block.terminator();
+  if (terminator == nullptr || terminator->opcode() != "br") {
+    return {};
+  }
+  const auto &operands = terminator->operands();
+  if (operands.size() == 1) {
+    return {operands[0]};
+  }
+  if (operands.size() == 3) {
+    if (operands[1] == operands[2]) {
+      return {operands[1]};
+    }
+    return {operands[1], operands[2]};
+  }
+  return {};
+}
 
-    for (const auto& instruction : block.instructions()) {
-      const auto operands = detail::rewriteOperands(instruction.operands(), constants);
-      Instruction rewritten{instruction.opcode(), operands, instruction.result()};
+std::unordered_map<std::string, std::vector<std::string>>
+computePredecessors(const Function &function) {
+  std::unordered_map<std::string, std::vector<std::string>> predecessors;
+  for (const auto &block : function.blocks()) {
+    predecessors.emplace(block.name(), std::vector<std::string>{});
+  }
+  for (const auto &block : function.blocks()) {
+    for (const auto &target : branchTargets(block)) {
+      predecessors[target].push_back(block.name());
+    }
+  }
+  return predecessors;
+}
 
-      if (rewritten.opcode() == "br" && operands.size() == 3) {
-        long long condition = 0;
-        if (detail::parseIntegerLiteral(operands[0], condition)) {
-          const std::string target = condition != 0 ? operands[1] : operands[2];
-          rewrittenInstructions.emplace_back("br", std::vector<std::string>{target});
-          continue;
+ValueMap
+meetConstants(const std::vector<std::string> &predecessors,
+              const std::unordered_map<std::string, ValueMap> &outConstants) {
+  if (predecessors.empty()) {
+    return {};
+  }
+
+  ValueMap result;
+  bool initialized = false;
+  for (const auto &predecessor : predecessors) {
+    const auto found = outConstants.find(predecessor);
+    if (found == outConstants.end()) {
+      continue;
+    }
+    if (!initialized) {
+      result = found->second;
+      initialized = true;
+      continue;
+    }
+    for (auto it = result.begin(); it != result.end();) {
+      const auto predValue = found->second.find(it->first);
+      if (predValue == found->second.end() || predValue->second != it->second) {
+        it = result.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  return result;
+}
+
+ValueMap transferConstants(const BasicBlock &block,
+                           const ValueMap &inConstants) {
+  ValueMap constants = inConstants;
+  for (const auto &instruction : block.instructions()) {
+    const auto operands =
+        detail::rewriteOperands(instruction.operands(), constants);
+    Instruction rewritten{instruction.opcode(), operands, instruction.result()};
+    if (!rewritten.hasResult()) {
+      continue;
+    }
+    if (auto folded = foldInstruction(rewritten);
+        folded.has_value() && isLiteralValue(*folded)) {
+      constants[rewritten.result()] = *folded;
+    } else {
+      constants.erase(rewritten.result());
+    }
+  }
+  return constants;
+}
+
+std::unordered_map<std::string, ValueMap>
+solveBlockEntryConstants(const Function &function) {
+  const auto predecessors = computePredecessors(function);
+  std::unordered_map<std::string, ValueMap> inConstants;
+  std::unordered_map<std::string, ValueMap> outConstants;
+  for (const auto &block : function.blocks()) {
+    inConstants.emplace(block.name(), ValueMap{});
+    outConstants.emplace(block.name(), ValueMap{});
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto &block : function.blocks()) {
+      ValueMap incoming;
+      if (&block != &function.blocks().front()) {
+        const auto predIt = predecessors.find(block.name());
+        if (predIt != predecessors.end()) {
+          incoming = meetConstants(predIt->second, outConstants);
         }
       }
-
-      if (rewritten.hasResult()) {
-        if (auto folded = foldInstruction(rewritten); folded.has_value()) {
-          constants[rewritten.result()] = *folded;
-          continue;
-        }
-        constants.erase(rewritten.result());
+      if (incoming != inConstants[block.name()]) {
+        inConstants[block.name()] = incoming;
+        changed = true;
       }
 
-      rewrittenInstructions.push_back(std::move(rewritten));
+      const auto outgoing = transferConstants(block, inConstants[block.name()]);
+      if (outgoing != outConstants[block.name()]) {
+        outConstants[block.name()] = outgoing;
+        changed = true;
+      }
+    }
+  }
+  return inConstants;
+}
+
+void rewriteFunctionOperands(Function &function, const ValueMap &aliases) {
+  if (aliases.empty()) {
+    return;
+  }
+
+  for (auto &block : function.blocks()) {
+    std::vector<Instruction> rewritten;
+    rewritten.reserve(block.instructions().size());
+    for (const auto &instruction : block.instructions()) {
+      rewritten.emplace_back(
+          instruction.opcode(),
+          detail::rewriteOperands(instruction.operands(), aliases),
+          instruction.result());
+    }
+    block.instructions() = std::move(rewritten);
+  }
+}
+
+ValueMap foldBlock(BasicBlock &block, const ValueMap &inConstants) {
+  ValueMap replacements = inConstants;
+  ValueMap foldedAliases;
+  std::vector<Instruction> rewrittenInstructions;
+  rewrittenInstructions.reserve(block.instructions().size());
+
+  for (const auto &instruction : block.instructions()) {
+    const auto operands =
+        detail::rewriteOperands(instruction.operands(), replacements);
+    Instruction rewritten{instruction.opcode(), operands, instruction.result()};
+
+    if (rewritten.opcode() == "br" && operands.size() == 3) {
+      long long condition = 0;
+      if (detail::parseIntegerLiteral(operands[0], condition)) {
+        const std::string target = condition != 0 ? operands[1] : operands[2];
+        rewrittenInstructions.emplace_back("br",
+                                           std::vector<std::string>{target});
+        continue;
+      }
     }
 
-    block.instructions() = std::move(rewrittenInstructions);
+    if (rewritten.hasResult()) {
+      if (auto folded = foldInstruction(rewritten); folded.has_value()) {
+        replacements[rewritten.result()] = *folded;
+        foldedAliases[rewritten.result()] = *folded;
+        continue;
+      }
+      replacements.erase(rewritten.result());
+    }
+    rewrittenInstructions.push_back(std::move(rewritten));
   }
+
+  block.instructions() = std::move(rewrittenInstructions);
+  return foldedAliases;
 }
 
-}  // namespace
+void foldFunction(Function &function) {
+  const auto inConstants = solveBlockEntryConstants(function);
+  ValueMap foldedAliases;
+  for (auto &block : function.blocks()) {
+    const auto found = inConstants.find(block.name());
+    auto blockAliases = foldBlock(
+        block, found == inConstants.end() ? ValueMap{} : found->second);
+    foldedAliases.insert(blockAliases.begin(), blockAliases.end());
+  }
+  rewriteFunctionOperands(function, foldedAliases);
+}
 
-void ConstantFoldingPass::run(compiler::ir::core::Module& module) {
-  for (auto& function : module.functions()) {
+} // namespace
+
+bool ConstantFoldingPass::run(compiler::ir::core::Module &module) {
+  const auto before = detail::moduleFingerprint(module);
+  for (auto &function : module.functions()) {
     foldFunction(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
-}  // namespace compiler::midend::pass
+} // namespace compiler::midend::pass
