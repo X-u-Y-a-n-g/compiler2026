@@ -25,6 +25,7 @@ class Function {
   [[nodiscard]] const std::string& name() const { return name_; }
   [[nodiscard]] const std::string& returnType() const { return returnType_; }
   [[nodiscard]] const std::vector<FunctionParameter>& parameters() const { return parameters_; }
+  [[nodiscard]] std::vector<FunctionParameter>& parameters() { return parameters_; }
   [[nodiscard]] const std::deque<BasicBlock>& blocks() const { return blocks_; }
   [[nodiscard]] std::deque<BasicBlock>& blocks() { return blocks_; }
 

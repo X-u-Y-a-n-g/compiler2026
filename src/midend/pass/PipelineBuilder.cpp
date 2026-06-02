@@ -1,7 +1,9 @@
 #include "../../../include/compiler/midend/pass/PipelineBuilder.h"
 
+#include "../../../include/compiler/midend/pass/AggressiveDeadCodeEliminationPass.h"
 #include "../../../include/compiler/midend/pass/ArrayAccessSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/BasicAliasAnalysisPass.h"
+#include "../../../include/compiler/midend/pass/CodeGenPreparePass.h"
 #include "../../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../../include/compiler/midend/pass/CompareSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
@@ -18,6 +20,7 @@
 #include "../../../include/compiler/midend/pass/LateFunctionInliningPass.h"
 #include "../../../include/compiler/midend/pass/LoadEliminationPass.h"
 #include "../../../include/compiler/midend/pass/LocalScalarCleanupPass.h"
+#include "../../../include/compiler/midend/pass/LowerIntrinsicsPass.h"
 #include "../../../include/compiler/midend/pass/LoopAliasAnalysisPass.h"
 #include "../../../include/compiler/midend/pass/LoopAnalysisPass.h"
 #include "../../../include/compiler/midend/pass/LoopEliminationPass.h"
@@ -28,11 +31,13 @@
 #include "../../../include/compiler/midend/pass/LoopUnrollPass.h"
 #include "../../../include/compiler/midend/pass/LoopUnswitchPass.h"
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
+#include "../../../include/compiler/midend/pass/NameNormalizePass.h"
 #include "../../../include/compiler/midend/pass/PhiSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../../include/compiler/midend/pass/ReassociatePass.h"
 #include "../../../include/compiler/midend/pass/ScalarReplacementPass.h"
 #include "../../../include/compiler/midend/pass/SCEVAnalysisPass.h"
+#include "../../../include/compiler/midend/pass/SelectSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/SparseConditionalConstantPropagationPass.h"
 #include "../../../include/compiler/midend/pass/StoreToLoadForwardingPass.h"
 #include "../../../include/compiler/midend/pass/TreeShakingPass.h"
@@ -190,6 +195,22 @@ PassManager PipelineBuilder::buildModulePipeline() {
   return pipeline;
 }
 
+PassManager PipelineBuilder::buildFinalCleanupPipeline() {
+  PassManager pipeline;
+  pipeline.add(std::make_unique<AggressiveDeadCodeEliminationPass>());
+  pipeline.add(std::make_unique<TrivialBlockEliminationPass>());
+  pipeline.add(std::make_unique<ConstantFoldingPass>());
+  pipeline.add(std::make_unique<SparseConditionalConstantPropagationPass>());
+  pipeline.add(std::make_unique<GlobalValueNumberingPass>());
+  pipeline.add(std::make_unique<DeadCodeEliminationPass>());
+  pipeline.add(std::make_unique<PhiSimplificationPass>());
+  pipeline.add(std::make_unique<SelectSimplificationPass>());
+  pipeline.add(std::make_unique<CodeGenPreparePass>());
+  pipeline.add(std::make_unique<LowerIntrinsicsPass>());
+  pipeline.add(std::make_unique<NameNormalizePass>());
+  return pipeline;
+}
+
 PassManager PipelineBuilder::buildO1Pipeline() {
   PassManager pipeline;
   pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
@@ -201,7 +222,7 @@ PassManager PipelineBuilder::buildO1Pipeline() {
   pipeline.add(fixedPoint("module-opt", buildModulePipeline(), 2));
   pipeline.add(fixedPoint("scalar-main", buildScalarPipeline(), 4));
   pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
-  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  pipeline.add(fixedPoint("final-cleanup", buildFinalCleanupPipeline(), 2));
   return pipeline;
 }
 

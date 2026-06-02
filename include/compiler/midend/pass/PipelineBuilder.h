@@ -17,6 +17,7 @@ public:
   static PassManager buildMemoryPipeline();
   static PassManager buildLoopPipeline();
   static PassManager buildModulePipeline();
+  static PassManager buildFinalCleanupPipeline();
 };
 
 } // namespace compiler::midend::pass
