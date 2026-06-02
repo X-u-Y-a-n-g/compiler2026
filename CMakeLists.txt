@@ -18,16 +18,20 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
+  src/midend/pass/CompareSimplificationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
+  src/midend/pass/GlobalValueNumberingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/PhiSimplificationPass.cpp
   src/midend/pass/PipelineBuilder.cpp
+  src/midend/pass/ReassociatePass.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
+  src/midend/pass/SparseConditionalConstantPropagationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
