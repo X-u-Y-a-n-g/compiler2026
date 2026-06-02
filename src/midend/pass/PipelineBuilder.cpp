@@ -20,32 +20,32 @@ namespace compiler::midend::pass {
 namespace {
 
 class FixedPointPipelinePass final : public ModulePass {
- public:
+public:
   FixedPointPipelinePass(std::string name, PassManager pipeline, int maxRounds)
-      : name_(std::move(name)), pipeline_(std::move(pipeline)), maxRounds_(maxRounds) {}
+      : name_(std::move(name)), pipeline_(std::move(pipeline)),
+        maxRounds_(maxRounds) {}
 
   std::string name() const override { return name_; }
 
-  bool run(compiler::ir::core::Module& module) override {
+  bool run(compiler::ir::core::Module &module) override {
     return pipeline_.runFixedPoint(module, maxRounds_);
   }
 
- private:
+private:
   std::string name_;
   PassManager pipeline_;
   int maxRounds_;
 };
 
-std::unique_ptr<ModulePass> fixedPoint(std::string name, PassManager pipeline, int maxRounds) {
-  return std::make_unique<FixedPointPipelinePass>(std::move(name), std::move(pipeline),
-                                                 maxRounds);
+std::unique_ptr<ModulePass> fixedPoint(std::string name, PassManager pipeline,
+                                       int maxRounds) {
+  return std::make_unique<FixedPointPipelinePass>(
+      std::move(name), std::move(pipeline), maxRounds);
 }
 
-}  // namespace
+} // namespace
 
-PassManager PipelineBuilder::buildO0Pipeline() {
-  return {};
-}
+PassManager PipelineBuilder::buildO0Pipeline() { return {}; }
 
 PassManager PipelineBuilder::buildBasicCleanPipeline() {
   PassManager pipeline;
@@ -58,11 +58,19 @@ PassManager PipelineBuilder::buildBasicCleanPipeline() {
   return pipeline;
 }
 
+PassManager PipelineBuilder::buildSsaEnablingPipeline() {
+  PassManager pipeline;
+  pipeline.add(std::make_unique<TrivialBlockEliminationPass>());
+  pipeline.add(std::make_unique<Mem2RegPass>());
+  pipeline.add(std::make_unique<PhiSimplificationPass>());
+  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  return pipeline;
+}
+
 PassManager PipelineBuilder::buildInlinePipeline() {
   PassManager pipeline;
   pipeline.add(std::make_unique<FunctionInliningPass>());
-  pipeline.add(std::make_unique<Mem2RegPass>());
-  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
   return pipeline;
 }
 
@@ -76,12 +84,7 @@ PassManager PipelineBuilder::buildLoopPipeline() {
 
 PassManager PipelineBuilder::buildO1Pipeline() {
   PassManager pipeline;
-  pipeline.add(std::make_unique<TrivialBlockEliminationPass>());
-  pipeline.add(std::make_unique<ConstantFoldingPass>());
-  pipeline.add(std::make_unique<LocalScalarCleanupPass>());
-  pipeline.add(std::make_unique<DeadCodeEliminationPass>());
-  pipeline.add(std::make_unique<Mem2RegPass>());
-  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
   pipeline.add(fixedPoint("early-inline", buildInlinePipeline(), 3));
   pipeline.add(std::make_unique<LoopInvariantCodeMotionPass>());
   pipeline.add(std::make_unique<RepeatedAccumulationEliminationPass>());
@@ -89,4 +92,4 @@ PassManager PipelineBuilder::buildO1Pipeline() {
   return pipeline;
 }
 
-}  // namespace compiler::midend::pass
+} // namespace compiler::midend::pass

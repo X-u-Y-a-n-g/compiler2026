@@ -1,22 +1,44 @@
 #include "../../../include/compiler/ir/verify/IRVerifier.h"
 
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace compiler::ir::verify {
 
 namespace {
 
-bool startsWith(const std::string& text, const std::string& prefix) {
-  return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+bool startsWith(const std::string &text, const std::string &prefix) {
+  return text.size() >= prefix.size() &&
+         text.compare(0, prefix.size(), prefix) == 0;
 }
 
-}  // namespace
+std::vector<std::string>
+branchTargets(const compiler::ir::core::Instruction &instruction) {
+  if (instruction.opcode() != "br") {
+    return {};
+  }
+  const auto &operands = instruction.operands();
+  if (operands.size() == 1) {
+    return {operands[0]};
+  }
+  if (operands.size() == 3) {
+    if (operands[1] == operands[2]) {
+      return {operands[1]};
+    }
+    return {operands[1], operands[2]};
+  }
+  return {};
+}
 
-std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& module) const {
+} // namespace
+
+std::vector<std::string>
+IRVerifier::verify(const compiler::ir::core::Module &module) const {
   std::vector<std::string> errors;
 
   std::unordered_set<std::string> globalNames;
-  for (const auto& global : module.globals()) {
+  for (const auto &global : module.globals()) {
     if (global.name().empty()) {
       errors.push_back("global variable name must not be empty");
       continue;
@@ -25,12 +47,13 @@ std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& mo
       errors.push_back("duplicate global variable @" + global.name());
     }
     if (global.type().empty()) {
-      errors.push_back("global variable @" + global.name() + " must have a type");
+      errors.push_back("global variable @" + global.name() +
+                       " must have a type");
     }
   }
 
   std::unordered_set<std::string> functionNames;
-  for (const auto& function : module.functions()) {
+  for (const auto &function : module.functions()) {
     if (function.name().empty()) {
       errors.push_back("function name must not be empty");
       continue;
@@ -39,92 +62,180 @@ std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& mo
       errors.push_back("duplicate function @" + function.name());
     }
     if (function.returnType().empty()) {
-      errors.push_back("function @" + function.name() + " must have a return type");
+      errors.push_back("function @" + function.name() +
+                       " must have a return type");
     }
     if (function.blocks().empty()) {
-      errors.push_back("function @" + function.name() + " must contain at least one basic block");
+      errors.push_back("function @" + function.name() +
+                       " must contain at least one basic block");
       continue;
     }
 
     std::unordered_set<std::string> blockNames;
     std::unordered_set<std::string> valueNames;
-    for (const auto& block : function.blocks()) {
+    for (const auto &block : function.blocks()) {
       if (block.name().empty()) {
-        errors.push_back("function @" + function.name() + " contains a block with empty name");
+        errors.push_back("function @" + function.name() +
+                         " contains a block with empty name");
         continue;
       }
       if (!blockNames.insert(block.name()).second) {
-        errors.push_back("function @" + function.name() + " has duplicate block '" + block.name() +
-                         "'");
+        errors.push_back("function @" + function.name() +
+                         " has duplicate block '" + block.name() + "'");
       }
       if (block.empty()) {
-        errors.push_back("block '" + block.name() + "' in function @" + function.name() +
-                         " must not be empty");
+        errors.push_back("block '" + block.name() + "' in function @" +
+                         function.name() + " must not be empty");
         continue;
       }
 
       bool sawTerminator = false;
-      for (const auto& instruction : block.instructions()) {
+      for (const auto &instruction : block.instructions()) {
         if (instruction.hasResult()) {
           if (!startsWith(instruction.result(), "%")) {
-            errors.push_back("instruction result '" + instruction.result() + "' in block '" +
-                             block.name() + "' must start with '%'");
+            errors.push_back("instruction result '" + instruction.result() +
+                             "' in block '" + block.name() +
+                             "' must start with '%'");
           }
           if (!valueNames.insert(instruction.result()).second) {
-            errors.push_back("duplicate SSA-style value name '" + instruction.result() +
-                             "' in function @" + function.name());
+            errors.push_back("duplicate SSA-style value name '" +
+                             instruction.result() + "' in function @" +
+                             function.name());
           }
         }
 
         if (instruction.isTerminator()) {
           if (sawTerminator) {
-            errors.push_back("block '" + block.name() + "' in function @" + function.name() +
+            errors.push_back("block '" + block.name() + "' in function @" +
+                             function.name() +
                              " contains multiple terminators");
           }
           sawTerminator = true;
         } else if (sawTerminator) {
-          errors.push_back("block '" + block.name() + "' in function @" + function.name() +
+          errors.push_back("block '" + block.name() + "' in function @" +
+                           function.name() +
                            " has instructions after a terminator");
         }
 
         if (instruction.opcode() == "br") {
-          if (instruction.operands().size() != 1 && instruction.operands().size() != 3) {
+          if (instruction.operands().size() != 1 &&
+              instruction.operands().size() != 3) {
             errors.push_back("br in block '" + block.name() +
-                             "' must have either one target or condition, true target and false target");
+                             "' must have either one target or condition, true "
+                             "target and false target");
           }
         } else if (instruction.opcode() == "ret") {
           const bool isVoid = function.returnType() == "void";
           if (isVoid && !instruction.operands().empty()) {
             errors.push_back("void function @" + function.name() +
-                             " must not return a value in block '" + block.name() + "'");
+                             " must not return a value in block '" +
+                             block.name() + "'");
           }
           if (!isVoid && instruction.operands().size() != 1) {
             errors.push_back("non-void function @" + function.name() +
-                             " must return exactly one value in block '" + block.name() + "'");
+                             " must return exactly one value in block '" +
+                             block.name() + "'");
           }
         }
       }
 
       if (!block.isTerminated()) {
-        errors.push_back("block '" + block.name() + "' in function @" + function.name() +
-                         " must end with a terminator");
+        errors.push_back("block '" + block.name() + "' in function @" +
+                         function.name() + " must end with a terminator");
       }
     }
 
-    for (const auto& block : function.blocks()) {
-      for (const auto& instruction : block.instructions()) {
-        if (instruction.opcode() == "br" && instruction.operands().size() == 1 &&
-            blockNames.find(instruction.operands().front()) == blockNames.end()) {
-          errors.push_back("br in block '" + block.name() + "' targets unknown block '" +
+    std::unordered_map<std::string, std::unordered_set<std::string>>
+        predecessors;
+    for (const auto &block : function.blocks()) {
+      predecessors.emplace(block.name(), std::unordered_set<std::string>{});
+    }
+    for (const auto &block : function.blocks()) {
+      if (const auto *terminator = block.terminator()) {
+        for (const auto &target : branchTargets(*terminator)) {
+          predecessors[target].insert(block.name());
+        }
+      }
+    }
+
+    for (const auto &block : function.blocks()) {
+      bool sawNonPhi = false;
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.opcode() == "phi") {
+          if (sawNonPhi) {
+            errors.push_back("phi in block '" + block.name() +
+                             "' in function @" + function.name() +
+                             " appears after a non-phi instruction");
+          }
+          const auto &operands = instruction.operands();
+          if (operands.empty() || operands.size() % 2 == 0) {
+            errors.push_back(
+                "phi in block '" + block.name() + "' in function @" +
+                function.name() +
+                " must have a type followed by value/block incoming pairs");
+          }
+
+          std::unordered_set<std::string> incomingBlocks;
+          for (std::size_t i = 2; i < operands.size(); i += 2) {
+            const auto &incomingBlock = operands[i];
+            if (blockNames.find(incomingBlock) == blockNames.end()) {
+              errors.push_back("phi in block '" + block.name() +
+                               "' in function @" + function.name() +
+                               " references unknown predecessor block '" +
+                               incomingBlock + "'");
+              continue;
+            }
+            if (!incomingBlocks.insert(incomingBlock).second) {
+              errors.push_back("phi in block '" + block.name() +
+                               "' in function @" + function.name() +
+                               " has duplicate incoming block '" +
+                               incomingBlock + "'");
+            }
+          }
+
+          const auto predIt = predecessors.find(block.name());
+          const std::unordered_set<std::string> expectedPreds =
+              predIt == predecessors.end() ? std::unordered_set<std::string>{}
+                                           : predIt->second;
+          for (const auto &pred : expectedPreds) {
+            if (incomingBlocks.find(pred) == incomingBlocks.end()) {
+              errors.push_back("phi in block '" + block.name() +
+                               "' in function @" + function.name() +
+                               " is missing incoming value from predecessor '" +
+                               pred + "'");
+            }
+          }
+          for (const auto &incomingBlock : incomingBlocks) {
+            if (expectedPreds.find(incomingBlock) == expectedPreds.end()) {
+              errors.push_back(
+                  "phi in block '" + block.name() + "' in function @" +
+                  function.name() +
+                  " has incoming value from non-predecessor block '" +
+                  incomingBlock + "'");
+            }
+          }
+        } else {
+          sawNonPhi = true;
+        }
+
+        if (instruction.opcode() == "br" &&
+            instruction.operands().size() == 1 &&
+            blockNames.find(instruction.operands().front()) ==
+                blockNames.end()) {
+          errors.push_back("br in block '" + block.name() +
+                           "' targets unknown block '" +
                            instruction.operands().front() + "'");
         }
-        if (instruction.opcode() == "br" && instruction.operands().size() == 3) {
+        if (instruction.opcode() == "br" &&
+            instruction.operands().size() == 3) {
           if (blockNames.find(instruction.operands()[1]) == blockNames.end()) {
-            errors.push_back("br in block '" + block.name() + "' targets unknown block '" +
+            errors.push_back("br in block '" + block.name() +
+                             "' targets unknown block '" +
                              instruction.operands()[1] + "'");
           }
           if (blockNames.find(instruction.operands()[2]) == blockNames.end()) {
-            errors.push_back("br in block '" + block.name() + "' targets unknown block '" +
+            errors.push_back("br in block '" + block.name() +
+                             "' targets unknown block '" +
                              instruction.operands()[2] + "'");
           }
         }
@@ -135,4 +246,4 @@ std::vector<std::string> IRVerifier::verify(const compiler::ir::core::Module& mo
   return errors;
 }
 
-}  // namespace compiler::ir::verify
+} // namespace compiler::ir::verify

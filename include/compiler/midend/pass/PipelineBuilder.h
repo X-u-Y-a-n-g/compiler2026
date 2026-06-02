@@ -5,12 +5,13 @@
 namespace compiler::midend::pass {
 
 class PipelineBuilder {
- public:
+public:
   static PassManager buildO0Pipeline();
   static PassManager buildO1Pipeline();
   static PassManager buildBasicCleanPipeline();
+  static PassManager buildSsaEnablingPipeline();
   static PassManager buildInlinePipeline();
   static PassManager buildLoopPipeline();
 };
 
-}  // namespace compiler::midend::pass
+} // namespace compiler::midend::pass
