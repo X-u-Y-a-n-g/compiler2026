@@ -129,10 +129,14 @@ bool prunePhiIncoming(Function &function) {
 }
 
 bool simplifyTrivialPhis(Function &function) {
+  const auto predecessors = predecessorMap(function);
   std::unordered_map<std::string, std::string> aliases;
   bool changed = false;
 
   for (auto &block : function.blocks()) {
+    const auto predIt = predecessors.find(block.name());
+    const std::size_t expectedIncomingCount =
+        predIt == predecessors.end() ? 0 : predIt->second.size();
     std::vector<Instruction> rewritten;
     rewritten.reserve(block.instructions().size());
     for (const auto &instruction : block.instructions()) {
@@ -149,7 +153,9 @@ bool simplifyTrivialPhis(Function &function) {
       std::string commonValue;
       bool hasIncoming = false;
       bool allSame = true;
+      std::size_t incomingCount = 0;
       for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
+        ++incomingCount;
         const auto &value = operands[i];
         if (!hasIncoming) {
           commonValue = value;
@@ -158,6 +164,12 @@ bool simplifyTrivialPhis(Function &function) {
           allSame = false;
           break;
         }
+      }
+
+      if (incomingCount != expectedIncomingCount) {
+        rewritten.emplace_back(instruction.opcode(), std::move(operands),
+                               instruction.result());
+        continue;
       }
 
       if (!hasIncoming || (allSame && commonValue != instruction.result())) {

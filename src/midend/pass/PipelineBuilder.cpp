@@ -4,6 +4,7 @@
 #include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../../include/compiler/midend/pass/FunctionInliningPass.h"
+#include "../../../include/compiler/midend/pass/LateFunctionInliningPass.h"
 #include "../../../include/compiler/midend/pass/LocalScalarCleanupPass.h"
 #include "../../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
@@ -74,6 +75,13 @@ PassManager PipelineBuilder::buildInlinePipeline() {
   return pipeline;
 }
 
+PassManager PipelineBuilder::buildLateInlinePipeline() {
+  PassManager pipeline;
+  pipeline.add(std::make_unique<LateFunctionInliningPass>());
+  pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
+  return pipeline;
+}
+
 PassManager PipelineBuilder::buildLoopPipeline() {
   PassManager pipeline;
   pipeline.add(std::make_unique<LoopInvariantCodeMotionPass>());
@@ -88,6 +96,7 @@ PassManager PipelineBuilder::buildO1Pipeline() {
   pipeline.add(fixedPoint("early-inline", buildInlinePipeline(), 3));
   pipeline.add(std::make_unique<LoopInvariantCodeMotionPass>());
   pipeline.add(std::make_unique<RepeatedAccumulationEliminationPass>());
+  pipeline.add(fixedPoint("late-inline", buildLateInlinePipeline(), 2));
   pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
   return pipeline;
 }

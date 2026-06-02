@@ -17,32 +17,33 @@ namespace {
 using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
+using compiler::ir::core::Module;
 
-bool isValueReference(const std::string& operand) {
+bool isValueReference(const std::string &operand) {
   return !operand.empty() && (operand.front() == '%' || operand.front() == '@');
 }
 
-bool isTrueConstant(const std::string& operand) {
+bool isTrueConstant(const std::string &operand) {
   long long value = 0;
   return detail::parseIntegerLiteral(operand, value) && value != 0;
 }
 
-bool isFalseConstant(const std::string& operand) {
+bool isFalseConstant(const std::string &operand) {
   long long value = 0;
   return detail::parseIntegerLiteral(operand, value) && value == 0;
 }
 
-std::string zeroValueForType(const std::string& type) {
+std::string zeroValueForType(const std::string &type) {
   return type == "float" ? "0.0" : "0";
 }
 
-std::vector<std::string> branchTargets(const BasicBlock& block) {
-  const auto* terminator = block.terminator();
+std::vector<std::string> branchTargets(const BasicBlock &block) {
+  const auto *terminator = block.terminator();
   if (terminator == nullptr || terminator->opcode() != "br") {
     return {};
   }
 
-  const auto& operands = terminator->operands();
+  const auto &operands = terminator->operands();
   if (operands.size() == 1) {
     return {operands[0]};
   }
@@ -55,14 +56,14 @@ std::vector<std::string> branchTargets(const BasicBlock& block) {
   return {};
 }
 
-std::unordered_set<std::string> reachableBlocks(const Function& function) {
+std::unordered_set<std::string> reachableBlocks(const Function &function) {
   std::unordered_set<std::string> reachable;
   if (function.blocks().empty()) {
     return reachable;
   }
 
-  std::unordered_map<std::string, const BasicBlock*> blockByName;
-  for (const auto& block : function.blocks()) {
+  std::unordered_map<std::string, const BasicBlock *> blockByName;
+  for (const auto &block : function.blocks()) {
     blockByName.emplace(block.name(), &block);
   }
 
@@ -76,8 +77,9 @@ std::unordered_set<std::string> reachableBlocks(const Function& function) {
     if (found == blockByName.end()) {
       continue;
     }
-    for (const auto& target : branchTargets(*found->second)) {
-      if (blockByName.find(target) != blockByName.end() && reachable.insert(target).second) {
+    for (const auto &target : branchTargets(*found->second)) {
+      if (blockByName.find(target) != blockByName.end() &&
+          reachable.insert(target).second) {
         worklist.push_back(target);
       }
     }
@@ -86,30 +88,30 @@ std::unordered_set<std::string> reachableBlocks(const Function& function) {
   return reachable;
 }
 
-std::unordered_map<std::string, std::unordered_set<std::string>> predecessorMap(
-    const Function& function) {
+std::unordered_map<std::string, std::unordered_set<std::string>>
+predecessorMap(const Function &function) {
   std::unordered_map<std::string, std::unordered_set<std::string>> predecessors;
-  for (const auto& block : function.blocks()) {
-    for (const auto& target : branchTargets(block)) {
+  for (const auto &block : function.blocks()) {
+    for (const auto &target : branchTargets(block)) {
       predecessors[target].insert(block.name());
     }
   }
   return predecessors;
 }
 
-bool simplifyConstantBranches(Function& function) {
+bool simplifyConstantBranches(Function &function) {
   bool changed = false;
-  for (auto& block : function.blocks()) {
-    auto& instructions = block.instructions();
+  for (auto &block : function.blocks()) {
+    auto &instructions = block.instructions();
     if (instructions.empty()) {
       continue;
     }
-    const auto& terminator = instructions.back();
+    const auto &terminator = instructions.back();
     if (terminator.opcode() != "br" || terminator.operands().size() != 3) {
       continue;
     }
 
-    const auto& operands = terminator.operands();
+    const auto &operands = terminator.operands();
     std::string target;
     if (operands[1] == operands[2]) {
       target = operands[1];
@@ -127,41 +129,42 @@ bool simplifyConstantBranches(Function& function) {
   return changed;
 }
 
-bool removeUnreachableBlocks(Function& function) {
+bool removeUnreachableBlocks(Function &function) {
   const auto reachable = reachableBlocks(function);
   const auto oldSize = function.blocks().size();
   function.blocks().erase(
       std::remove_if(function.blocks().begin(), function.blocks().end(),
-                     [&](const BasicBlock& block) {
+                     [&](const BasicBlock &block) {
                        return reachable.find(block.name()) == reachable.end();
                      }),
       function.blocks().end());
   return oldSize != function.blocks().size();
 }
 
-bool prunePhiIncoming(Function& function) {
+bool prunePhiIncoming(Function &function) {
   const auto predecessors = predecessorMap(function);
   bool changed = false;
 
-  for (auto& block : function.blocks()) {
+  for (auto &block : function.blocks()) {
     const auto predIt = predecessors.find(block.name());
     std::vector<Instruction> rewritten;
     rewritten.reserve(block.instructions().size());
-    for (const auto& instruction : block.instructions()) {
+    for (const auto &instruction : block.instructions()) {
       if (instruction.opcode() != "phi") {
         rewritten.push_back(instruction);
         continue;
       }
 
       std::vector<std::string> operands;
-      const auto& oldOperands = instruction.operands();
+      const auto &oldOperands = instruction.operands();
       if (!oldOperands.empty()) {
         operands.push_back(oldOperands.front());
       }
       for (std::size_t i = 1; i + 1 < oldOperands.size(); i += 2) {
-        const auto& value = oldOperands[i];
-        const auto& pred = oldOperands[i + 1];
-        if (predIt != predecessors.end() && predIt->second.find(pred) != predIt->second.end()) {
+        const auto &value = oldOperands[i];
+        const auto &pred = oldOperands[i + 1];
+        if (predIt != predecessors.end() &&
+            predIt->second.find(pred) != predIt->second.end()) {
           operands.push_back(value);
           operands.push_back(pred);
         }
@@ -170,7 +173,8 @@ bool prunePhiIncoming(Function& function) {
       if (operands.size() != oldOperands.size()) {
         changed = true;
       }
-      rewritten.emplace_back(instruction.opcode(), std::move(operands), instruction.result());
+      rewritten.emplace_back(instruction.opcode(), std::move(operands),
+                             instruction.result());
     }
     block.instructions() = std::move(rewritten);
   }
@@ -179,35 +183,42 @@ bool prunePhiIncoming(Function& function) {
 }
 
 void rewriteFunctionOperands(
-    Function& function, const std::unordered_map<std::string, std::string>& aliases) {
+    Function &function,
+    const std::unordered_map<std::string, std::string> &aliases) {
   if (aliases.empty()) {
     return;
   }
 
-  for (auto& block : function.blocks()) {
+  for (auto &block : function.blocks()) {
     std::vector<Instruction> rewritten;
     rewritten.reserve(block.instructions().size());
-    for (const auto& instruction : block.instructions()) {
-      rewritten.emplace_back(instruction.opcode(),
-                             detail::rewriteOperands(instruction.operands(), aliases),
-                             instruction.result());
+    for (const auto &instruction : block.instructions()) {
+      rewritten.emplace_back(
+          instruction.opcode(),
+          detail::rewriteOperands(instruction.operands(), aliases),
+          instruction.result());
     }
     block.instructions() = std::move(rewritten);
   }
 }
 
-bool simplifyPhis(Function& function) {
+bool simplifyPhis(Function &function) {
+  const auto predecessors = predecessorMap(function);
   std::unordered_map<std::string, std::string> aliases;
   bool changed = false;
 
-  for (auto& block : function.blocks()) {
+  for (auto &block : function.blocks()) {
+    const auto predIt = predecessors.find(block.name());
+    const std::size_t expectedIncomingCount =
+        predIt == predecessors.end() ? 0 : predIt->second.size();
     std::vector<Instruction> rewritten;
     rewritten.reserve(block.instructions().size());
-    for (const auto& instruction : block.instructions()) {
+    for (const auto &instruction : block.instructions()) {
       if (instruction.opcode() != "phi" || !instruction.hasResult()) {
-        rewritten.emplace_back(instruction.opcode(),
-                               detail::rewriteOperands(instruction.operands(), aliases),
-                               instruction.result());
+        rewritten.emplace_back(
+            instruction.opcode(),
+            detail::rewriteOperands(instruction.operands(), aliases),
+            instruction.result());
         continue;
       }
 
@@ -216,8 +227,10 @@ bool simplifyPhis(Function& function) {
       std::string commonValue;
       bool hasIncoming = false;
       bool allSame = true;
+      std::size_t incomingCount = 0;
       for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
-        const auto& value = operands[i];
+        ++incomingCount;
+        const auto &value = operands[i];
         if (!hasIncoming) {
           commonValue = value;
           hasIncoming = true;
@@ -227,15 +240,23 @@ bool simplifyPhis(Function& function) {
         }
       }
 
+      if (incomingCount != expectedIncomingCount) {
+        rewritten.emplace_back(instruction.opcode(), std::move(operands),
+                               instruction.result());
+        continue;
+      }
+
       if (!hasIncoming || allSame) {
         aliases[instruction.result()] =
-            hasIncoming ? commonValue
-                        : (operands.empty() ? "0" : zeroValueForType(operands.front()));
+            hasIncoming
+                ? commonValue
+                : (operands.empty() ? "0" : zeroValueForType(operands.front()));
         changed = true;
         continue;
       }
 
-      rewritten.emplace_back(instruction.opcode(), std::move(operands), instruction.result());
+      rewritten.emplace_back(instruction.opcode(), std::move(operands),
+                             instruction.result());
     }
     block.instructions() = std::move(rewritten);
   }
@@ -244,9 +265,9 @@ bool simplifyPhis(Function& function) {
   return changed;
 }
 
-std::vector<std::string> usedValues(const Instruction& instruction) {
+std::vector<std::string> usedValues(const Instruction &instruction) {
   std::vector<std::string> uses;
-  const auto& operands = instruction.operands();
+  const auto &operands = instruction.operands();
 
   if (instruction.opcode() == "phi") {
     for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
@@ -265,7 +286,7 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
   }
 
   if (instruction.opcode() == "ret") {
-    for (const auto& operand : operands) {
+    for (const auto &operand : operands) {
       if (isValueReference(operand)) {
         uses.push_back(operand);
       }
@@ -273,7 +294,7 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
     return uses;
   }
 
-  for (const auto& operand : operands) {
+  for (const auto &operand : operands) {
     if (isValueReference(operand)) {
       uses.push_back(operand);
     }
@@ -281,17 +302,18 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
   return uses;
 }
 
-bool isEssential(const Instruction& instruction) {
-  const auto& opcode = instruction.opcode();
-  return opcode == "br" || opcode == "ret" || opcode == "store" || opcode == "call";
+bool isEssential(const Instruction &instruction) {
+  const auto &opcode = instruction.opcode();
+  return opcode == "br" || opcode == "ret" || opcode == "store" ||
+         opcode == "call";
 }
 
-bool eliminateDeadInstructions(Function& function) {
-  std::unordered_map<std::string, const Instruction*> definitions;
-  std::vector<const Instruction*> roots;
+bool eliminateDeadInstructions(Function &function) {
+  std::unordered_map<std::string, const Instruction *> definitions;
+  std::vector<const Instruction *> roots;
 
-  for (const auto& block : function.blocks()) {
-    for (const auto& instruction : block.instructions()) {
+  for (const auto &block : function.blocks()) {
+    for (const auto &instruction : block.instructions()) {
       if (instruction.hasResult()) {
         definitions[instruction.result()] = &instruction;
       }
@@ -301,18 +323,18 @@ bool eliminateDeadInstructions(Function& function) {
     }
   }
 
-  std::unordered_set<const Instruction*> live;
-  std::deque<const Instruction*> worklist;
-  for (const auto* root : roots) {
+  std::unordered_set<const Instruction *> live;
+  std::deque<const Instruction *> worklist;
+  for (const auto *root : roots) {
     if (live.insert(root).second) {
       worklist.push_back(root);
     }
   }
 
   while (!worklist.empty()) {
-    const auto* instruction = worklist.front();
+    const auto *instruction = worklist.front();
     worklist.pop_front();
-    for (const auto& operand : usedValues(*instruction)) {
+    for (const auto &operand : usedValues(*instruction)) {
       const auto found = definitions.find(operand);
       if (found != definitions.end() && live.insert(found->second).second) {
         worklist.push_back(found->second);
@@ -321,10 +343,10 @@ bool eliminateDeadInstructions(Function& function) {
   }
 
   bool changed = false;
-  for (auto& block : function.blocks()) {
+  for (auto &block : function.blocks()) {
     std::vector<Instruction> kept;
     kept.reserve(block.instructions().size());
-    for (const auto& instruction : block.instructions()) {
+    for (const auto &instruction : block.instructions()) {
       if (instruction.hasResult() && detail::isSideEffectFree(instruction) &&
           live.find(&instruction) == live.end()) {
         changed = true;
@@ -338,7 +360,7 @@ bool eliminateDeadInstructions(Function& function) {
   return changed;
 }
 
-void runDce(Function& function) {
+void runDce(Function &function) {
   bool changed = false;
   do {
     changed = false;
@@ -350,14 +372,74 @@ void runDce(Function& function) {
   } while (changed);
 }
 
-}  // namespace
+std::unordered_set<std::string>
+collectReachableFunctions(const Module &module) {
+  std::unordered_map<std::string, const Function *> functions;
+  for (const auto &function : module.functions()) {
+    functions.emplace(function.name(), &function);
+  }
 
-bool DeadCodeEliminationPass::run(compiler::ir::core::Module& module) {
+  std::unordered_set<std::string> reachable;
+  std::deque<std::string> worklist;
+  if (functions.find("main") == functions.end()) {
+    for (const auto &function : module.functions()) {
+      reachable.insert(function.name());
+    }
+    return reachable;
+  }
+
+  reachable.insert("main");
+  worklist.push_back("main");
+  while (!worklist.empty()) {
+    const auto functionName = worklist.front();
+    worklist.pop_front();
+    const auto functionIt = functions.find(functionName);
+    if (functionIt == functions.end()) {
+      continue;
+    }
+
+    for (const auto &block : functionIt->second->blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.opcode() != "call" || instruction.operands().empty()) {
+          continue;
+        }
+        const auto &calleeOperand = instruction.operands().front();
+        const std::string callee =
+            !calleeOperand.empty() && calleeOperand.front() == '@'
+                ? calleeOperand.substr(1)
+                : calleeOperand;
+        if (functions.find(callee) != functions.end() &&
+            reachable.insert(callee).second) {
+          worklist.push_back(callee);
+        }
+      }
+    }
+  }
+  return reachable;
+}
+
+bool removeUnreachableFunctions(Module &module) {
+  const auto reachable = collectReachableFunctions(module);
+  const auto oldSize = module.functions().size();
+  module.functions().erase(
+      std::remove_if(module.functions().begin(), module.functions().end(),
+                     [&](const Function &function) {
+                       return reachable.find(function.name()) ==
+                              reachable.end();
+                     }),
+      module.functions().end());
+  return module.functions().size() != oldSize;
+}
+
+} // namespace
+
+bool DeadCodeEliminationPass::run(compiler::ir::core::Module &module) {
   const auto before = detail::moduleFingerprint(module);
-  for (auto& function : module.functions()) {
+  for (auto &function : module.functions()) {
     runDce(function);
   }
+  removeUnreachableFunctions(module);
   return before != detail::moduleFingerprint(module);
 }
 
-}  // namespace compiler::midend::pass
+} // namespace compiler::midend::pass

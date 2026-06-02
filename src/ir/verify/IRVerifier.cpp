@@ -13,6 +13,10 @@ bool startsWith(const std::string &text, const std::string &prefix) {
          text.compare(0, prefix.size(), prefix) == 0;
 }
 
+bool isValueReference(const std::string &operand) {
+  return !operand.empty() && operand.front() == '%';
+}
+
 std::vector<std::string>
 branchTargets(const compiler::ir::core::Instruction &instruction) {
   if (instruction.opcode() != "br") {
@@ -29,6 +33,44 @@ branchTargets(const compiler::ir::core::Instruction &instruction) {
     return {operands[1], operands[2]};
   }
   return {};
+}
+
+std::vector<std::string>
+usedLocalValues(const compiler::ir::core::Instruction &instruction) {
+  std::vector<std::string> uses;
+  const auto &operands = instruction.operands();
+
+  if (instruction.opcode() == "phi") {
+    for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
+      if (isValueReference(operands[i])) {
+        uses.push_back(operands[i]);
+      }
+    }
+    return uses;
+  }
+
+  if (instruction.opcode() == "br") {
+    if (operands.size() == 3 && isValueReference(operands[0])) {
+      uses.push_back(operands[0]);
+    }
+    return uses;
+  }
+
+  if (instruction.opcode() == "ret") {
+    for (const auto &operand : operands) {
+      if (isValueReference(operand)) {
+        uses.push_back(operand);
+      }
+    }
+    return uses;
+  }
+
+  for (const auto &operand : operands) {
+    if (isValueReference(operand)) {
+      uses.push_back(operand);
+    }
+  }
+  return uses;
 }
 
 } // namespace
@@ -73,6 +115,17 @@ IRVerifier::verify(const compiler::ir::core::Module &module) const {
 
     std::unordered_set<std::string> blockNames;
     std::unordered_set<std::string> valueNames;
+    for (const auto &parameter : function.parameters()) {
+      if (parameter.name.empty()) {
+        errors.push_back("function @" + function.name() +
+                         " contains a parameter with empty name");
+        continue;
+      }
+      if (!valueNames.insert(parameter.name).second) {
+        errors.push_back("duplicate SSA-style value name '" + parameter.name +
+                         "' in function @" + function.name());
+      }
+    }
     for (const auto &block : function.blocks()) {
       if (block.name().empty()) {
         errors.push_back("function @" + function.name() +
@@ -135,6 +188,17 @@ IRVerifier::verify(const compiler::ir::core::Module &module) const {
             errors.push_back("non-void function @" + function.name() +
                              " must return exactly one value in block '" +
                              block.name() + "'");
+          }
+        }
+
+        if (instruction.opcode() != "phi" && instruction.hasResult()) {
+          for (const auto &operand : instruction.operands()) {
+            if (isValueReference(operand) && operand == instruction.result()) {
+              errors.push_back("instruction result '" + instruction.result() +
+                               "' in block '" + block.name() +
+                               "' in function @" + function.name() +
+                               " is used by its own definition");
+            }
           }
         }
       }
@@ -237,6 +301,18 @@ IRVerifier::verify(const compiler::ir::core::Module &module) const {
             errors.push_back("br in block '" + block.name() +
                              "' targets unknown block '" +
                              instruction.operands()[2] + "'");
+          }
+        }
+      }
+    }
+
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        for (const auto &use : usedLocalValues(instruction)) {
+          if (valueNames.find(use) == valueNames.end()) {
+            errors.push_back("instruction in block '" + block.name() +
+                             "' in function @" + function.name() +
+                             " references undefined local value '" + use + "'");
           }
         }
       }

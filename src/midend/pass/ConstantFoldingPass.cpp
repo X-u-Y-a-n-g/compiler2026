@@ -497,8 +497,27 @@ solveBlockEntryConstants(const Function &function) {
   return inConstants;
 }
 
-void foldBlock(BasicBlock &block, const ValueMap &inConstants) {
+void rewriteFunctionOperands(Function &function, const ValueMap &aliases) {
+  if (aliases.empty()) {
+    return;
+  }
+
+  for (auto &block : function.blocks()) {
+    std::vector<Instruction> rewritten;
+    rewritten.reserve(block.instructions().size());
+    for (const auto &instruction : block.instructions()) {
+      rewritten.emplace_back(
+          instruction.opcode(),
+          detail::rewriteOperands(instruction.operands(), aliases),
+          instruction.result());
+    }
+    block.instructions() = std::move(rewritten);
+  }
+}
+
+ValueMap foldBlock(BasicBlock &block, const ValueMap &inConstants) {
   ValueMap replacements = inConstants;
+  ValueMap foldedAliases;
   std::vector<Instruction> rewrittenInstructions;
   rewrittenInstructions.reserve(block.instructions().size());
 
@@ -520,6 +539,7 @@ void foldBlock(BasicBlock &block, const ValueMap &inConstants) {
     if (rewritten.hasResult()) {
       if (auto folded = foldInstruction(rewritten); folded.has_value()) {
         replacements[rewritten.result()] = *folded;
+        foldedAliases[rewritten.result()] = *folded;
         continue;
       }
       replacements.erase(rewritten.result());
@@ -528,14 +548,19 @@ void foldBlock(BasicBlock &block, const ValueMap &inConstants) {
   }
 
   block.instructions() = std::move(rewrittenInstructions);
+  return foldedAliases;
 }
 
 void foldFunction(Function &function) {
   const auto inConstants = solveBlockEntryConstants(function);
+  ValueMap foldedAliases;
   for (auto &block : function.blocks()) {
     const auto found = inConstants.find(block.name());
-    foldBlock(block, found == inConstants.end() ? ValueMap{} : found->second);
+    auto blockAliases = foldBlock(
+        block, found == inConstants.end() ? ValueMap{} : found->second);
+    foldedAliases.insert(blockAliases.begin(), blockAliases.end());
   }
+  rewriteFunctionOperands(function, foldedAliases);
 }
 
 } // namespace
