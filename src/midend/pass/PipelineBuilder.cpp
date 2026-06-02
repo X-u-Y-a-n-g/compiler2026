@@ -1,19 +1,24 @@
 #include "../../../include/compiler/midend/pass/PipelineBuilder.h"
 
+#include "../../../include/compiler/midend/pass/BasicAliasAnalysisPass.h"
 #include "../../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../../include/compiler/midend/pass/CompareSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
+#include "../../../include/compiler/midend/pass/DeadStoreEliminationPass.h"
 #include "../../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../../include/compiler/midend/pass/GlobalValueNumberingPass.h"
 #include "../../../include/compiler/midend/pass/LateFunctionInliningPass.h"
+#include "../../../include/compiler/midend/pass/LoadEliminationPass.h"
 #include "../../../include/compiler/midend/pass/LocalScalarCleanupPass.h"
 #include "../../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../../include/compiler/midend/pass/PhiSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../../include/compiler/midend/pass/ReassociatePass.h"
+#include "../../../include/compiler/midend/pass/ScalarReplacementPass.h"
 #include "../../../include/compiler/midend/pass/SparseConditionalConstantPropagationPass.h"
+#include "../../../include/compiler/midend/pass/StoreToLoadForwardingPass.h"
 #include "../../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 
 #include <memory>
@@ -111,6 +116,18 @@ PassManager PipelineBuilder::buildScalarPipeline() {
   return pipeline;
 }
 
+PassManager PipelineBuilder::buildMemoryPipeline() {
+  PassManager pipeline;
+  pipeline.add(std::make_unique<BasicAliasAnalysisPass>());
+  pipeline.add(std::make_unique<LoadEliminationPass>());
+  pipeline.add(std::make_unique<StoreToLoadForwardingPass>());
+  pipeline.add(std::make_unique<DeadStoreEliminationPass>());
+  pipeline.add(std::make_unique<ScalarReplacementPass>());
+  pipeline.add(std::make_unique<Mem2RegPass>());
+  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  return pipeline;
+}
+
 PassManager PipelineBuilder::buildLoopPipeline() {
   PassManager pipeline;
   pipeline.add(std::make_unique<LoopInvariantCodeMotionPass>());
@@ -123,10 +140,13 @@ PassManager PipelineBuilder::buildO1Pipeline() {
   PassManager pipeline;
   pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
   pipeline.add(fixedPoint("early-inline", buildInlinePipeline(), 3));
-  pipeline.add(std::make_unique<LoopInvariantCodeMotionPass>());
-  pipeline.add(std::make_unique<RepeatedAccumulationEliminationPass>());
+  pipeline.add(fixedPoint("scalar-main", buildScalarPipeline(), 4));
+  pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
+  pipeline.add(fixedPoint("loop-main", buildLoopPipeline(), 2));
+  pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
   pipeline.add(fixedPoint("late-inline", buildLateInlinePipeline(), 2));
   pipeline.add(fixedPoint("scalar-main", buildScalarPipeline(), 4));
+  pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
   pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
   return pipeline;
 }

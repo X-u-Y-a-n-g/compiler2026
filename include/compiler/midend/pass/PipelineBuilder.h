@@ -14,6 +14,7 @@ public:
   static PassManager buildLateInlinePipeline();
   static PassManager buildSccpCleanPipeline();
   static PassManager buildScalarPipeline();
+  static PassManager buildMemoryPipeline();
   static PassManager buildLoopPipeline();
 };
 
