@@ -24,9 +24,13 @@ add_library(compiler_lib
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/DeadStoreEliminationPass.cpp
+  src/midend/pass/FunctionSpecializationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalValueNumberingPass.cpp
+  src/midend/pass/GlobalConstPropagationPass.cpp
+  src/midend/pass/GlobalDCEPass.cpp
   src/midend/pass/IndVarSimplificationPass.cpp
+  src/midend/pass/InternalizePass.cpp
   src/midend/pass/LCSSAPass.cpp
   src/midend/pass/LoadEliminationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
@@ -49,6 +53,7 @@ add_library(compiler_lib
   src/midend/pass/SCEVAnalysisPass.cpp
   src/midend/pass/SparseConditionalConstantPropagationPass.cpp
   src/midend/pass/StoreToLoadForwardingPass.cpp
+  src/midend/pass/TreeShakingPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp

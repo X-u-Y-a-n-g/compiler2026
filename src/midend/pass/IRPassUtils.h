@@ -127,6 +127,15 @@ inline bool isSideEffectFree(const compiler::ir::core::Instruction& instruction)
 
 inline std::string moduleFingerprint(const compiler::ir::core::Module& module) {
   std::ostringstream os;
+  for (const auto& global : module.globals()) {
+    os << "global " << global.name() << ' ' << global.type() << ' '
+       << (global.isConst() ? "const" : "var") << ' ' << global.initializer().type()
+       << ' ' << global.initializer().literal() << ' '
+       << (global.initializer().isScalar() ? "scalar" : "aggregate") << '\n';
+    for (const auto& element : global.initializer().elements()) {
+      os << "global.element " << element.type() << ' ' << element.literal() << '\n';
+    }
+  }
   for (const auto& function : module.functions()) {
     os << "func " << function.name() << ' ' << function.returnType() << '\n';
     for (const auto& parameter : function.parameters()) {

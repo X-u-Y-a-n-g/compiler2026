@@ -7,9 +7,13 @@
 #include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../../include/compiler/midend/pass/DeadStoreEliminationPass.h"
+#include "../../../include/compiler/midend/pass/FunctionSpecializationPass.h"
 #include "../../../include/compiler/midend/pass/FunctionInliningPass.h"
+#include "../../../include/compiler/midend/pass/GlobalConstPropagationPass.h"
+#include "../../../include/compiler/midend/pass/GlobalDCEPass.h"
 #include "../../../include/compiler/midend/pass/GlobalValueNumberingPass.h"
 #include "../../../include/compiler/midend/pass/IndVarSimplificationPass.h"
+#include "../../../include/compiler/midend/pass/InternalizePass.h"
 #include "../../../include/compiler/midend/pass/LCSSAPass.h"
 #include "../../../include/compiler/midend/pass/LateFunctionInliningPass.h"
 #include "../../../include/compiler/midend/pass/LoadEliminationPass.h"
@@ -31,6 +35,7 @@
 #include "../../../include/compiler/midend/pass/SCEVAnalysisPass.h"
 #include "../../../include/compiler/midend/pass/SparseConditionalConstantPropagationPass.h"
 #include "../../../include/compiler/midend/pass/StoreToLoadForwardingPass.h"
+#include "../../../include/compiler/midend/pass/TreeShakingPass.h"
 #include "../../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 
 #include <memory>
@@ -171,6 +176,20 @@ PassManager PipelineBuilder::buildLoopPipeline() {
   return pipeline;
 }
 
+PassManager PipelineBuilder::buildModulePipeline() {
+  PassManager pipeline;
+  pipeline.add(std::make_unique<InternalizePass>());
+  pipeline.add(std::make_unique<TreeShakingPass>());
+  pipeline.add(std::make_unique<GlobalConstPropagationPass>());
+  pipeline.add(std::make_unique<GlobalDCEPass>());
+  pipeline.add(std::make_unique<FunctionSpecializationPass>());
+  pipeline.add(fixedPoint("late-inline", buildLateInlinePipeline(), 2));
+  pipeline.add(std::make_unique<TreeShakingPass>());
+  pipeline.add(std::make_unique<GlobalDCEPass>());
+  pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
+  return pipeline;
+}
+
 PassManager PipelineBuilder::buildO1Pipeline() {
   PassManager pipeline;
   pipeline.add(fixedPoint("ssa-enabling", buildSsaEnablingPipeline(), 2));
@@ -179,7 +198,7 @@ PassManager PipelineBuilder::buildO1Pipeline() {
   pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
   pipeline.add(fixedPoint("loop-main", buildLoopPipeline(), 2));
   pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
-  pipeline.add(fixedPoint("late-inline", buildLateInlinePipeline(), 2));
+  pipeline.add(fixedPoint("module-opt", buildModulePipeline(), 2));
   pipeline.add(fixedPoint("scalar-main", buildScalarPipeline(), 4));
   pipeline.add(fixedPoint("memory-main", buildMemoryPipeline(), 3));
   pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
