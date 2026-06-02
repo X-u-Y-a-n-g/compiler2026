@@ -238,6 +238,77 @@ bool phiConflictAfterRedirect(
   return false;
 }
 
+bool phiConflictWithPlannedRedirects(
+    const Function &function, const std::string &blockName,
+    const std::string &targetName,
+    const std::unordered_map<std::string, std::vector<std::string>>
+        &predecessors,
+    const std::unordered_map<std::string, std::string> &plannedPhiValues) {
+  const auto *target = findBlock(function, targetName);
+  if (target == nullptr) {
+    return false;
+  }
+  const auto predIt = predecessors.find(blockName);
+  if (predIt == predecessors.end()) {
+    return false;
+  }
+
+  for (const auto &instruction : target->instructions()) {
+    if (instruction.opcode() != "phi") {
+      break;
+    }
+    const auto &operands = instruction.operands();
+    for (std::size_t i = 2; i < operands.size(); i += 2) {
+      if (operands[i] != blockName) {
+        continue;
+      }
+      for (const auto &pred : predIt->second) {
+        const std::string key =
+            targetName + "\n" + instruction.result() + "\n" + pred;
+        const auto planned = plannedPhiValues.find(key);
+        if (planned != plannedPhiValues.end() &&
+            planned->second != operands[i - 1]) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void recordPlannedPhiRedirect(
+    const Function &function, const std::string &blockName,
+    const std::string &targetName,
+    const std::unordered_map<std::string, std::vector<std::string>>
+        &predecessors,
+    std::unordered_map<std::string, std::string> &plannedPhiValues) {
+  const auto *target = findBlock(function, targetName);
+  if (target == nullptr) {
+    return;
+  }
+  const auto predIt = predecessors.find(blockName);
+  if (predIt == predecessors.end()) {
+    return;
+  }
+
+  for (const auto &instruction : target->instructions()) {
+    if (instruction.opcode() != "phi") {
+      break;
+    }
+    const auto &operands = instruction.operands();
+    for (std::size_t i = 2; i < operands.size(); i += 2) {
+      if (operands[i] != blockName) {
+        continue;
+      }
+      for (const auto &pred : predIt->second) {
+        const std::string key =
+            targetName + "\n" + instruction.result() + "\n" + pred;
+        plannedPhiValues.emplace(key, operands[i - 1]);
+      }
+    }
+  }
+}
+
 void expandIncomingBlock(
     const std::string &block,
     const std::unordered_map<std::string, std::string> &redirects,
@@ -446,6 +517,7 @@ bool eliminateTrivialBlocks(Function &function) {
   const auto predecessors = computePredecessors(function);
   const auto &entryName = function.blocks().front().name();
   std::unordered_map<std::string, std::string> redirects;
+  std::unordered_map<std::string, std::string> plannedPhiValues;
   for (const auto &block : function.blocks()) {
     if (block.name() == entryName || !isTrivialJumpBlock(block)) {
       continue;
@@ -453,8 +525,12 @@ bool eliminateTrivialBlocks(Function &function) {
     const auto &target = block.instructions().front().operands().front();
     if (target != block.name() &&
         !phiConflictAfterRedirect(function, block.name(), target,
-                                  predecessors)) {
+                                  predecessors) &&
+        !phiConflictWithPlannedRedirects(function, block.name(), target,
+                                         predecessors, plannedPhiValues)) {
       redirects.emplace(block.name(), target);
+      recordPlannedPhiRedirect(function, block.name(), target, predecessors,
+                               plannedPhiValues);
     }
   }
 
