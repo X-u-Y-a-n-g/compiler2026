@@ -189,10 +189,12 @@ void simplifyFunction(Function& function) {
 
 }  // namespace
 
-void AlgebraicSimplificationPass::run(compiler::ir::core::Module& module) {
+bool AlgebraicSimplificationPass::run(compiler::ir::core::Module& module) {
+  const auto before = detail::moduleFingerprint(module);
   for (auto& function : module.functions()) {
     simplifyFunction(function);
   }
+  return before != detail::moduleFingerprint(module);
 }
 
 }  // namespace compiler::midend::pass

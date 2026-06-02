@@ -17,9 +17,7 @@ add_library(compiler_lib
   src/ir/builder/AstToIR.cpp
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
-  src/midend/pass/AlgebraicSimplificationPass.cpp
   src/midend/pass/BasicAliasAnalysisPass.cpp
-  src/midend/pass/BranchSimplificationPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/CompareSimplificationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
