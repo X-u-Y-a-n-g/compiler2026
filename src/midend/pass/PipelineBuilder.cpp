@@ -158,8 +158,8 @@ PassManager PipelineBuilder::buildLoopPipeline() {
 
   pipeline.add(std::make_unique<SCEVAnalysisPass>());
   pipeline.add(std::make_unique<IndVarSimplificationPass>());
-  pipeline.add(std::make_unique<LoopStrengthReductionPass>());
   pipeline.add(std::make_unique<ArrayAccessSimplificationPass>());
+  pipeline.add(std::make_unique<LoopStrengthReductionPass>());
   pipeline.add(std::make_unique<RepeatedAccumulationEliminationPass>());
   pipeline.add(std::make_unique<LoopEliminationPass>());
   pipeline.add(fixedPoint("basic-clean", buildBasicCleanPipeline(), 4));
