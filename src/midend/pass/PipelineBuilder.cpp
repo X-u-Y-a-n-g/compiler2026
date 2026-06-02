@@ -7,6 +7,7 @@
 #include "../../../include/compiler/midend/pass/LocalScalarCleanupPass.h"
 #include "../../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
+#include "../../../include/compiler/midend/pass/PhiSimplificationPass.h"
 #include "../../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 
@@ -53,6 +54,7 @@ PassManager PipelineBuilder::buildBasicCleanPipeline() {
   pipeline.add(std::make_unique<CommonSubexpressionEliminationPass>());
   pipeline.add(std::make_unique<DeadCodeEliminationPass>());
   pipeline.add(std::make_unique<TrivialBlockEliminationPass>());
+  pipeline.add(std::make_unique<PhiSimplificationPass>());
   return pipeline;
 }
 
