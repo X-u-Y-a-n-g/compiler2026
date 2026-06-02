@@ -70,6 +70,51 @@ std::unordered_map<std::string, const Instruction*> collectDefinitions(const Fun
   return definitions;
 }
 
+std::unordered_map<std::string, std::vector<const Instruction*>> collectUsers(
+    const Function& function) {
+  std::unordered_map<std::string, std::vector<const Instruction*>> users;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      for (const auto& operand : instruction.operands()) {
+        if (!operand.empty() && operand.front() == '%') {
+          users[operand].push_back(&instruction);
+        }
+      }
+    }
+  }
+  return users;
+}
+
+bool isGepOpcode(const std::string& opcode) {
+  return opcode == "getelementptr" || opcode == "getelementptr.linear" ||
+         opcode == "gep" || opcode == "gep.linear";
+}
+
+bool feedsAddressIndex(
+    const std::string& value,
+    const std::unordered_map<std::string, std::vector<const Instruction*>>& users,
+    int depth = 0) {
+  if (depth > 3) {
+    return false;
+  }
+
+  const auto found = users.find(value);
+  if (found == users.end()) {
+    return false;
+  }
+  for (const auto* user : found->second) {
+    if (isGepOpcode(user->opcode()) && user->operands().size() >= 2 &&
+        user->operands()[1] == value) {
+      return true;
+    }
+    if ((user->opcode() == "add" || user->opcode() == "sub") && user->hasResult() &&
+        feedsAddressIndex(user->result(), users, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<long long> matchRecurrenceStep(const Instruction& recurrence,
                                              const std::string& phi) {
   if (recurrence.operands().size() != 2) {
@@ -258,6 +303,7 @@ bool runLoopStrengthReduction(Function& function) {
   }
 
   std::unordered_set<std::string> used;
+  const auto users = collectUsers(function);
   bool changed = false;
   for (const auto& loop : loops) {
     if (!loop.preheader.has_value()) {
@@ -286,6 +332,9 @@ bool runLoopStrengthReduction(Function& function) {
       for (const auto& instruction : function.blocks()[blockIndex].instructions()) {
         const auto matched = matchInductionMul(instruction, inductionByPhi);
         if (!matched.has_value()) {
+          continue;
+        }
+        if (!feedsAddressIndex(instruction.result(), users)) {
           continue;
         }
         if (matched->second == 0 || matched->second == 1) {

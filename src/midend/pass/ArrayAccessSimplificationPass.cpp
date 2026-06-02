@@ -192,6 +192,16 @@ std::optional<std::string> buildLinearIndex(const Function& function, const Acce
   return sum;
 }
 
+bool allIndexesAreConstant(const AccessPath& path) {
+  for (const auto& index : path.indexes) {
+    long long value = 0;
+    if (!detail::parseIntegerLiteral(index, value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::unordered_map<std::string, std::size_t> computeUseCounts(const Function& function) {
   std::unordered_map<std::string, std::size_t> counts;
   for (const auto& block : function.blocks()) {
@@ -246,7 +256,8 @@ bool runArrayAccessSimplify(Function& function) {
       const bool reachesScalarElement = path->indexes.size() == path->type.dimensions.size();
       const auto useCount = useCounts.find(instruction.result());
       const bool isOnlyUsedAsFinalAddress = useCount == useCounts.end() || useCount->second <= 1;
-      if (!reachesScalarElement || !isOnlyUsedAsFinalAddress || path->indexes.size() < 2) {
+      if (!reachesScalarElement || !isOnlyUsedAsFinalAddress || path->indexes.size() < 2 ||
+          !allIndexesAreConstant(*path)) {
         rewritten.push_back(instruction);
         continue;
       }
