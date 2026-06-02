@@ -18,6 +18,7 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/pass/BasicAliasAnalysisPass.cpp
+  src/midend/pass/ArrayAccessSimplificationPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/CompareSimplificationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
@@ -25,9 +26,19 @@ add_library(compiler_lib
   src/midend/pass/DeadStoreEliminationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalValueNumberingPass.cpp
+  src/midend/pass/IndVarSimplificationPass.cpp
+  src/midend/pass/LCSSAPass.cpp
   src/midend/pass/LoadEliminationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
+  src/midend/pass/LoopAliasAnalysisPass.cpp
+  src/midend/pass/LoopAnalysisPass.cpp
+  src/midend/pass/LoopEliminationPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopRotatePass.cpp
+  src/midend/pass/LoopSimplificationPass.cpp
+  src/midend/pass/LoopStrengthReductionPass.cpp
+  src/midend/pass/LoopUnrollPass.cpp
+  src/midend/pass/LoopUnswitchPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/PhiSimplificationPass.cpp
@@ -35,6 +46,7 @@ add_library(compiler_lib
   src/midend/pass/ReassociatePass.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/ScalarReplacementPass.cpp
+  src/midend/pass/SCEVAnalysisPass.cpp
   src/midend/pass/SparseConditionalConstantPropagationPass.cpp
   src/midend/pass/StoreToLoadForwardingPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp

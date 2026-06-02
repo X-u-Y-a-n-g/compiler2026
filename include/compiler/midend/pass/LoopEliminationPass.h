@@ -4,9 +4,9 @@
 
 namespace compiler::midend::pass {
 
-class BranchSimplificationPass final : public ModulePass {
+class LoopEliminationPass final : public ModulePass {
  public:
-  std::string name() const override { return "branch-simplification"; }
+  std::string name() const override { return "loop-elimination"; }
   bool run(compiler::ir::core::Module& module) override;
 };
 

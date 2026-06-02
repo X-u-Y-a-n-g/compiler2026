@@ -4,9 +4,9 @@
 
 namespace compiler::midend::pass {
 
-class AlgebraicSimplificationPass final : public ModulePass {
+class ArrayAccessSimplificationPass final : public ModulePass {
  public:
-  std::string name() const override { return "algebraic-simplification"; }
+  std::string name() const override { return "array-access-simplify"; }
   bool run(compiler::ir::core::Module& module) override;
 };
 
