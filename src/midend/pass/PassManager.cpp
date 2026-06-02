@@ -6,6 +6,8 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <unordered_set>
 
 namespace compiler::midend::pass {
 
@@ -19,6 +21,39 @@ bool envEnabled(const char *name) {
   const std::string text = value;
   return !text.empty() && text != "0" && text != "false" && text != "FALSE" &&
          text != "off" && text != "OFF";
+}
+
+std::unordered_set<std::string> envNameSet(const char *name) {
+  const char *value = std::getenv(name);
+  if (value == nullptr) {
+    return {};
+  }
+
+  std::unordered_set<std::string> names;
+  std::string current;
+  for (const char ch : std::string(value)) {
+    if (ch == ',' || ch == ';' || ch == ' ') {
+      if (!current.empty()) {
+        names.insert(current);
+        current.clear();
+      }
+      continue;
+    }
+    current.push_back(ch);
+  }
+  if (!current.empty()) {
+    names.insert(current);
+  }
+  return names;
+}
+
+bool passEnabled(const std::string &passName,
+                 const std::unordered_set<std::string> &onlyPasses,
+                 const std::unordered_set<std::string> &disabledPasses) {
+  if (!onlyPasses.empty() && onlyPasses.find(passName) == onlyPasses.end()) {
+    return false;
+  }
+  return disabledPasses.find(passName) == disabledPasses.end();
 }
 
 void verifyAfterPass(const compiler::ir::core::Module &module,
@@ -46,16 +81,26 @@ bool PassManager::run(compiler::ir::core::Module &module) const {
   bool changed = false;
   const bool debugPasses = envEnabled("COMPILER_DEBUG_PASSES");
   const bool verifyEachPass = envEnabled("COMPILER_VERIFY_EACH_PASS");
+  const auto onlyPasses = envNameSet("COMPILER_ONLY_PASSES");
+  const auto disabledPasses = envNameSet("COMPILER_DISABLE_PASSES");
   for (const auto &pass : passes_) {
-    module.addPassNote(pass->name());
+    const auto passName = pass->name();
+    if (!passEnabled(passName, onlyPasses, disabledPasses)) {
+      if (debugPasses) {
+        std::cerr << "[pass] " << passName << " skipped\n";
+      }
+      continue;
+    }
+
+    module.addPassNote(passName);
     const bool passChanged = pass->run(module);
     changed |= passChanged;
     if (debugPasses) {
-      std::cerr << "[pass] " << pass->name()
+      std::cerr << "[pass] " << passName
                 << " changed=" << (passChanged ? "yes" : "no") << '\n';
     }
     if (verifyEachPass) {
-      verifyAfterPass(module, pass->name());
+      verifyAfterPass(module, passName);
     }
   }
   return changed;
