@@ -66,7 +66,17 @@ add_library(compiler_lib
   src/backend/target/TargetLoweringSupport.cpp
   src/backend/target/Riscv64Target.cpp
   src/backend/isel/InstructionSelector.cpp
+  src/backend/opt/BlockLayout.cpp
+  src/backend/opt/BranchSimplify.cpp
+  src/backend/opt/CopyPropagation.cpp
+  src/backend/opt/MachineConstantFold.cpp
+  src/backend/opt/MachineCSE.cpp
+  src/backend/opt/MachineDCE.cpp
+  src/backend/opt/MachineLICM.cpp
+  src/backend/opt/PeepholeAfterRA.cpp
+  src/backend/opt/PeepholeBeforeRA.cpp
   src/backend/opt/PhiElimination.cpp
+  src/backend/opt/PostRAScheduler.cpp
   src/backend/opt/StackObjectPromotion.cpp
   src/backend/regalloc/RegisterAllocator.cpp
   src/backend/frame/FrameLowering.cpp

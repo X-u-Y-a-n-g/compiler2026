@@ -4,7 +4,17 @@
 
 #include "../../../include/compiler/backend/asm/AsmPrinter.h"
 #include "../../../include/compiler/backend/frame/FrameLowering.h"
+#include "../../../include/compiler/backend/opt/BlockLayout.h"
+#include "../../../include/compiler/backend/opt/BranchSimplify.h"
+#include "../../../include/compiler/backend/opt/CopyPropagation.h"
+#include "../../../include/compiler/backend/opt/MachineConstantFold.h"
+#include "../../../include/compiler/backend/opt/MachineCSE.h"
+#include "../../../include/compiler/backend/opt/MachineDCE.h"
+#include "../../../include/compiler/backend/opt/MachineLICM.h"
+#include "../../../include/compiler/backend/opt/PeepholeAfterRA.h"
+#include "../../../include/compiler/backend/opt/PeepholeBeforeRA.h"
 #include "../../../include/compiler/backend/opt/PhiElimination.h"
+#include "../../../include/compiler/backend/opt/PostRAScheduler.h"
 #include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
 #include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
 #include "../../../include/compiler/backend/stack/StackLowering.h"
@@ -21,11 +31,22 @@ class Riscv64Backend final : public BackendTarget {
   [[nodiscard]] std::string generateAssembly(const compiler::ir::core::Module& module) const override {
     const auto target = TargetInfo::fromName("riscv64");
     auto machineModule = loweringFor(target).lowerModule(module, target);
+    compiler::backend::opt::MachineConstantFold{}.run(machineModule);
+    compiler::backend::opt::CopyPropagation{}.run(machineModule);
+    compiler::backend::opt::MachineCSE{}.run(machineModule);
+    compiler::backend::opt::MachineDCE{}.run(machineModule);
+    compiler::backend::opt::BranchSimplify{}.run(machineModule);
+    compiler::backend::opt::PeepholeBeforeRA{}.run(machineModule);
     compiler::backend::opt::PhiElimination{}.run(machineModule);
     compiler::backend::opt::StackObjectPromotion{}.run(machineModule);
+    compiler::backend::opt::MachineLICM{}.run(machineModule);
     compiler::backend::regalloc::RegisterAllocator{}.allocate(machineModule);
+    compiler::backend::opt::PeepholeAfterRA{}.run(machineModule);
     compiler::backend::frame::FrameLowering{}.lower(machineModule);
     compiler::backend::stack::StackLowering{}.lower(machineModule);
+    compiler::backend::opt::BranchSimplify{}.run(machineModule);
+    compiler::backend::opt::BlockLayout{}.run(machineModule);
+    compiler::backend::opt::PostRAScheduler{}.run(machineModule);
     return compiler::backend::asmcode::AsmPrinter{}.print(machineModule);
   }
 };
