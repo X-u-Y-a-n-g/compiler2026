@@ -9,6 +9,8 @@ namespace compiler::backend::opt {
 
 namespace {
 
+constexpr std::size_t kMaxInstructionsForScheduling = 8192;
+
 bool independent(const compiler::backend::mir::MachineInstruction& first,
                  const compiler::backend::mir::MachineInstruction& second,
                  const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -49,6 +51,9 @@ void PostRAScheduler::run(compiler::backend::mir::MachineModule& module) const {
 
   for (auto& function : module.functions) {
     for (auto& block : function.blocks) {
+      if (block.instructions.size() > kMaxInstructionsForScheduling) {
+        continue;
+      }
       for (std::size_t i = 1; i < block.instructions.size(); ++i) {
         auto& previous = block.instructions[i - 1];
         auto& current = block.instructions[i];

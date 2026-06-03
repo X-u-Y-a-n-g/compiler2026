@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -305,9 +306,53 @@ void emitStoreResult(std::ostringstream& os, const MachineFunction& function,
   }
 }
 
+void emitNormalizeIntegerResult(std::ostringstream& os, const MachineOperand& result) {
+  if (result.kind != MachineOperandKind::PhysicalRegister) {
+    return;
+  }
+  if (result.type.isBool()) {
+    os << "  andi " << result.text << ", " << result.text << ", 1\n";
+  } else if (result.type.isInt32()) {
+    os << "  sext.w " << result.text << ", " << result.text << '\n';
+  }
+}
+
+bool emitDirectCopy(std::ostringstream& os, const MachineInstruction& instruction) {
+  if (!instruction.hasResult || instruction.operands.size() != 1 ||
+      instruction.result.kind != MachineOperandKind::PhysicalRegister) {
+    return false;
+  }
+
+  const auto& result = instruction.result;
+  const auto& source = instruction.operands[0];
+  if (source.kind == MachineOperandKind::ImmediateInt && !result.type.isFloat()) {
+    emitLi(os, result.text, source.intValue);
+    emitNormalizeIntegerResult(os, result);
+    return true;
+  }
+  if (source.kind != MachineOperandKind::PhysicalRegister) {
+    return false;
+  }
+
+  if (result.type.isFloat()) {
+    if (result.text != source.text) {
+      os << "  fmv.s " << result.text << ", " << source.text << '\n';
+    }
+    return true;
+  }
+  if (result.text != source.text) {
+    os << "  mv " << result.text << ", " << source.text << '\n';
+  }
+  emitNormalizeIntegerResult(os, result);
+  return true;
+}
+
 void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function,
                          const MachineInstruction& instruction) {
   if (!instruction.hasResult || instruction.operands.size() != 1) {
+    return;
+  }
+  if (emitDirectCopy(os, instruction)) {
     return;
   }
 
@@ -321,6 +366,83 @@ void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function
 
   emitLoadIntegerOperand(os, function, source, "t0");
   emitStoreResult(os, function, result, "t0");
+}
+
+bool isIntegerBinaryOpcode(const std::string& opcode) {
+  return opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
+         opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
+         opcode == "or";
+}
+
+bool emitDirectIntegerBinary(std::ostringstream& os, const MachineInstruction& instruction) {
+  if (!instruction.hasResult || instruction.result.kind != MachineOperandKind::PhysicalRegister ||
+      instruction.operands.size() != 2 || !isIntegerBinaryOpcode(instruction.opcode)) {
+    return false;
+  }
+
+  const auto& result = instruction.result;
+  auto lhs = instruction.operands[0];
+  auto rhs = instruction.operands[1];
+  const bool commutative =
+      instruction.opcode == "add" || instruction.opcode == "mul" ||
+      instruction.opcode == "and" || instruction.opcode == "or";
+  if (commutative && lhs.kind == MachineOperandKind::ImmediateInt &&
+      rhs.kind == MachineOperandKind::PhysicalRegister) {
+    std::swap(lhs, rhs);
+  }
+
+  if (lhs.kind != MachineOperandKind::PhysicalRegister) {
+    return false;
+  }
+
+  if (rhs.kind == MachineOperandKind::ImmediateInt) {
+    if (instruction.opcode == "add" && fitsSigned12(rhs.intValue)) {
+      os << "  addi " << result.text << ", " << lhs.text << ", " << rhs.intValue << '\n';
+      emitNormalizeIntegerResult(os, result);
+      return true;
+    }
+    if (instruction.opcode == "sub" && rhs.intValue != std::numeric_limits<long long>::min() &&
+        fitsSigned12(-rhs.intValue)) {
+      os << "  addi " << result.text << ", " << lhs.text << ", " << -rhs.intValue << '\n';
+      emitNormalizeIntegerResult(os, result);
+      return true;
+    }
+    if (instruction.opcode == "and" && fitsSigned12(rhs.intValue)) {
+      os << "  andi " << result.text << ", " << lhs.text << ", " << rhs.intValue << '\n';
+      emitNormalizeIntegerResult(os, result);
+      return true;
+    }
+    if (instruction.opcode == "or" && fitsSigned12(rhs.intValue)) {
+      os << "  ori " << result.text << ", " << lhs.text << ", " << rhs.intValue << '\n';
+      emitNormalizeIntegerResult(os, result);
+      return true;
+    }
+    return false;
+  }
+
+  if (rhs.kind != MachineOperandKind::PhysicalRegister) {
+    return false;
+  }
+
+  if (instruction.opcode == "add") {
+    os << "  add " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "sub") {
+    os << "  sub " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "mul") {
+    os << "  mul " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "div" || instruction.opcode == "sdiv") {
+    os << "  div " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "mod" || instruction.opcode == "srem") {
+    os << "  rem " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "and") {
+    os << "  and " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else if (instruction.opcode == "or") {
+    os << "  or " << result.text << ", " << lhs.text << ", " << rhs.text << '\n';
+  } else {
+    return false;
+  }
+  emitNormalizeIntegerResult(os, result);
+  return true;
 }
 
 void emitIntegerCompare(std::ostringstream& os, const MachineInstruction& instruction) {
@@ -666,6 +788,9 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or") {
+    if (emitDirectIntegerBinary(os, instruction)) {
+      return;
+    }
     emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
     emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
     if (opcode == "add") {

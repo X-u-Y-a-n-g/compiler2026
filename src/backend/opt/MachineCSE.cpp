@@ -11,6 +11,21 @@ namespace compiler::backend::opt {
 
 namespace {
 
+constexpr std::size_t kMaxExpressionsPerBlock = 2048;
+constexpr std::size_t kMaxInstructionsForCSE = 8192;
+
+struct RegisterDependency {
+  std::string key;
+  std::size_t generation = 0;
+};
+
+struct ExpressionEntry {
+  compiler::backend::mir::MachineOperand result;
+  std::string resultKey;
+  std::size_t resultGeneration = 0;
+  std::vector<RegisterDependency> dependencies;
+};
+
 std::string expressionKey(const compiler::backend::mir::MachineInstruction& instruction) {
   std::string key = instruction.opcode;
   for (const auto& operand : instruction.operands) {
@@ -36,19 +51,40 @@ bool canCSE(const compiler::backend::mir::MachineInstruction& instruction,
   return !detail::opcodeIsMemoryAccess(instruction.opcode);
 }
 
-void killExpressionsUsing(const compiler::backend::mir::MachineOperand& def,
-                          std::unordered_map<std::string, compiler::backend::mir::MachineOperand>&
-                              expressions) {
-  const auto defRegKey = detail::regKey(def);
-  const auto defOperandKey = detail::operandKey(def);
-  for (auto it = expressions.begin(); it != expressions.end();) {
-    if ((detail::isRegisterLike(it->second) && detail::regKey(it->second) == defRegKey) ||
-        it->first.find("|" + defOperandKey) != std::string::npos) {
-      it = expressions.erase(it);
-    } else {
-      ++it;
+std::size_t currentGeneration(const std::string& key,
+                              const std::unordered_map<std::string, std::size_t>& generations) {
+  const auto found = generations.find(key);
+  return found == generations.end() ? 0 : found->second;
+}
+
+bool isValidExpression(const ExpressionEntry& entry,
+                       const std::unordered_map<std::string, std::size_t>& generations) {
+  if (!entry.resultKey.empty() &&
+      currentGeneration(entry.resultKey, generations) != entry.resultGeneration) {
+    return false;
+  }
+  for (const auto& dependency : entry.dependencies) {
+    if (currentGeneration(dependency.key, generations) != dependency.generation) {
+      return false;
     }
   }
+  return true;
+}
+
+ExpressionEntry makeExpressionEntry(
+    const compiler::backend::mir::MachineInstruction& instruction,
+    const std::unordered_map<std::string, std::size_t>& generations) {
+  ExpressionEntry entry;
+  entry.result = instruction.result;
+  entry.resultKey = detail::regKey(instruction.result);
+  entry.resultGeneration = currentGeneration(entry.resultKey, generations);
+  for (const auto& operand : instruction.operands) {
+    const auto key = detail::regKey(operand);
+    if (!key.empty()) {
+      entry.dependencies.push_back(RegisterDependency{key, currentGeneration(key, generations)});
+    }
+  }
+  return entry;
 }
 
 }  // namespace
@@ -58,7 +94,12 @@ void MachineCSE::run(compiler::backend::mir::MachineModule& module) const {
 
   for (auto& function : module.functions) {
     for (auto& block : function.blocks) {
-      std::unordered_map<std::string, compiler::backend::mir::MachineOperand> expressions;
+      if (block.instructions.size() > kMaxInstructionsForCSE) {
+        continue;
+      }
+
+      std::unordered_map<std::string, ExpressionEntry> expressions;
+      std::unordered_map<std::string, std::size_t> generations;
 
       for (auto& instruction : block.instructions) {
         if (adapter.isCall(instruction) || instruction.opcode == "store") {
@@ -66,7 +107,10 @@ void MachineCSE::run(compiler::backend::mir::MachineModule& module) const {
         }
 
         for (const auto& def : detail::defsOf(instruction, adapter)) {
-          killExpressionsUsing(def, expressions);
+          const auto key = detail::regKey(def);
+          if (!key.empty()) {
+            ++generations[key];
+          }
         }
 
         if (!canCSE(instruction, adapter)) {
@@ -74,14 +118,20 @@ void MachineCSE::run(compiler::backend::mir::MachineModule& module) const {
         }
 
         const auto key = expressionKey(instruction);
-        const auto found = expressions.find(key);
+        auto found = expressions.find(key);
         if (found != expressions.end()) {
-          instruction = compiler::backend::mir::MachineInstruction::copy(instruction.result,
-                                                                         found->second);
-          continue;
+          if (isValidExpression(found->second, generations)) {
+            instruction = compiler::backend::mir::MachineInstruction::copy(instruction.result,
+                                                                           found->second.result);
+            continue;
+          }
+          expressions.erase(found);
         }
 
-        expressions.emplace(key, instruction.result);
+        if (expressions.size() >= kMaxExpressionsPerBlock) {
+          expressions.clear();
+        }
+        expressions.emplace(key, makeExpressionEntry(instruction, generations));
       }
     }
   }
