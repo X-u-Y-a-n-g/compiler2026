@@ -17,6 +17,17 @@ using compiler::backend::mir::MachineBlock;
 using compiler::backend::mir::MachineInstructionKind;
 using compiler::backend::mir::MachineOperandKind;
 
+bool hasPhi(const compiler::backend::mir::MachineFunction& function) {
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instruction.kind == MachineInstructionKind::Phi) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool isTrivialJumpBlock(
     const MachineBlock& block,
     const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -60,6 +71,10 @@ void BranchSimplify::run(compiler::backend::mir::MachineModule& module) const {
 
   for (auto& function : module.functions) {
     if (function.blocks.empty()) {
+      continue;
+    }
+
+    if (hasPhi(function)) {
       continue;
     }
 

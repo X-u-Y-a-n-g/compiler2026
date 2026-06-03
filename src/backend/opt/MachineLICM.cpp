@@ -156,6 +156,9 @@ void MachineLICM::run(compiler::backend::mir::MachineModule& module) const {
         if (outsidePreds.size() != 1) {
           continue;
         }
+        if (loop.size() != 1 || loop.find(header) == loop.end()) {
+          continue;
+        }
         const auto preheader = outsidePreds.front();
 
         std::unordered_set<std::string> loopDefs;
@@ -172,6 +175,9 @@ void MachineLICM::run(compiler::backend::mir::MachineModule& module) const {
 
         std::vector<MachineInstruction> hoisted;
         for (const auto blockIndex : loop) {
+          if (blockIndex != header) {
+            continue;
+          }
           if (blockIndex == preheader) {
             continue;
           }
