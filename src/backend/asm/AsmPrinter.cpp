@@ -814,6 +814,22 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     return;
   }
 
+  if (opcode == "select") {
+    const std::string condition =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string trueValue =
+        integerOperandRegister(os, function, instruction.operands[1], "t1");
+    const std::string falseValue =
+        integerOperandRegister(os, function, instruction.operands[2], "t2");
+    const std::string result = resultRegister(instruction.result, "t2");
+    os << "  neg t0, " << condition << '\n';
+    os << "  xor t1, " << trueValue << ", " << falseValue << '\n';
+    os << "  and t1, t1, t0\n";
+    os << "  xor " << result << ", " << falseValue << ", t1\n";
+    commitResult(os, function, instruction.result, result);
+    return;
+  }
+
   if (opcode == "fneg") {
     const std::string source =
         floatOperandRegister(os, function, instruction.operands[0], "ft0");

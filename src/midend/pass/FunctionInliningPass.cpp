@@ -21,6 +21,10 @@ struct InlineCandidate {
   std::vector<std::string> parameters;
   std::vector<Instruction> instructions;
   std::string returnValue;
+  bool isConditionalReturn = false;
+  std::string condition;
+  std::string trueReturnValue;
+  std::string falseReturnValue;
 };
 
 bool isValueName(const std::string& value) {
@@ -58,42 +62,93 @@ std::unordered_map<std::string, InlineCandidate> collectInlineCandidates(const M
 
   for (const auto& function : module.functions()) {
     if (function.name() == "main" || function.returnType() == "void" ||
-        recursive.find(function.name()) != recursive.end() || function.blocks().size() != 1) {
-      continue;
-    }
-
-    const auto& instructions = function.blocks().front().instructions();
-    if (instructions.empty()) {
-      continue;
-    }
-
-    const auto& terminator = instructions.back();
-    if (terminator.opcode() != "ret" || terminator.operands().size() != 1) {
-      continue;
-    }
-    if (instructions.size() - 1 > kMaxInlineInstructions) {
+        recursive.find(function.name()) != recursive.end()) {
       continue;
     }
 
     InlineCandidate candidate;
     candidate.name = function.name();
-    candidate.returnValue = terminator.operands().front();
     for (const auto& parameter : function.parameters()) {
       candidate.parameters.push_back(parameter.name);
     }
 
+    if (function.blocks().size() == 1) {
+      const auto& instructions = function.blocks().front().instructions();
+      if (instructions.empty()) {
+        continue;
+      }
+
+      const auto& terminator = instructions.back();
+      if (terminator.opcode() != "ret" || terminator.operands().size() != 1 ||
+          instructions.size() - 1 > kMaxInlineInstructions) {
+        continue;
+      }
+      candidate.returnValue = terminator.operands().front();
+
+      bool supported = true;
+      for (std::size_t i = 0; i + 1 < instructions.size(); ++i) {
+        if (!isPureInlineInstruction(instructions[i])) {
+          supported = false;
+          break;
+        }
+        candidate.instructions.push_back(instructions[i]);
+      }
+      if (supported) {
+        candidates.emplace(function.name(), std::move(candidate));
+      }
+      continue;
+    }
+
+    if (function.returnType() != "int" || function.blocks().size() < 3) {
+      continue;
+    }
+
+    const auto& entryInstructions = function.blocks().front().instructions();
+    if (entryInstructions.empty() || entryInstructions.size() - 1 > kMaxInlineInstructions) {
+      continue;
+    }
+    const auto& terminator = entryInstructions.back();
+    if (terminator.opcode() != "br" || terminator.operands().size() != 3) {
+      continue;
+    }
+
+    const auto findBlock = [&](const std::string& name) -> const compiler::ir::core::BasicBlock* {
+      for (const auto& block : function.blocks()) {
+        if (block.name() == name) {
+          return &block;
+        }
+      }
+      return nullptr;
+    };
+    const auto* trueBlock = findBlock(terminator.operands()[1]);
+    const auto* falseBlock = findBlock(terminator.operands()[2]);
+    if (trueBlock == nullptr || falseBlock == nullptr || trueBlock == falseBlock ||
+        trueBlock->instructions().size() != 1 || falseBlock->instructions().size() != 1) {
+      continue;
+    }
+    const auto& trueReturn = trueBlock->instructions().front();
+    const auto& falseReturn = falseBlock->instructions().front();
+    if (trueReturn.opcode() != "ret" || trueReturn.operands().size() != 1 ||
+        falseReturn.opcode() != "ret" || falseReturn.operands().size() != 1) {
+      continue;
+    }
+
     bool supported = true;
-    for (std::size_t i = 0; i + 1 < instructions.size(); ++i) {
-      if (!isPureInlineInstruction(instructions[i])) {
+    for (std::size_t i = 0; i + 1 < entryInstructions.size(); ++i) {
+      if (!isPureInlineInstruction(entryInstructions[i])) {
         supported = false;
         break;
       }
-      candidate.instructions.push_back(instructions[i]);
+      candidate.instructions.push_back(entryInstructions[i]);
     }
     if (!supported) {
       continue;
     }
 
+    candidate.isConditionalReturn = true;
+    candidate.condition = terminator.operands()[0];
+    candidate.trueReturnValue = trueReturn.operands()[0];
+    candidate.falseReturnValue = falseReturn.operands()[0];
     candidates.emplace(function.name(), std::move(candidate));
   }
 
@@ -209,7 +264,16 @@ bool inlineFunctionCalls(
                                clonedResult);
       }
 
-      if (instruction.hasResult()) {
+      if (candidate.isConditionalReturn) {
+        if (instruction.hasResult()) {
+          rewritten.emplace_back(
+              "select",
+              std::vector<std::string>{rewriteValue(candidate.condition, replacements),
+                                       rewriteValue(candidate.trueReturnValue, replacements),
+                                       rewriteValue(candidate.falseReturnValue, replacements)},
+              instruction.result());
+        }
+      } else if (instruction.hasResult()) {
         aliases[instruction.result()] = rewriteValue(candidate.returnValue, replacements);
       }
       changed = true;

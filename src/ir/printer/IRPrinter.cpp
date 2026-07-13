@@ -431,6 +431,9 @@ ValueType inferInstructionResultType(const compiler::ir::core::Instruction& inst
       opcode == "or") {
     return inferIntegerType(operands, state, globals);
   }
+  if (opcode == "select") {
+    return inferValueType(operands[1], state, globals);
+  }
   if (opcode.rfind("icmp.", 0) == 0 || opcode.rfind("fcmp.", 0) == 0) {
     return ValueType::boolType();
   }
@@ -584,6 +587,14 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
 
   if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" || opcode == "fdiv") {
     os << opcode << " float " << operands[0] << ", " << operands[1];
+    return os.str();
+  }
+
+  if (opcode == "select") {
+    const ValueType valueType = inferValueType(operands[1], state, globals);
+    os << "select i1 " << renderOperand(operands[0], ValueType::boolType()) << ", "
+       << formatTypedOperand(operands[1], valueType) << ", "
+       << formatTypedOperand(operands[2], valueType);
     return os.str();
   }
 

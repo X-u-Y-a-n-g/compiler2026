@@ -441,6 +441,15 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "select") {
+      const ValueType resultType = inferValueType(operands[1]);
+      emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
+           {lowerValueOperand(operands[0], ValueType::boolType()),
+            lowerValueOperand(operands[1], resultType),
+            lowerValueOperand(operands[2], resultType)});
+      return;
+    }
+
     if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" || opcode == "fdiv") {
       const ValueType resultType = ValueType::float32Type();
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
