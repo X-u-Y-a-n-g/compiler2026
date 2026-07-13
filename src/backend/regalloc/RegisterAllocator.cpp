@@ -38,28 +38,31 @@ struct GraphNode {
   std::string precoloredRegister;
   double spillCost = 0.0;
   bool crossesCall = false;
-  bool avoidArgumentRegisters = false;
+  bool isRegisterParameter = false;
 };
 
 struct InterferenceGraph {
   std::vector<GraphNode> nodes;
   std::unordered_map<std::string, std::size_t> indexByName;
   std::vector<std::uint64_t> adjacency;
+  std::vector<std::unordered_set<std::size_t>> sparseAdjacencyBuilder;
+  std::vector<std::vector<std::size_t>> sparseAdjacency;
   std::size_t wordsPerNode = 0;
+  bool usesDenseAdjacency = true;
 
-  GraphNode& addNode(const std::string& name, const ValueType& type) {
+  std::size_t ensureNode(const std::string& name, const ValueType& type) {
     const auto found = indexByName.find(name);
     if (found != indexByName.end()) {
       auto& node = nodes[found->second];
       if (node.type.isVoid()) {
         node.type = type;
       }
-      return node;
+      return found->second;
     }
     const std::size_t index = nodes.size();
     indexByName.emplace(name, index);
     nodes.push_back(GraphNode{name, type, {}, {}, {}, 0.0, false, false});
-    return nodes.back();
+    return index;
   }
 
   [[nodiscard]] std::size_t indexOf(const std::string& name) const {
@@ -68,15 +71,49 @@ struct InterferenceGraph {
 
   void finalizeNodes() {
     wordsPerNode = (nodes.size() + 63) / 64;
-    adjacency.assign(nodes.size() * wordsPerNode, 0);
+    constexpr std::size_t kDenseAdjacencyBudget = 256U * 1024U * 1024U;
+    const bool denseSizeFits =
+        wordsPerNode == 0 ||
+        nodes.size() <=
+            kDenseAdjacencyBudget / (wordsPerNode * sizeof(std::uint64_t));
+    const bool forceSparse =
+        std::getenv("COMPILER_REGALLOC_FORCE_SPARSE") != nullptr;
+    usesDenseAdjacency = denseSizeFits && !forceSparse;
+    if (usesDenseAdjacency) {
+      adjacency.assign(nodes.size() * wordsPerNode, 0);
+    } else {
+      sparseAdjacencyBuilder.resize(nodes.size());
+    }
   }
 
   void addEdge(std::size_t lhs, std::size_t rhs) {
     if (lhs == rhs || nodes[lhs].type.isFloat() != nodes[rhs].type.isFloat()) {
       return;
     }
-    adjacency[lhs * wordsPerNode + rhs / 64] |= std::uint64_t{1} << (rhs % 64);
-    adjacency[rhs * wordsPerNode + lhs / 64] |= std::uint64_t{1} << (lhs % 64);
+    if (usesDenseAdjacency) {
+      adjacency[lhs * wordsPerNode + rhs / 64] |= std::uint64_t{1}
+                                                  << (rhs % 64);
+      adjacency[rhs * wordsPerNode + lhs / 64] |= std::uint64_t{1}
+                                                  << (lhs % 64);
+    } else {
+      sparseAdjacencyBuilder[lhs].insert(rhs);
+      sparseAdjacencyBuilder[rhs].insert(lhs);
+    }
+  }
+
+  void freezeEdges() {
+    if (usesDenseAdjacency) {
+      return;
+    }
+    sparseAdjacency.resize(nodes.size());
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+      auto& compact = sparseAdjacency[index];
+      compact.assign(sparseAdjacencyBuilder[index].begin(),
+                     sparseAdjacencyBuilder[index].end());
+      std::sort(compact.begin(), compact.end());
+    }
+    sparseAdjacencyBuilder.clear();
+    sparseAdjacencyBuilder.shrink_to_fit();
   }
 
   void addAffinity(std::size_t lhs, std::size_t rhs) {
@@ -95,6 +132,18 @@ struct InterferenceGraph {
 
   template <typename Callback>
   void forEachNeighbor(std::size_t index, Callback&& callback) const {
+    if (!usesDenseAdjacency) {
+      if (!sparseAdjacency.empty()) {
+        for (const auto neighbor : sparseAdjacency[index]) {
+          callback(neighbor);
+        }
+      } else {
+        for (const auto neighbor : sparseAdjacencyBuilder[index]) {
+          callback(neighbor);
+        }
+      }
+      return;
+    }
     const std::size_t rowStart = index * wordsPerNode;
     for (std::size_t wordIndex = 0; wordIndex < wordsPerNode; ++wordIndex) {
       std::uint64_t bits = adjacency[rowStart + wordIndex];
@@ -117,7 +166,6 @@ struct ColoringStackEntry {
 struct AllocationClass {
   std::vector<std::string> allocatable;
   std::unordered_set<std::string> calleeSaved;
-  std::unordered_set<std::string> argumentRegisters;
 };
 
 using BitVector = std::vector<std::uint64_t>;
@@ -177,15 +225,15 @@ void collectBlockUsesAndDefs(
     const compiler::backend::target::TargetInstrAdapter& adapter,
     const MachineFunction& function,
     const std::unordered_set<std::string>& parameterNames,
-    std::unordered_map<std::string, ValueType>& regTypes,
-    std::vector<std::unordered_set<std::string>>& useSets,
-    std::vector<std::unordered_set<std::string>>& defSets) {
+    InterferenceGraph& graph,
+    std::vector<std::unordered_set<std::size_t>>& useSets,
+    std::vector<std::unordered_set<std::size_t>>& defSets) {
   useSets.assign(function.blocks.size(), {});
   defSets.assign(function.blocks.size(), {});
 
   for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
        ++blockIndex) {
-    std::unordered_set<std::string> seenDefs;
+    std::unordered_set<std::size_t> seenDefs;
     for (const auto& instruction : function.blocks[blockIndex].instructions) {
       std::vector<MachineOperand> uses;
       std::vector<MachineOperand> defs;
@@ -197,9 +245,9 @@ void collectBlockUsesAndDefs(
             parameterNames.find(operand.text) != parameterNames.end()) {
           continue;
         }
-        regTypes.emplace(operand.text, operand.type);
-        if (seenDefs.find(operand.text) == seenDefs.end()) {
-          useSets[blockIndex].insert(operand.text);
+        const std::size_t index = graph.ensureNode(operand.text, operand.type);
+        if (seenDefs.find(index) == seenDefs.end()) {
+          useSets[blockIndex].insert(index);
         }
       }
 
@@ -208,13 +256,12 @@ void collectBlockUsesAndDefs(
             parameterNames.find(operand.text) != parameterNames.end()) {
           continue;
         }
-        regTypes.emplace(operand.text, operand.type);
-        defSets[blockIndex].insert(operand.text);
-        seenDefs.insert(operand.text);
+        const std::size_t index = graph.ensureNode(operand.text, operand.type);
+        defSets[blockIndex].insert(index);
+        seenDefs.insert(index);
       }
     }
   }
-
 }
 
 std::vector<unsigned> computeLoopDepths(
@@ -229,49 +276,65 @@ std::vector<unsigned> computeLoopDepths(
   const std::uint64_t lastWordMask =
       blockCount % 64 == 0 ? ~std::uint64_t{0}
                            : (std::uint64_t{1} << (blockCount % 64)) - 1;
-  std::vector<std::vector<std::uint64_t>> dominators(
-      blockCount, std::vector<std::uint64_t>(wordCount, ~std::uint64_t{0}));
-  dominators[0].assign(wordCount, 0);
-  dominators[0][0] = 1;
+  std::vector<std::uint64_t> dominators(blockCount * wordCount,
+                                        ~std::uint64_t{0});
+  std::fill_n(dominators.begin(), wordCount, 0);
+  dominators[0] = 1;
   for (std::size_t block = 1; block < blockCount; ++block) {
-    dominators[block].back() &= lastWordMask;
+    dominators[block * wordCount + wordCount - 1] &= lastWordMask;
   }
 
+  std::vector<std::uint64_t> updated(wordCount, 0);
   bool changed = true;
   while (changed) {
     changed = false;
     for (std::size_t block = 1; block < blockCount; ++block) {
-      std::vector<std::uint64_t> updated(wordCount, 0);
       if (cfg.predecessors[block].empty()) {
         // An unreachable block is only dominated by itself.
+        std::fill(updated.begin(), updated.end(), 0);
       } else {
-        updated = dominators[cfg.predecessors[block].front()];
+        const std::size_t firstPredOffset =
+            cfg.predecessors[block].front() * wordCount;
+        std::copy_n(dominators.begin() + firstPredOffset, wordCount,
+                    updated.begin());
         for (std::size_t predIndex = 1;
              predIndex < cfg.predecessors[block].size(); ++predIndex) {
-          const auto& predDominators =
-              dominators[cfg.predecessors[block][predIndex]];
+          const std::size_t predOffset =
+              cfg.predecessors[block][predIndex] * wordCount;
           for (std::size_t word = 0; word < wordCount; ++word) {
-            updated[word] &= predDominators[word];
+            updated[word] &= dominators[predOffset + word];
           }
         }
       }
       updated[block / 64] |= std::uint64_t{1} << (block % 64);
-      if (updated != dominators[block]) {
-        dominators[block] = std::move(updated);
+      const std::size_t blockOffset = block * wordCount;
+      if (!std::equal(updated.begin(), updated.end(),
+                      dominators.begin() + blockOffset)) {
+        std::copy(updated.begin(), updated.end(),
+                  dominators.begin() + blockOffset);
         changed = true;
       }
     }
   }
 
+  std::vector<unsigned char> inNaturalLoop(blockCount, 0);
+  std::vector<std::size_t> naturalLoopBlocks;
+  std::vector<std::size_t> worklist;
   for (std::size_t tail = 0; tail < blockCount; ++tail) {
     for (const auto head : cfg.successors[tail]) {
-      if ((dominators[tail][head / 64] & (std::uint64_t{1} << (head % 64))) ==
-          0) {
+      if ((dominators[tail * wordCount + head / 64] &
+           (std::uint64_t{1} << (head % 64))) == 0) {
         continue;
       }
 
-      std::unordered_set<std::size_t> loopBlocks{head, tail};
-      std::vector<std::size_t> worklist;
+      naturalLoopBlocks.clear();
+      worklist.clear();
+      inNaturalLoop[head] = 1;
+      naturalLoopBlocks.push_back(head);
+      if (tail != head) {
+        inNaturalLoop[tail] = 1;
+        naturalLoopBlocks.push_back(tail);
+      }
       if (tail != head) {
         worklist.push_back(tail);
       }
@@ -279,13 +342,18 @@ std::vector<unsigned> computeLoopDepths(
         const std::size_t block = worklist.back();
         worklist.pop_back();
         for (const auto pred : cfg.predecessors[block]) {
-          if (loopBlocks.insert(pred).second && pred != head) {
-            worklist.push_back(pred);
+          if (inNaturalLoop[pred] == 0) {
+            inNaturalLoop[pred] = 1;
+            naturalLoopBlocks.push_back(pred);
+            if (pred != head) {
+              worklist.push_back(pred);
+            }
           }
         }
       }
-      for (const auto block : loopBlocks) {
+      for (const auto block : naturalLoopBlocks) {
         ++loopDepth[block];
+        inNaturalLoop[block] = 0;
       }
     }
   }
@@ -393,55 +461,100 @@ void buildInterferenceGraph(
   }
 
   for (auto& node : graph.nodes) {
-    if (!node.avoidArgumentRegisters) {
+    if (!node.isRegisterParameter) {
       continue;
     }
     if (!node.crossesCall && !node.preferredRegisters.empty()) {
       node.precoloredRegister = node.preferredRegisters.front();
     }
-    node.avoidArgumentRegisters = false;
   }
+  graph.freezeEdges();
 }
 
-std::vector<std::string> allowedRegisters(const GraphNode& node,
-                                          const AllocationClass& klass) {
-  std::vector<std::string> allowed;
-  allowed.reserve(klass.allocatable.size());
-  for (const auto& reg : klass.allocatable) {
-    if (node.crossesCall &&
-        klass.calleeSaved.find(reg) == klass.calleeSaved.end()) {
-      continue;
+struct ColorPalette {
+  std::vector<std::string> registers;
+  std::unordered_map<std::string, unsigned> indexByName;
+  std::uint64_t allMask = 0;
+  std::uint64_t calleeSavedMask = 0;
+
+  explicit ColorPalette(const AllocationClass& klass)
+      : registers(klass.allocatable) {
+    for (unsigned index = 0; index < registers.size(); ++index) {
+      indexByName.emplace(registers[index], index);
+      allMask |= std::uint64_t{1} << index;
+      if (klass.calleeSaved.find(registers[index]) != klass.calleeSaved.end()) {
+        calleeSavedMask |= std::uint64_t{1} << index;
+      }
     }
-    if (node.avoidArgumentRegisters &&
-        klass.argumentRegisters.find(reg) != klass.argumentRegisters.end()) {
-      continue;
-    }
-    allowed.push_back(reg);
+  }
+};
+
+std::uint64_t allowedColorMask(const GraphNode& node,
+                               const ColorPalette& palette) {
+  std::uint64_t allowed = palette.allMask;
+  if (node.crossesCall) {
+    allowed &= palette.calleeSavedMask;
   }
   return allowed;
+}
+
+std::size_t colorCount(std::uint64_t colors) {
+  return static_cast<std::size_t>(__builtin_popcountll(colors));
+}
+
+int chooseColor(std::uint64_t colors, const ColorPalette& palette,
+                bool preferCalleeSaved) {
+  if (colors == 0) {
+    return -1;
+  }
+  const std::uint64_t preferredGroup = preferCalleeSaved
+                                           ? colors & palette.calleeSavedMask
+                                           : colors & ~palette.calleeSavedMask;
+  const std::uint64_t candidates =
+      preferredGroup != 0 ? preferredGroup : colors;
+  return static_cast<int>(__builtin_ctzll(candidates));
 }
 
 void allocateClassGraph(
     const InterferenceGraph& graph, const AllocationClass& klass,
     bool selectFloat,
     std::unordered_map<std::string, std::string>& registerMap) {
-  std::vector<bool> remaining(graph.nodes.size(), false);
-  std::vector<std::vector<std::string>> allowedByNode(graph.nodes.size());
+  const ColorPalette palette(klass);
+  std::vector<unsigned char> remaining(graph.nodes.size(), 0);
+  std::vector<std::uint64_t> allowedByNode(graph.nodes.size(), 0);
+  std::vector<int> assignedColor(graph.nodes.size(), -1);
   std::size_t remainingCount = 0;
   for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
     const auto& node = graph.nodes[index];
     if (node.type.isFloat() != selectFloat || !isRegisterCandidate(node.type)) {
       continue;
     }
-    allowedByNode[index] = allowedRegisters(node, klass);
-    if (!node.precoloredRegister.empty() &&
-        std::find(allowedByNode[index].begin(), allowedByNode[index].end(),
-                  node.precoloredRegister) != allowedByNode[index].end()) {
-      registerMap.emplace(node.name, node.precoloredRegister);
+    allowedByNode[index] = allowedColorMask(node, palette);
+    if (!node.precoloredRegister.empty()) {
+      const auto precolored = palette.indexByName.find(node.precoloredRegister);
+      if (precolored != palette.indexByName.end() &&
+          (allowedByNode[index] & (std::uint64_t{1} << precolored->second)) !=
+              0) {
+        assignedColor[index] = static_cast<int>(precolored->second);
+        registerMap.emplace(node.name, node.precoloredRegister);
+        continue;
+      }
+    }
+    remaining[index] = 1;
+    ++remainingCount;
+  }
+
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    if (remaining[index] == 0) {
       continue;
     }
-    remaining[index] = true;
-    ++remainingCount;
+    std::uint64_t fixedUnavailable = 0;
+    graph.forEachNeighbor(index, [&](std::size_t neighbor) {
+      if (assignedColor[neighbor] >= 0) {
+        fixedUnavailable |= std::uint64_t{1} << assignedColor[neighbor];
+      }
+    });
+    allowedByNode[index] &= ~fixedUnavailable;
   }
 
   std::vector<std::size_t> degree(graph.nodes.size(), 0);
@@ -451,17 +564,17 @@ void allocateClassGraph(
                       std::greater<SpillCandidate>>
       spillWorklist;
   for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
-    if (!remaining[index]) {
+    if (remaining[index] == 0) {
       continue;
     }
     std::size_t nodeDegree = 0;
     graph.forEachNeighbor(index, [&](std::size_t neighbor) {
-      if (remaining[neighbor]) {
+      if (remaining[neighbor] != 0) {
         ++nodeDegree;
       }
     });
     degree[index] = nodeDegree;
-    if (nodeDegree < allowedByNode[index].size()) {
+    if (nodeDegree < colorCount(allowedByNode[index])) {
       simplifyWorklist.push_back(index);
     }
     const double spillScore = (graph.nodes[index].spillCost + 1.0) /
@@ -476,15 +589,16 @@ void allocateClassGraph(
     while (!simplifyWorklist.empty()) {
       const std::size_t candidate = simplifyWorklist.back();
       simplifyWorklist.pop_back();
-      if (remaining[candidate] &&
-          degree[candidate] < allowedByNode[candidate].size()) {
+      if (remaining[candidate] != 0 &&
+          degree[candidate] < colorCount(allowedByNode[candidate])) {
         selected = candidate;
         break;
       }
     }
 
     if (selected == graph.nodes.size()) {
-      while (!spillWorklist.empty() && !remaining[spillWorklist.top().second]) {
+      while (!spillWorklist.empty() &&
+             remaining[spillWorklist.top().second] == 0) {
         spillWorklist.pop();
       }
       selected = spillWorklist.top().second;
@@ -492,14 +606,14 @@ void allocateClassGraph(
     }
 
     stack.push_back(ColoringStackEntry{selected});
-    remaining[selected] = false;
+    remaining[selected] = 0;
     --remainingCount;
     graph.forEachNeighbor(selected, [&](std::size_t neighbor) {
-      if (remaining[neighbor]) {
+      if (remaining[neighbor] != 0) {
         if (degree[neighbor] > 0) {
           --degree[neighbor];
         }
-        if (degree[neighbor] < allowedByNode[neighbor].size()) {
+        if (degree[neighbor] < colorCount(allowedByNode[neighbor])) {
           simplifyWorklist.push_back(neighbor);
         }
       }
@@ -510,52 +624,35 @@ void allocateClassGraph(
     const ColoringStackEntry entry = stack.back();
     stack.pop_back();
     const auto& node = graph.nodes[entry.node];
-    std::unordered_set<std::string> unavailable;
+    std::uint64_t unavailable = 0;
     graph.forEachNeighbor(entry.node, [&](std::size_t neighbor) {
-      if (const auto assigned = registerMap.find(graph.nodes[neighbor].name);
-          assigned != registerMap.end()) {
-        unavailable.insert(assigned->second);
+      if (assignedColor[neighbor] >= 0) {
+        unavailable |= std::uint64_t{1} << assignedColor[neighbor];
       }
     });
 
-    std::vector<std::string> preferred;
+    std::uint64_t preferred = 0;
     for (const auto& affinity : node.affinities) {
-      if (const auto assigned = registerMap.find(graph.nodes[affinity].name);
-          assigned != registerMap.end()) {
-        preferred.push_back(assigned->second);
+      if (assignedColor[affinity] >= 0) {
+        preferred |= std::uint64_t{1} << assignedColor[affinity];
       }
     }
-    preferred.insert(preferred.end(), node.preferredRegisters.begin(),
-                     node.preferredRegisters.end());
-
-    auto ordered = allowedByNode[entry.node];
-    std::sort(ordered.begin(), ordered.end(),
-              [&](const std::string& lhs, const std::string& rhs) {
-                const bool lhsPreferred =
-                    std::find(preferred.begin(), preferred.end(), lhs) !=
-                    preferred.end();
-                const bool rhsPreferred =
-                    std::find(preferred.begin(), preferred.end(), rhs) !=
-                    preferred.end();
-                if (lhsPreferred != rhsPreferred) {
-                  return lhsPreferred > rhsPreferred;
-                }
-                const bool lhsSaved =
-                    klass.calleeSaved.find(lhs) != klass.calleeSaved.end();
-                const bool rhsSaved =
-                    klass.calleeSaved.find(rhs) != klass.calleeSaved.end();
-                if (lhsSaved != rhsSaved) {
-                  return node.crossesCall ? lhsSaved > rhsSaved
-                                          : lhsSaved < rhsSaved;
-                }
-                return lhs < rhs;
-              });
-
-    for (const auto& reg : ordered) {
-      if (unavailable.find(reg) == unavailable.end()) {
-        registerMap.emplace(node.name, reg);
-        break;
+    for (const auto& reg : node.preferredRegisters) {
+      if (const auto found = palette.indexByName.find(reg);
+          found != palette.indexByName.end()) {
+        preferred |= std::uint64_t{1} << found->second;
       }
+    }
+
+    const std::uint64_t available = allowedByNode[entry.node] & ~unavailable;
+    int color = chooseColor(available & preferred, palette, node.crossesCall);
+    if (color < 0) {
+      color = chooseColor(available, palette, node.crossesCall);
+    }
+    if (color >= 0) {
+      assignedColor[entry.node] = color;
+      registerMap.emplace(node.name,
+                          palette.registers[static_cast<std::size_t>(color)]);
     }
   }
 }
@@ -741,68 +838,78 @@ void RegisterAllocator::allocate(
                                   registerHomeParameters, slotMap,
                                   module.target, regInfo);
 
-    std::unordered_map<std::string, ValueType> regTypes;
-    std::vector<std::unordered_set<std::string>> useSets;
-    std::vector<std::unordered_set<std::string>> defSets;
-    collectBlockUsesAndDefs(adapter, function, stackHomeParameters, regTypes,
-                            useSets, defSets);
-
     InterferenceGraph graph;
-    for (const auto& [name, type] : regTypes) {
-      auto& node = graph.addNode(name, type);
-      if (registerHomeParameters.find(name) != registerHomeParameters.end()) {
-        node.avoidArgumentRegisters = true;
+    std::vector<std::unordered_set<std::size_t>> useSets;
+    std::vector<std::unordered_set<std::size_t>> defSets;
+    collectBlockUsesAndDefs(adapter, function, stackHomeParameters, graph,
+                            useSets, defSets);
+    for (const auto& name : registerHomeParameters) {
+      if (const auto found = graph.indexByName.find(name);
+          found != graph.indexByName.end()) {
+        graph.nodes[found->second].isRegisterParameter = true;
       }
     }
     graph.finalizeNodes();
 
     const std::size_t registerWordCount = (graph.nodes.size() + 63) / 64;
-    std::vector<BitVector> blockUses(
-        function.blocks.size(), BitVector(registerWordCount, 0));
-    std::vector<BitVector> blockDefs(
-        function.blocks.size(), BitVector(registerWordCount, 0));
+    std::vector<BitVector> blockUses(function.blocks.size(),
+                                     BitVector(registerWordCount, 0));
+    std::vector<BitVector> blockDefs(function.blocks.size(),
+                                     BitVector(registerWordCount, 0));
     for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
          ++blockIndex) {
-      for (const auto& name : useSets[blockIndex]) {
-        setBit(blockUses[blockIndex], graph.indexOf(name));
+      for (const auto index : useSets[blockIndex]) {
+        setBit(blockUses[blockIndex], index);
       }
-      for (const auto& name : defSets[blockIndex]) {
-        setBit(blockDefs[blockIndex], graph.indexOf(name));
+      for (const auto index : defSets[blockIndex]) {
+        setBit(blockDefs[blockIndex], index);
       }
     }
     useSets.clear();
     defSets.clear();
 
     const auto cfg = CFGBuilder{}.build(function, adapter);
-    std::vector<BitVector> liveIn(
-        function.blocks.size(), BitVector(registerWordCount, 0));
-    std::vector<BitVector> liveOut(
-        function.blocks.size(), BitVector(registerWordCount, 0));
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (std::size_t reverse = function.blocks.size(); reverse > 0;
-           --reverse) {
-        const std::size_t blockIndex = reverse - 1;
+    std::vector<BitVector> liveIn(function.blocks.size(),
+                                  BitVector(registerWordCount, 0));
+    std::vector<BitVector> liveOut(function.blocks.size(),
+                                   BitVector(registerWordCount, 0));
+    std::vector<std::size_t> livenessWorklist;
+    livenessWorklist.reserve(function.blocks.size());
+    std::vector<unsigned char> inWorklist(function.blocks.size(), 1);
+    for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
+         ++blockIndex) {
+      livenessWorklist.push_back(blockIndex);
+    }
+    BitVector newOut(registerWordCount, 0);
+    BitVector newIn(registerWordCount, 0);
+    while (!livenessWorklist.empty()) {
+      const std::size_t blockIndex = livenessWorklist.back();
+      livenessWorklist.pop_back();
+      inWorklist[blockIndex] = 0;
 
-        BitVector newOut(registerWordCount, 0);
-        for (const auto succ : cfg.successors[blockIndex]) {
-          for (std::size_t word = 0; word < registerWordCount; ++word) {
-            newOut[word] |= liveIn[succ][word];
-          }
-        }
-
-        BitVector newIn(registerWordCount, 0);
+      std::fill(newOut.begin(), newOut.end(), 0);
+      for (const auto succ : cfg.successors[blockIndex]) {
         for (std::size_t word = 0; word < registerWordCount; ++word) {
-          newIn[word] =
-              blockUses[blockIndex][word] |
-              (newOut[word] & ~blockDefs[blockIndex][word]);
+          newOut[word] |= liveIn[succ][word];
         }
+      }
+      for (std::size_t word = 0; word < registerWordCount; ++word) {
+        newIn[word] = blockUses[blockIndex][word] |
+                      (newOut[word] & ~blockDefs[blockIndex][word]);
+      }
 
-        if (newOut != liveOut[blockIndex] || newIn != liveIn[blockIndex]) {
-          liveOut[blockIndex] = std::move(newOut);
-          liveIn[blockIndex] = std::move(newIn);
-          changed = true;
+      const bool inputChanged = newIn != liveIn[blockIndex];
+      if (newOut != liveOut[blockIndex]) {
+        liveOut[blockIndex] = newOut;
+      }
+      if (!inputChanged) {
+        continue;
+      }
+      liveIn[blockIndex] = newIn;
+      for (const auto pred : cfg.predecessors[blockIndex]) {
+        if (inWorklist[pred] == 0) {
+          livenessWorklist.push_back(pred);
+          inWorklist[pred] = 1;
         }
       }
     }
@@ -818,20 +925,14 @@ void RegisterAllocator::allocate(
         AllocationClass{regInfo.allocatableIntegerRegisters(),
                         std::unordered_set<std::string>(
                             regInfo.calleeSavedIntegerRegisters().begin(),
-                            regInfo.calleeSavedIntegerRegisters().end()),
-                        std::unordered_set<std::string>(
-                            regInfo.integerArgumentRegisters().begin(),
-                            regInfo.integerArgumentRegisters().end())},
+                            regInfo.calleeSavedIntegerRegisters().end())},
         false, registerMap);
     allocateClassGraph(
         graph,
         AllocationClass{regInfo.allocatableFloatRegisters(),
                         std::unordered_set<std::string>(
                             regInfo.calleeSavedFloatRegisters().begin(),
-                            regInfo.calleeSavedFloatRegisters().end()),
-                        std::unordered_set<std::string>(
-                            regInfo.floatArgumentRegisters().begin(),
-                            regInfo.floatArgumentRegisters().end())},
+                            regInfo.calleeSavedFloatRegisters().end())},
         true, registerMap);
     const auto coloringEnd = std::chrono::steady_clock::now();
 
@@ -867,6 +968,9 @@ void RegisterAllocator::allocate(
       };
       std::cerr << "regalloc " << function.name
                 << ": nodes=" << graph.nodes.size()
+                << " colored=" << registerMap.size()
+                << " spilled=" << (graph.nodes.size() - registerMap.size())
+                << " graph=" << (graph.usesDenseAdjacency ? "dense" : "sparse")
                 << " liveness_ms=" << milliseconds(allocationStart, livenessEnd)
                 << " graph_ms=" << milliseconds(livenessEnd, graphEnd)
                 << " color_ms=" << milliseconds(graphEnd, coloringEnd)

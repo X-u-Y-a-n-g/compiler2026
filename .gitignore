@@ -61,6 +61,7 @@ __pycache__/
 /.docker-build/
 /.local-build/
 /.nscscc-eval/
+/.eval-2026/
 
 # Large downloaded benchmark archives
 /benchmarks.zip

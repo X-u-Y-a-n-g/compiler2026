@@ -1,448 +1,258 @@
-# SysY 编译器骨架项目
+# 2026 编译系统实现赛 SysY 编译器
 
-## 项目简介
+本项目实现一个面向 2026 全国大学生计算机系统能力大赛编译系统实现赛 RISC-V 赛道的 SysY 编译器。当前代码基线为 `de1ac8e FunctionInlining`。
 
-本项目是一个面向编译系统实现赛的 **SysY 编译器骨架**。当前版本已经完成并打通前端主干、一套 LLVM IR 风格中端，以及一条可运行的 `riscv64` 后端链路：
+编译链路：
 
-`SysY2022 源文件 -> 词法分析 -> 语法分析 -> 结构化 AST -> 语义分析 -> 类型检查 -> AST 驱动 LLVM IR 风格 Lowering -> IR Verifier -> 指令选择 -> 栈式寄存器分配 -> 栈帧生成 -> RISC-V 汇编输出`
+```text
+SysY2022/SysY2026 源文件
+  -> Lexer / Parser / AST
+  -> SemanticAnalyzer / TypeChecker
+  -> LLVM IR 风格中间表示
+  -> -O1 中端优化
+  -> RISC-V 64 指令选择、寄存器分配、栈帧生成
+  -> GNU 汇编
+```
 
-当前阶段的定位是：
+## 比赛环境
 
-1. 以前端为核心的可扩展开发基线
-2. 词法分析与语法分析已具备独立调试和回归能力
-3. 中端优化仍待继续实现；`riscv64` 后端已能消费当前 LLVM IR 风格中间表示并输出可汇编的目标代码
+- 编译器实现语言：C++17
+- 构建系统：CMake 3.20+、Ninja
+- 官方构建环境：Ubuntu 24.04、linux/amd64、Clang/Clang++
+- 目标平台：64 位 RISC-V
+- 汇编要求：兼容 GCC `-mcmodel=medany`
+- 本地运行器：`qemu-riscv64`
 
-## 默认环境
+Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、Java 和 Rust，可用于复现比赛构建环境。
 
-当前仓库默认依托你提供的 **2026 编译系统实现赛官方环境** 开发和构建。
+## 当前实现状态
 
-对应的默认口径是：
+- 前端：词法、语法、AST、语义分析、类型检查已打通。
+- IR：支持控制流、数组、函数调用、整型/浮点运算、类型转换和全局对象。
+- `-O1`：依次运行 Mem2Reg、函数内联、两轮公共子表达式消除、重复累加消除、死代码消除和空基本块消除。
+- 后端：支持 RISC-V 64 指令选择、Phi 消除、栈对象提升、图着色寄存器分配、栈帧与汇编输出。
+- 计时函数：`starttime()` / `stoptime()` 会被降级为带源码行号的 `_sysy_starttime(int)` / `_sysy_stoptime(int)` 调用。
 
-1. 编译器使用 `C / C++ / Java / Rust` 之一开发
-2. 编译器源码在 `x86 / AMD64` 评测服务器上编译
-3. 评测服务器操作系统：`Ubuntu 24.04 (64位)`
-4. RISC-V 目标平台：输出 `64位 RISC-V` 汇编，并满足 `-mcmodel=medany` 约定后在 `FPGA BOOM CPU` 软核上运行
+当前版本已验证：
 
-## 技术栈
+- Ubuntu 24.04/amd64 比赛容器内 Release 构建成功。
+- `correctness` 通道 140/140 AC：100 个 `functional` 和 40 个 `h_functional` 全部通过链接、QEMU 执行和输出对拍。
+- `performance` 通道 60/60 AC，全部记录了逐用例内部计时。
+- 同一容器、同一批用例的多轮交错 A/B 评测中，图着色版本平均内部计时总和为 `11.576128s`，旧线性扫描版本为 `12.375371s`，总计时降低约 `6.46%`；42 个样例改善、3 个退化、15 个基本持平。
+- 超大压力用例 `h_functional/29_long_line.sy` 的编译时间约为 `0.13s`，不会因稠密冲突图超时。
+- 性能样例可输出官方格式的 `Timer@...` 和 `TOTAL: ...` 计时信息。
 
-1. 语言：C++17
-2. 构建工具：CMake 3.20+
-3. 默认构建环境：`linux/amd64 + Ubuntu 24.04 + clang/clang++ + Ninja`
-4. 依赖：标准 C++ 库，无第三方运行时依赖
-5. 当前目标输出：RISC-V 汇编文本
-
-## 当前开发进度
-
-| 模块 | 已实现的核心功能 | 对应文件/类 | 状态 |
-| :--- | :--- | :--- | :--- |
-| 构建系统 | 定义 `compiler_lib` 静态库与 `compiler` 可执行程序，组织全部源码编译 | `CMakeLists.txt` | Done |
-| 驱动层 | 支持单文件编译流程、诊断输出、`--dump-tokens / --dump-ast / --dump-ir / --target / -O0 / -O1 / -o` | `src/driver/Driver.cpp`、`CompilerInvocation`、`Pipeline` | Done |
-| 诊断系统 | 支持 `note / warning / error` 诊断记录与打印 | `src/support/Diagnostic.cpp`、`include/compiler/support/Diagnostic.h` | Done |
-| 文件系统 | 支持文本文件读取与输出文件写入 | `src/support/FileSystem.cpp` | Done |
-| 词法分析 | 支持标识符、整型/长整型判定、十进制/十六进制浮点、字符串、注释、关键字 `int / float / void / bool / long / const / return / if / else / for / while / continue / break / switch / case / default / goto / do`、数组/块/调用相关分隔符、比较/逻辑/位运算/赋值运算符、EOF token 输出 | `src/frontend/lexer/Lexer.cpp`、`include/compiler/frontend/lexer/Token.h`、`Lexer` | Done |
-| AST 结构 | 已实现真实语法树节点体系，覆盖翻译单元、函数/变量声明、块、返回、条件、循环、`switch-case-default`、`goto/label`、调用、下标、一元/二元表达式、整数字面量、浮点字面量、字符串字面量 | `include/compiler/frontend/ast/AstNode.h` | Done |
-| 语法分析 | 已实现递归下降语法分析；支持顶层变量声明、函数声明/定义、数组声明、参数声明、表达式优先级、逗号表达式、控制流语句、`switch-case-default`、`goto`/标签、调用与下标访问 | `src/frontend/parser/Parser.cpp`、`include/compiler/frontend/parser/Parser.h`、`Parser` | Done |
-| AST 打印 | 输出结构化 AST，便于前端调试与回归 | `src/frontend/ast/AstPrinter.cpp`、`AstPrinter` | Done |
-| 语义分析 | 已实现全局/局部符号表、函数声明收集、重复定义检查、未定义标识符检查、内建函数注册与调用参数个数检查、函数声明签名一致性检查、数组形参数组层级检查、`break/continue` 上下文检查、`switch-case-default` 合法性检查、`goto/label` 解析、`void` 返回值误用检查、`return` 语句合法性检查、整数常量表达式求值、数组维度常量性/正数性检查、`case` 标签常量性检查、全局初始化常量表达式检查、递归初始化列表常量性检查、常量零除检查 | `src/frontend/sema/SemanticAnalyzer.cpp`、`SemanticAnalyzer` | Partial |
-| 类型系统 | 已定义 `void / int / float / bool / long / unknown` 类型枚举与字符串化接口，并在类型检查阶段跟踪数组层级与已知维度信息 | `include/compiler/frontend/types/Type.h`、`src/frontend/types/TypeChecker.cpp` | Partial |
-| 类型检查 | 已实现表达式类型推导、数组/标量区分、函数调用参数类型检查、赋值兼容性检查、返回值类型检查、条件表达式类型检查、下标表达式检查、算术/逻辑/比较/位运算约束检查、`const` 赋值检查、数值类型在初始化/赋值/调用/返回中的隐式转换、标量花括号初始化、数组初始化列表的按层对齐/补零规则、数组初始化列表元素类型检查、数组整体容量与子数组边界越界检查、数组实参与形参数组尾部维度匹配检查，并将归一化后的线性初始化槽位结果回写到 AST 变量声明缓存 | `src/frontend/types/TypeChecker.cpp`、`TypeChecker` | Partial |
-| IR 核心结构 | 已定义 `Module / GlobalVariable / Constant / Function / BasicBlock / Instruction / Value` 等基础 IR 数据结构；全局变量为结构化 typed global object，函数带返回类型与参数签名，指令结果值不再内嵌在 opcode 字符串中 | `include/compiler/ir/core/*.h` | Done |
-| IR Builder | 已提供基础 block 创建与指令发射接口 | `include/compiler/ir/builder/IRBuilder.h` | Done |
-| IR Lowering | 已实现 AST 到 LLVM IR 风格中间表示的系统化 lowering，覆盖结构化全局变量初始化、局部声明与归一化数组初始化、标量/数组表达式、隐式数值转换、赋值、函数调用、`if / while / do-while / for / break / continue / switch / case / default / goto / label / return`、短路逻辑与基本块控制流生成；当前使用 `br / load / store / call / getelementptr / icmp / fcmp / sext / trunc / sitofp / fptosi` 等 LLVM 风格指令模型，并对大规模局部零初始化采用运行时批量清零循环加稀疏显式赋值的 lowering | `src/ir/builder/AstToIR.cpp`、`AstToIR` | Done |
-| IR 打印 | 支持导出 LLVM IR 风格文本中间代码，便于中端与后端联调 | `src/ir/printer/IRPrinter.cpp`、`IRPrinter` | Done |
-| IR 验证 | 已实现模块级 IR verifier，检查全局/函数/基本块命名唯一性、空块、终结指令位置、`br/ret` 形状与跳转目标合法性、返回值与函数签名一致性 | `src/ir/verify/IRVerifier.cpp`、`IRVerifier` | Done |
-| 中端 Pass 管理 | 支持注册与执行 `ModulePass`；`-O1` 当前仅注入占位 pass | `src/midend/pass/PassManager.cpp`、`PassManager` | Partial |
-| 目标机描述 | 当前仅保留 `riscv64` 目标信息与评测环境配置 | `src/backend/target/TargetInfo.cpp`、`TargetInfo` | Done |
-| 指令选择 | 已实现 LLVM IR 风格中间表示到机器层 lowering，覆盖 `alloca / load / store / br / ret / call / getelementptr / getelementptr.linear`、整型/浮点算术、整型/浮点比较、`zext / sext / trunc / sitofp / uitofp / fptosi`，并保留全局对象/参数/返回类型信息 | `src/backend/isel/InstructionSelector.cpp`、`InstructionSelector` | Done |
-| 栈帧生成 | 已实现栈对象布局、对齐、frame size 计算、outgoing argument area 计算，并为序言/尾声生成偏移信息 | `src/backend/frame/FrameLowering.cpp`、`FrameLowering` | Done |
-| 寄存器分配 | 已实现可运行的栈式寄存器分配器，将虚拟值和形参 home slot 分配到栈槽，并显式区分 `FrameIndex` 地址语义与 `StackSlot` spill/home slot 语义 | `src/backend/regalloc/RegisterAllocator.cpp`、`RegisterAllocator` | Done |
-| 汇编输出 | 已实现 `riscv64` 汇编输出，覆盖全局区、函数序言/尾声、整数/浮点运算、比较、跳转、调用、数组寻址与返回；`getelementptr` 路径已补充常量偏移折叠、`scale==1` 快路径与 2 的幂缩放 `slli` 优化 | `src/backend/asm/AsmPrinter.cpp`、`AsmPrinter` | Partial |
-| 前端样例回归 | 已纳入基础样例、数组样例、浮点样例、扩展前端覆盖样例、语义分析正反样例与类型检查样例；新增全局数组初始化、数组初始化过量、标量花括号初始化、数组形参数组尾部维度错误样例；已完成本地构建回归 | `tests/e2e/frontend/*.sy`、`tests/e2e/functional/frontend_full.sysy`、`tests/e2e/functional/return_42.sysy`、`tests/e2e/sema/*.sy`、`tests/e2e/types/*.sy` | Done |
-
-## 项目结构说明
+## 项目结构
 
 ```text
 compiler/
-├── CMakeLists.txt
-├── CMakePresets.json
-├── docker/
-│   └── impl2026/
-│       └── Dockerfile
+├── benchmarks/nscscc-implementation/2026/
+│   ├── functional/       # 100 个公开功能用例
+│   ├── h_functional/     # 40 个进阶功能用例
+│   └── performance/      # 60 个性能用例
+├── docker/impl2026/Dockerfile
 ├── include/compiler/
-│   ├── backend/
-│   ├── driver/
-│   ├── frontend/
-│   │   ├── ast/
-│   │   ├── lexer/
-│   │   ├── parser/
-│   │   ├── sema/
-│   │   └── types/
-│   ├── ir/
-│   ├── midend/
-│   └── support/
 ├── scripts/
 │   ├── build_impl2026.sh
-│   ├── eval_nscscc_samples.py
-│   └── dev_impl2026.sh
-├── eval_nscscc_samples.py
+│   ├── dev_impl2026.sh
+│   └── eval.py           # 唯一的本地评测入口
 ├── src/
-├── runtime/
-├── tools/
-├── benchmarks/
 └── tests/
 ```
 
-## 构建与使用
+## 初始化开发环境
 
-### 初始化常驻开发容器
+构建比赛环境镜像：
 
 ```bash
-docker build --platform linux/amd64 -t compiler-impl2026-env -f docker/impl2026/Dockerfile .
+docker build \
+  --platform linux/amd64 \
+  -t compiler-impl2026-env \
+  -f docker/impl2026/Dockerfile .
+```
+
+创建常驻开发容器：
+
+```bash
 docker run -dit \
   --platform linux/amd64 \
   --name compiler-impl2026-dev \
   -v "$(pwd):/workspace" \
   -w /workspace \
   compiler-impl2026-env:latest \
-  bash
+  sleep infinity
 ```
 
-如果你本机仓库路径固定为 `/Users/zhouzhongtian/vscode/compiler`，也可以直接使用：
+后续使用：
 
 ```bash
-docker build --platform linux/amd64 -t compiler-impl2026-env -f /Users/zhouzhongtian/vscode/compiler/docker/impl2026/Dockerfile /Users/zhouzhongtian/vscode/compiler
-docker run -dit \
-  --platform linux/amd64 \
-  --name compiler-impl2026-dev \
-  -v "/Users/zhouzhongtian/vscode/compiler:/workspace" \
-  -w /workspace \
-  compiler-impl2026-env:latest \
-  bash
-```
-
-### 进入已初始化的开发容器
-
-```bash
+docker start compiler-impl2026-dev
 docker exec -it compiler-impl2026-dev bash
 ```
 
-### 在容器内构建
+## 构建编译器
 
-推荐把容器内构建产物放到 `.docker-build/`，便于反复增量编译且不会污染 git：
+在开发容器内执行：
 
 ```bash
-cmake -S /workspace -B /workspace/.docker-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
+cmake -S /workspace -B /workspace/.docker-build \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=clang++
+
 cmake --build /workspace/.docker-build
 ```
 
-如果容器已经常驻，宿主机上直接增量构建可以这样执行：
+也可以从宿主机直接执行：
 
 ```bash
 docker exec compiler-impl2026-dev bash -lc '
-  cmake -S /workspace -B /workspace/.docker-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ &&
+  cmake -S /workspace -B /workspace/.docker-build \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=clang++ &&
   cmake --build /workspace/.docker-build
 '
 ```
 
-### 一步完成镜像构建并在容器内构建
+## 编译器用法
+
+官方功能测试调用形式：
 
 ```bash
-bash scripts/build_impl2026.sh
+/workspace/.docker-build/compiler -S -o testcase.s testcase.sy
 ```
 
-### 临时进入默认环境
+官方性能测试调用形式：
 
 ```bash
-bash scripts/dev_impl2026.sh
+/workspace/.docker-build/compiler -S -o testcase.s testcase.sy -O1
 ```
 
-### 查看帮助
+其他常用命令：
 
 ```bash
-/workspace/.docker-build/compiler --help
+# 输出 RISC-V 汇编
+/workspace/.docker-build/compiler input.sy -o output.s
+
+# 查看 Token、AST 或 IR
+/workspace/.docker-build/compiler input.sy --dump-tokens
+/workspace/.docker-build/compiler input.sy --dump-ast
+/workspace/.docker-build/compiler input.sy --dump-ir
 ```
 
-### LLVM IR 风格中间代码说明
-
-当前 `--dump-ir` 导出的是 **LLVM IR 风格文本中间代码**，中端和后端都按照这套指令模型对接。
-
-当前已经统一到这类 LLVM 风格指令：
-
-1. 控制流：`br`、`ret`
-2. 内存与地址：`alloca`、`load`、`store`、`getelementptr`
-3. 算术与比较：`add/sub/mul/sdiv/srem`、`fadd/fsub/fmul/fdiv`、`icmp.*`、`fcmp.*`
-4. 类型转换：`zext`、`sext`、`trunc`、`sitofp`、`uitofp`、`fptosi`
-5. 调用：`call`
-
-说明：
-
-1. 这里的输出已经是 LLVM IR 风格文本，适合作为本项目的中间代码调试产物
-2. 当前 README 重点说明本项目内部中端/后端联调方式；是否直接接入外部 LLVM 工具链未单独作为交付目标验证
-
-### 导出 SysY2022 对应的 LLVM IR 风格中间代码
-
-将 `SysY2022` 源文件编译为 LLVM IR 风格文本，并保存到文件：
+检查汇编能否被 RISC-V 工具链接受：
 
 ```bash
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --dump-ir > /workspace/.docker-build/return_42.ll
+riscv64-linux-gnu-gcc \
+  -march=rv64gc \
+  -mcmodel=medany \
+  -c output.s \
+  -o /tmp/output.o
 ```
 
-直接在终端查看：
+## 图着色寄存器分配
+
+后端在 Phi 消除和栈对象提升之后执行全局图着色寄存器分配，整数寄存器类和浮点寄存器类独立着色。主要流程如下：
+
+1. 基于 CFG、虚拟寄存器编号位向量和反向工作队列求解基本块 `live-in` / `live-out`，只在后继活跃集合变化时重新处理前驱，再反向扫描每条 Machine IR 指令得到精确活跃集合。
+2. 为同时活跃的虚拟寄存器建立冲突边。普通和稠密函数使用连续压缩位矩阵；预计矩阵超过内存预算时自动切换到稀疏邻接，并在建图后压缩为有序邻接表。
+3. 精确识别跨函数调用存活的值，只允许它们使用 callee-saved 寄存器；调用参数和返回值不再被错误地视为跨调用值。
+4. 对不跨调用的整数入口参数使用 ABI 参数寄存器预着色；调用实参使用带循环破除的并行搬运，并在覆盖参数寄存器前先写出栈参数。
+5. Copy 指令建立颜色亲和关系，着色时优先复用源值颜色；汇编输出会彻底删除同色 Copy，并对不同颜色直接生成单条寄存器搬运。
+6. 使用“简化、潜在溢出、选择着色”的乐观图着色流程。颜色约束、邻居禁色和 Copy 偏好全部使用 64 位寄存器掩码，简化阶段增量维护节点度数，避免逐节点字符串集合和寄存器排序。
+7. 溢出代价综合使用/定义次数、自然循环深度和节点度数，优先保留热循环中的值；自然循环通过连续支配位矩阵和无哈希工作栈识别。
+8. 无法着色的值复用统一 spill slot 机制，在使用点插入 reload，在定义点插入 store。
+
+循环深度的支配关系分析同样使用位向量，着色简化阶段增量维护节点度数，因此大型函数不会退化为反复扫描整张图。需要查看单个函数各阶段开销时，可以执行：
 
 ```bash
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ir
+COMPILER_REGALLOC_STATS=1 /workspace/.docker-build/compiler input.sy -O1 -o output.s
 ```
 
-### 导出词法 / AST / IR 调试信息
+## 统一的 2026 本地评测
+
+项目只保留一个评测脚本：[scripts/eval.py](scripts/eval.py)。脚本应在 `compiler-impl2026-dev` 容器内运行。
+
+它使用比赛页面和官方仓库公开的 2026 RISC-V 用例：
+
+- `correctness` 通道：100 个 `functional` + 40 个 `h_functional`。
+- `performance` 通道：60 个 `performance`。
+- `all`：先运行正确性通道，再运行性能通道。
+
+脚本对每个用例执行：
+
+1. 按官方命令生成 RISC-V 汇编；性能通道启用 `-O1`。
+2. 使用 `riscv64-linux-gnu-gcc -static -march=rv64gc -mcmodel=medany` 链接公开 SysY 运行时。
+3. 使用 `qemu-riscv64` 执行。
+4. 将标准输出和程序返回值与 `.out` 对拍。
+5. 性能通道从标准错误解析 `TOTAL: xH-xM-xS-xus`。
+6. 记录编译、链接、运行墙钟时间和程序内部计时。
+
+### 正确性入口
 
 ```bash
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --dump-tokens > /workspace/.docker-build/return_42.tokens.txt
-
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --dump-ast > /workspace/.docker-build/return_42.ast.txt
-
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --dump-ir > /workspace/.docker-build/return_42.ll
+python3 scripts/eval.py correctness
 ```
 
-如果只想快速看输出，也可以直接打印到终端：
+宿主机直接调用：
 
 ```bash
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-tokens
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ast
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ir
+docker exec compiler-impl2026-dev bash -lc \
+  'cd /workspace && python3 scripts/eval.py correctness'
 ```
 
-### 生成最终 RISC-V 汇编
+### 性能入口
 
 ```bash
-/workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy -o /workspace/.docker-build/return_42.s
+python3 scripts/eval.py performance
 ```
 
-如果你想从宿主机直接调用容器里的编译器：
+### 全部入口
 
 ```bash
-docker exec compiler-impl2026-dev bash -lc '
-  /workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy -o /workspace/.docker-build/return_42.s
-'
+python3 scripts/eval.py all
 ```
 
-### 生成最终 RISC-V 汇编
+### 小规模或单用例验证
 
 ```bash
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --target riscv64 \
-  -o /workspace/.docker-build/return_42_rv64.s
+python3 scripts/eval.py correctness --limit 5
+python3 scripts/eval.py performance --sample optimization_scheduling2.sy
+python3 scripts/eval.py performance --sample performance/matmul2.sy
 ```
 
-### 同时导出 IR 和汇编的推荐做法
-
-当前驱动层把 `--dump-ir` 输出到标准输出，把最终汇编通过 `-o` 写入文件。
-因此推荐分两次执行：
+### 超时和产物选项
 
 ```bash
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  --dump-ir > /workspace/.docker-build/return_42.ll
+python3 scripts/eval.py performance \
+  --compile-timeout 120 \
+  --link-timeout 120 \
+  --run-timeout 600
 
-/workspace/.docker-build/compiler \
-  /workspace/tests/e2e/functional/return_42.sysy \
-  -o /workspace/.docker-build/return_42.s
+python3 scripts/eval.py correctness --keep-artifacts
 ```
 
-宿主机上一条一条调用容器也可以：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc '
-  /workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy --dump-ir > /workspace/.docker-build/return_42.ll
-'
-
-docker exec compiler-impl2026-dev bash -lc '
-  /workspace/.docker-build/compiler /workspace/tests/e2e/functional/return_42.sysy -o /workspace/.docker-build/return_42.s
-'
-```
-
-### 检查 RISC-V 输出满足较大地址空间约定
-
-```bash
-riscv64-linux-gnu-gcc -march=rv64gc -mcmodel=medany -c /workspace/.docker-build/return_42.s -o /tmp/return_42.o
-```
-
-### 在容器内批量评测近三年官方样例
-
-默认行为已经收敛成一条命令：
-
-1. 自动按 `2023 -> 2024 -> 2025` 顺序评测
-2. 每个年份内部按 `functional -> hidden/h_functional -> performance -> final/h_performance` 的基础到进阶顺序执行
-3. 默认执行到 `run` 阶段，也就是编译、链接、运行和输出对拍都会做
-4. 默认只在失败样例上额外保留 `tokens / ast / ir` dump
-5. 默认样例阶段为 `全部`；也可以按 `基础` 或 `进阶` 阶段筛选套件
-
-该脚本设计为 **在容器内执行**。进入容器后直接运行：
-
-```bash
-python3 eval_nscscc_samples.py
-```
-
-如果你从宿主机直接发命令到常驻容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc '
-  cd /workspace && python3 eval_nscscc_samples.py
-'
-```
-
-如果你在宿主机当前目录就是仓库根目录，也可以直接这样运行：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py'
-```
-
-### 仅评测某一年
-
-```bash
-python3 eval_nscscc_samples.py --years 2025
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2025'
-```
-
-### 按基础 / 进阶阶段筛选样例
-
-阶段参数使用 `--stage`，支持：
-
-1. `全部 / all`
-2. `基础 / basic`
-3. `进阶 / advanced`
-
-当前约定如下：
-
-1. 基础阶段：`functional`、`hidden_functional`、`h_functional`
-2. 进阶阶段：`performance`、`h_performance`、`final_performance`、`riscv_performance`、`riscv_final_performance`
-
-示例：
-
-```bash
-python3 eval_nscscc_samples.py --stage 基础
-python3 eval_nscscc_samples.py --years 2025 --stage 进阶
-python3 eval_nscscc_samples.py --years 2023 --stage basic --sample 37_dct.sy
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --stage 基础'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2025 --stage 进阶'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2023 --stage basic --sample 37_dct.sy'
-```
-
-### 只跑指定样例
-
-可以传文件名，也可以传相对路径片段：
-
-```bash
-python3 eval_nscscc_samples.py --sample 92_register_alloc.sy
-python3 eval_nscscc_samples.py --sample functional/95_float.sy
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample functional/95_float.sy'
-```
-
-### 只评测到某个阶段
-
-可选阶段：`ir`、`asm`、`link`、`run`。
-
-```bash
-python3 eval_nscscc_samples.py --stop-after ir
-python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after asm
-python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after link
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --stop-after ir'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after asm'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --sample 92_register_alloc.sy --stop-after link'
-```
-
-### 在容器内做小规模试跑
-
-```bash
-python3 eval_nscscc_samples.py --years 2023 --limit 20
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --years 2023 --limit 20'
-```
-
-### 调整单个样例超时时间
-
-```bash
-python3 eval_nscscc_samples.py --timeout 120 --run-timeout 180
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --timeout 120 --run-timeout 180'
-```
-
-### 查看附加 dump
-
-默认 `--dump-mode failures`。如果你想关闭额外 dump 或强制保留全部 dump：
-
-```bash
-python3 eval_nscscc_samples.py --dump-mode none
-python3 eval_nscscc_samples.py --dump-mode all
-```
-
-宿主机直接调用容器：
-
-```bash
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --dump-mode none'
-docker exec compiler-impl2026-dev bash -lc 'cd /workspace && python3 eval_nscscc_samples.py --dump-mode all'
-```
-
-### 评测输出位置
-
-批量评测结果会落到：
+默认输出目录：
 
 ```text
-/workspace/.nscscc-eval/<timestamp>/
+/workspace/.eval-2026/<timestamp>/
 ```
 
-其中包含：
+主要结果文件：
 
-1. `summary.txt`：汇总统计
-2. `results.tsv`：每个样例的编译结果
-3. `dumps.tsv`：中间产物索引
-4. `asm/`：汇编输出
-5. `dumps/`：`tokens / ast / ir` 调试产物
-6. `failures/`：失败样例对应的 stderr / stdout
-```
+- `results.tsv`：逐用例状态及 `compile_sec`、`link_sec`、`run_wall_sec`、`timer_sec`、`total_wall_sec`。
+- `summary.txt`：适合终端查看的汇总。
+- `summary.json`：机器可读汇总。
+- `failures/`：失败用例的源码、stdout、stderr、期望输出和实际输出。
+- `runtime/sylib.c`：本次评测使用的公开 SysY 运行时副本。
+
+注意：QEMU 时间只适合本地回归和不同提交之间的粗略比较，不能替代官方 FPGA BOOM CPU 开发板成绩。平台上一次 AC 记录中的 `1582.7551s` 是 60 个 2026 性能用例在官方开发板上的计时总和。
 
 ## 当前限制
 
-1. 仅支持单输入文件
-2. 类型检查仍未覆盖显式类型转换、指针相关规则、字符串字面量的完整类型约束，以及聚合初始化结果的归一化产出
-3. 语义分析仍未覆盖更多声明兼容规则与更完整的常量折叠结果复用
-4. 当前中间表示已经统一为 LLVM IR 风格指令模型，但尚未进行完整 SSA 化，也还没有 `phi`、完整 use-def 链和真实 LLVM 优化 pass
-5. 中端暂无真实优化 pass
-6. 后端当前仅保留并维护 `riscv64` 这条完整实现链路
+- 仅支持单输入文件。
+- 类型检查和语义分析仍有部分语言边界未完整覆盖。
+- IR 尚未形成完整 use-def 链，优化框架仍在演进。
+- 当前只维护完整的 `riscv64` 后端链路。
+- 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较。
