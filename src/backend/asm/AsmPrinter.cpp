@@ -196,7 +196,7 @@ void emitMaterializeAddress(std::ostringstream& os, const MachineFunction& funct
       emitStackObjectAddress(os, function, operand.index, dst);
       return;
     case MachineOperandKind::GlobalAddress:
-      os << "  la " << dst << ", " << operand.text << '\n';
+      os << "  lla " << dst << ", " << operand.text << '\n';
       return;
     case MachineOperandKind::StackSlot:
       emitLoadStackSlot(os, function, operand.index, dst, operand.type);
