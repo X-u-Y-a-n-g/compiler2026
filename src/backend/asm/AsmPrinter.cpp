@@ -873,6 +873,17 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       commitResult(os, function, instruction.result, result);
       return;
     }
+    if (wordResult && isDivision &&
+        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+        rhsOperand.intValue == 1000) {
+      emitLi(os, "t1", 274877907);
+      os << "  mul t1, " << lhs << ", t1\n";
+      os << "  srli " << result << ", t1, 63\n";
+      os << "  srai t1, t1, 38\n";
+      os << "  add " << result << ", t1, " << result << '\n';
+      commitResult(os, function, instruction.result, result);
+      return;
+    }
     const std::string rhs = integerOperandRegister(os, function, rhsOperand, "t1");
     if (opcode == "add") {
       os << "  " << (wordResult ? "addw " : "add ") << result << ", " << lhs << ", " << rhs
