@@ -267,20 +267,25 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_compiler(requested: Path | None) -> Path:
-    candidates = []
     if requested is not None:
-        candidates.append(requested)
-    candidates.extend(
-        (
-            REPO_ROOT / ".docker-build" / "compiler",
-            REPO_ROOT / "build" / "compiler",
-            REPO_ROOT / ".local-build" / "compiler",
-        )
-    )
-    for candidate in candidates:
-        resolved = candidate.expanduser().resolve()
+        resolved = requested.expanduser().resolve()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return resolved
+        raise SystemExit(f"错误: 找不到可执行 compiler: {resolved}")
+
+    candidates = (
+        REPO_ROOT / ".docker-build" / "compiler",
+        REPO_ROOT / "build" / "compiler",
+        REPO_ROOT / ".local-build" / "compiler",
+    )
+    available = [
+        candidate.expanduser().resolve()
+        for candidate in candidates
+        if candidate.expanduser().resolve().is_file()
+        and os.access(candidate.expanduser().resolve(), os.X_OK)
+    ]
+    if available:
+        return max(available, key=lambda path: path.stat().st_mtime_ns)
     searched = "\n  ".join(str(path) for path in candidates)
     raise SystemExit(f"错误: 找不到可执行 compiler，已搜索:\n  {searched}")
 

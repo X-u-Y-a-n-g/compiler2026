@@ -1,6 +1,6 @@
 # 2026 编译系统实现赛 SysY 编译器
 
-本项目实现一个面向 2026 全国大学生计算机系统能力大赛编译系统实现赛 RISC-V 赛道的 SysY 编译器。当前代码基线为 `de1ac8e FunctionInlining`。
+本项目实现一个面向 2026 全国大学生计算机系统能力大赛编译系统实现赛 RISC-V 赛道的 SysY 编译器。当前 `zct` 分支以 `de1ac8e FunctionInlining` 为重置基线，并在其上持续加入经过性能与正确性验证的优化。
 
 编译链路：
 
@@ -29,7 +29,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 
 - 前端：词法、语法、AST、语义分析、类型检查已打通。
 - IR：支持控制流、数组、函数调用、整型/浮点运算、类型转换和全局对象。
-- `-O1`：依次运行 Mem2Reg、函数内联、两轮公共子表达式消除、重复累加消除、死代码消除和空基本块消除。
+- `-O1`：依次运行 Mem2Reg、小函数及分支返回函数内联、全局标量局部化、公共子表达式消除、全局数组行基址外提、二次幂余数比较简化、重复累加消除、死代码消除和空基本块消除。
 - 后端：支持 RISC-V 64 指令选择、Phi 消除、栈对象提升、图着色寄存器分配、栈帧与汇编输出。
 - 计时函数：`starttime()` / `stoptime()` 会被降级为带源码行号的 `_sysy_starttime(int)` / `_sysy_stoptime(int)` 调用。
 
@@ -38,7 +38,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 - Ubuntu 24.04/amd64 比赛容器内 Release 构建成功。
 - `correctness` 通道 140/140 AC：100 个 `functional` 和 40 个 `h_functional` 全部通过链接、QEMU 执行和输出对拍。
 - `performance` 通道 60/60 AC，全部记录了逐用例内部计时。
-- 同一容器、同一批用例的评测中，循环局部标量提升版本内部计时总和为 `10.105372s`；无栈叶函数帧消除版本为 `10.363939s`，本轮降低约 `2.49%`；直接寄存器发射版本为 `10.581239s`，累计降低约 `4.50%`；旧线性扫描版本为 `12.375371s`，累计降低约 `18.34%`。其中 `many_mat_cal-1` 从 `0.452314s` 降至 `0.369974s`，降低约 `18.20%`。
+- 使用当前真实 `build/compiler` 的同容器配对评测中，分支返回小函数内联将 60 个性能用例内部计时总和从 `8.911626s` 降至 `8.602887s`，降低约 `3.46%`；其中 `h-4-03` 从 `0.525367s` 降至 `0.166463s`，降低约 `68.31%`。
 - 超大压力用例 `h_functional/29_long_line.sy` 的编译时间约为 `0.13s`，不会因稠密冲突图超时。
 - 性能样例可输出官方格式的 `Timer@...` 和 `TOTAL: ...` 计时信息。
 
@@ -175,6 +175,8 @@ COMPILER_REGALLOC_STATS=1 /workspace/.docker-build/compiler input.sy -O1 -o outp
 ## 统一的 2026 本地评测
 
 项目只保留一个评测脚本：[scripts/eval.py](scripts/eval.py)。脚本应在 `compiler-impl2026-dev` 容器内运行。
+
+未传 `--compiler` 时，脚本会在 `.docker-build/compiler`、`build/compiler` 和 `.local-build/compiler` 中选择修改时间最新的可执行文件，避免误用旧构建；需要完全固定评测对象时可显式传入 `--compiler build/compiler`。
 
 它使用比赛页面和官方仓库公开的 2026 RISC-V 用例：
 
