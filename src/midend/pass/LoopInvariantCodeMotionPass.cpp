@@ -272,35 +272,16 @@ std::unordered_map<std::string, std::size_t> computeDefinitionBlocks(const Funct
   return definitions;
 }
 
-bool hasNonZeroConstantDivisor(const Instruction& instruction) {
-  const auto& operands = instruction.operands();
-  if (operands.size() < 2) {
-    return false;
-  }
-
-  long long integerValue = 0;
-  if (detail::parseIntegerLiteral(operands[1], integerValue)) {
-    return integerValue != 0;
-  }
-
-  double floatValue = 0.0;
-  return detail::parseFloatLiteral(operands[1], floatValue) && floatValue != 0.0;
-}
-
 bool isHoistableCandidate(const Instruction& instruction) {
   if (!instruction.hasResult() || !detail::isSideEffectFree(instruction)) {
     return false;
   }
-
   const auto& opcode = instruction.opcode();
-  if (opcode == "alloca" || opcode == "load" || opcode == "phi") {
-    return false;
-  }
-  if (opcode == "div" || opcode == "mod" || opcode == "sdiv" || opcode == "srem" ||
-      opcode == "fdiv") {
-    return hasNonZeroConstantDivisor(instruction);
-  }
-  return true;
+  const bool isGep = opcode == "gep" || opcode == "gep.linear" ||
+                     opcode == "getelementptr" || opcode == "getelementptr.linear";
+  return isGep && !instruction.operands().empty() &&
+         !instruction.operands().front().empty() &&
+         instruction.operands().front().front() == '@';
 }
 
 bool operandsAreLoopInvariant(
