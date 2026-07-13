@@ -191,6 +191,8 @@ COMPILER_REGALLOC_STATS=1 /workspace/.docker-build/compiler input.sy -O1 -o outp
 5. 性能通道从标准错误解析 `TOTAL: xH-xM-xS-xus`。
 6. 记录编译、链接、运行墙钟时间和程序内部计时。
 7. 解析生成汇编，记录指令、load/store、栈访存、分支、调用、搬运、乘除和向量指令数量，并用汇编回边估算热循环加权指令、访存与分支规模。
+8. 可选地另起一次插件化 QEMU 运行，记录动态指令总数以及最热基本块的地址、指令数、执行次数和动态指令占比。该次运行不参与性能计时。
+9. 可选地反汇编最热基本块，并用 LLVM 21 的 RISC-V `generic-ooo` 模型记录 IPC、稳态吞吐和近似调度周期。
 
 ### 正确性入口
 
@@ -233,7 +235,35 @@ python3 scripts/eval.py performance \
   --output-dir .eval-2026/当前方案
 ```
 
-评测会额外生成 `comparison.tsv`，同时给出内部计时与全部 `asm_*` 指标的前后值和百分比变化。由于 QEMU 单次时间存在噪声，热点汇编指标用于确认提速是否来自动态指令、访存、分支或调用的真实减少。
+评测会额外生成 `comparison.tsv`，同时给出内部计时、全部 `asm_*` 指标，以及已启用的动态指令、热点基本块和 MCA 指标的前后值与百分比变化。由于 QEMU 单次时间存在噪声，这些指标用于确认提速是否来自真实的指令、访存、分支或调度开销减少。
+
+### 动态指令与乱序调度分析
+
+保留的 `compiler-impl2026-dev` 容器已经安装：
+
+- 插件版 QEMU 8.2.2：`/opt/qemu-8.2.2-plugin/bin/qemu-riscv64`
+- 计时区间动态分析插件：`/opt/qemu-8.2.2-plugin/lib/qemu/plugins/libtimedprofile.so`
+- LLVM MCA 21：`llvm-mca-21`，包含 RISC-V `generic-ooo` 模型
+
+只记录动态指令和热点基本块：
+
+```bash
+python3 scripts/eval.py performance \
+  --sample many_mat_cal-1 \
+  --analysis dynamic
+```
+
+同时分析最热基本块的近似乱序调度：
+
+```bash
+python3 scripts/eval.py performance \
+  --sample many_mat_cal-1 \
+  --analysis full
+```
+
+`--analysis` 不改变正常评测口径：脚本总是先用普通 QEMU 完成计时和对拍，再单独运行插件化 QEMU。动态插件从 `_sysy_starttime` 返回后的第一条指令开始计数，在进入 `_sysy_stoptime` 时停止，只记录与程序内部计时一致的区间，避免输入输出和 C 运行时热点污染结果。插件会显著扰动运行时间，因此 `dynamic_analysis_wall_sec` 仅表示分析成本，不能作为性能成绩。
+
+当前版本对 `many_mat_cal-1` 计时区间的验证结果是约 `18.38` 亿条动态指令；最热的 23 指令基本块执行 `69,934,528` 次，正好等于输入规模的 `412³`，贡献约 `87.54%` 的动态指令。`generic-ooo` 对该基本块给出的近似稳态结果为 `4.9 cycles/次`、`IPC 4.69`。该模型不包含官方 BOOM 的真实缓存、TLB、分支预测器和内存延迟，只用于同一用例不同编译器版本之间的相对比较。
 
 ### 超时和产物选项
 
@@ -254,10 +284,11 @@ python3 scripts/eval.py correctness --keep-artifacts
 
 主要结果文件：
 
-- `results.tsv`：逐用例状态、计时以及全部 `asm_*` 汇编质量指标。
-- `comparison.tsv`：指定 `--baseline-results` 时生成的逐用例计时与汇编差异。
+- `results.tsv`：逐用例状态、计时、全部 `asm_*` 指标，以及可选的 `dynamic_*`、`hot_block_*` 和 `mca_*` 指标。
+- `comparison.tsv`：指定 `--baseline-results` 时生成的逐用例计时、汇编、动态指令和调度差异。
 - `summary.txt`：适合终端查看的汇总。
 - `summary.json`：机器可读汇总。
+- `analysis/`：动态插件输出、热点反汇编、热点汇编和 LLVM MCA 完整报告。
 - `failures/`：失败用例的源码、stdout、stderr、期望输出和实际输出。
 - `runtime/sylib.c`：本次评测使用的公开 SysY 运行时副本。
 
@@ -270,4 +301,4 @@ python3 scripts/eval.py correctness --keep-artifacts
 - IR 尚未形成完整 use-def 链，优化框架仍在演进。
 - 当前只维护完整的 `riscv64` 后端链路。
 - 当前比赛链接口径为 `rv64gc`，不包含 RISC-V Vector Extension，因此不能直接生成 RVV 指令；可继续采用标量循环展开、软件流水、访存合并和指令调度。
-- 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较。
+- 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较；`generic-ooo` 同样只是乱序流水线近似模型，不模拟官方 BOOM 的缓存和内存系统。

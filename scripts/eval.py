@@ -19,6 +19,10 @@ from typing import Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BENCH_ROOT = REPO_ROOT / "benchmarks" / "nscscc-implementation" / "2026"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / ".eval-2026"
+DEFAULT_ANALYSIS_RUNNER = Path("/opt/qemu-8.2.2-plugin/bin/qemu-riscv64")
+DEFAULT_TIMED_PROFILE_PLUGIN = Path(
+    "/opt/qemu-8.2.2-plugin/lib/qemu/plugins/libtimedprofile.so"
+)
 CHANNEL_SUITES = {
     "correctness": ("functional", "h_functional"),
     "performance": ("performance",),
@@ -32,6 +36,19 @@ ASM_STORE_MNEMONICS = {"sb", "sh", "sw", "sd", "fsw", "fsd"}
 ASM_BRANCH_MNEMONICS = {
     "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez",
     "blez", "bgez", "bltz", "bgtz", "j", "jr", "ret",
+}
+DYNAMIC_INSN_PATTERN = re.compile(r"timed insns:\s*(\d+)")
+HOTBLOCK_PATTERN = re.compile(
+    r"^0x([0-9a-fA-F]+),\s*(\d+),\s*(\d+)\s*$", re.MULTILINE
+)
+MCA_VALUE_PATTERNS = {
+    "mca_iterations": re.compile(r"^Iterations:\s*(\d+)", re.MULTILINE),
+    "mca_instruction_count": re.compile(r"^Instructions:\s*(\d+)", re.MULTILINE),
+    "mca_total_cycles": re.compile(r"^Total Cycles:\s*([0-9.]+)", re.MULTILINE),
+    "mca_ipc": re.compile(r"^IPC:\s*([0-9.]+)", re.MULTILINE),
+    "mca_block_rthroughput": re.compile(
+        r"^Block RThroughput:\s*([0-9.]+)", re.MULTILINE
+    ),
 }
 
 # The public SysY2022 runtime linked from the 2026 contest page. Keeping the
@@ -133,6 +150,40 @@ class CaseResult:
     asm_loop_weighted_instructions: int
     asm_loop_weighted_memory: int
     asm_loop_weighted_branches: int
+    dynamic_status: str
+    dynamic_instruction_count: int | None
+    dynamic_analysis_wall_sec: float | None
+    hot_block_pc: str
+    hot_block_instruction_count: int | None
+    hot_block_execution_count: int | None
+    hot_block_dynamic_instruction_count: int | None
+    hot_block_dynamic_instruction_share_pct: float | None
+    mca_status: str
+    mca_model: str
+    mca_iterations: int | None
+    mca_instruction_count: int | None
+    mca_total_cycles: float | None
+    mca_cycles_per_iteration: float | None
+    mca_ipc: float | None
+    mca_block_rthroughput: float | None
+    mca_estimated_hot_cycles: float | None
+
+
+PROFILE_COMPARISON_FIELDS = (
+    "dynamic_instruction_count",
+    "dynamic_analysis_wall_sec",
+    "hot_block_instruction_count",
+    "hot_block_execution_count",
+    "hot_block_dynamic_instruction_count",
+    "hot_block_dynamic_instruction_share_pct",
+    "mca_iterations",
+    "mca_instruction_count",
+    "mca_total_cycles",
+    "mca_cycles_per_iteration",
+    "mca_ipc",
+    "mca_block_rthroughput",
+    "mca_estimated_hot_cycles",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,6 +215,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-timeout", type=int, default=300)
     parser.add_argument("--linker", default="riscv64-linux-gnu-gcc")
     parser.add_argument("--runner", default="qemu-riscv64")
+    parser.add_argument(
+        "--analysis",
+        choices=("none", "dynamic", "full"),
+        default="none",
+        help=(
+            "独立分析入口：dynamic 记录 QEMU 动态指令和热点基本块；"
+            "full 额外用 LLVM MCA 分析最热基本块。分析运行不参与计时"
+        ),
+    )
+    parser.add_argument(
+        "--analysis-runner",
+        type=Path,
+        default=DEFAULT_ANALYSIS_RUNNER,
+        help="启用插件的 qemu-riscv64 路径",
+    )
+    parser.add_argument(
+        "--timed-profile-plugin",
+        type=Path,
+        default=DEFAULT_TIMED_PROFILE_PLUGIN,
+        help="只统计 SysY 计时区间的 QEMU 动态分析插件路径",
+    )
+    parser.add_argument("--analysis-timeout", type=int, default=900)
+    parser.add_argument(
+        "--objdump", default="riscv64-linux-gnu-objdump", help="RISC-V 反汇编工具"
+    )
+    parser.add_argument(
+        "--llvm-mca", default="llvm-mca-21", help="LLVM MCA 可执行文件"
+    )
+    parser.add_argument("--mca-model", default="generic-ooo")
+    parser.add_argument("--mca-iterations", type=int, default=100)
     parser.add_argument(
         "--baseline-results",
         type=Path,
@@ -388,6 +469,268 @@ def analyze_assembly(path: Path) -> dict[str, int]:
     return metrics
 
 
+def empty_profile_metrics(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "dynamic_status": "SKIP",
+        "dynamic_instruction_count": None,
+        "dynamic_analysis_wall_sec": None,
+        "hot_block_pc": "",
+        "hot_block_instruction_count": None,
+        "hot_block_execution_count": None,
+        "hot_block_dynamic_instruction_count": None,
+        "hot_block_dynamic_instruction_share_pct": None,
+        "mca_status": "SKIP",
+        "mca_model": args.mca_model if args.analysis == "full" else "",
+        "mca_iterations": None,
+        "mca_instruction_count": None,
+        "mca_total_cycles": None,
+        "mca_cycles_per_iteration": None,
+        "mca_ipc": None,
+        "mca_block_rthroughput": None,
+        "mca_estimated_hot_cycles": None,
+    }
+
+
+def parse_hotblocks(stderr: bytes) -> list[tuple[int, int, int]]:
+    text = stderr.decode("utf-8", errors="replace")
+    return [
+        (int(pc, 16), int(instructions), int(executions))
+        for pc, instructions, executions in HOTBLOCK_PATTERN.findall(text)
+    ]
+
+
+def find_timing_markers(
+    *, executable: Path, objdump: str, timeout_sec: int
+) -> tuple[list[int], int, CommandResult]:
+    result = run_command(
+        [objdump, "-d", "--no-show-raw-insn", str(executable)], timeout_sec
+    )
+    if result.return_code != 0 or result.timed_out:
+        return [], 0, result
+
+    stop_pc = 0
+    instructions: list[tuple[int, str]] = []
+    for raw_line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        symbol = re.match(r"^([0-9a-fA-F]+) <_sysy_stoptime>:$", raw_line)
+        if symbol is not None:
+            stop_pc = int(symbol.group(1), 16)
+            continue
+        instruction = re.match(r"^\s*([0-9a-fA-F]+):\s+(.+?)\s*$", raw_line)
+        if instruction is not None:
+            instructions.append((int(instruction.group(1), 16), instruction.group(2)))
+
+    start_pcs: list[int] = []
+    for index, (_, instruction) in enumerate(instructions[:-1]):
+        if "<_sysy_starttime>" in instruction:
+            start_pcs.append(instructions[index + 1][0])
+    return sorted(set(start_pcs)), stop_pc, result
+
+
+def extract_hot_block(
+    *,
+    executable: Path,
+    pc: int,
+    instruction_count: int,
+    objdump: str,
+    output_path: Path,
+    timeout_sec: int,
+) -> tuple[str, CommandResult]:
+    stop_address = pc + instruction_count * 4 + 16
+    command = [
+        objdump,
+        "-d",
+        "--no-show-raw-insn",
+        f"--start-address=0x{pc:x}",
+        f"--stop-address=0x{stop_address:x}",
+        str(executable),
+    ]
+    result = run_command(command, timeout_sec)
+    if result.return_code != 0 or result.timed_out:
+        return "", result
+
+    instructions: list[str] = []
+    started = False
+    for raw_line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        match = re.match(r"^\s*([0-9a-fA-F]+):\s+(.+?)\s*$", raw_line)
+        if match is None:
+            continue
+        address = int(match.group(1), 16)
+        if not started:
+            if address != pc:
+                continue
+            started = True
+        instruction = match.group(2).split("#", 1)[0].strip()
+        instruction = re.sub(r"\s*<[^>]+>\s*$", "", instruction)
+        parts = instruction.split(None, 1)
+        if not parts:
+            continue
+        mnemonic = parts[0].lower()
+        operands = parts[1] if len(parts) == 2 else ""
+        if mnemonic in ASM_BRANCH_MNEMONICS and operands and mnemonic not in {"ret", "jr"}:
+            operand_parts = [part.strip() for part in operands.split(",")]
+            operand_parts[-1] = ".Lhot_target"
+            operands = ", ".join(operand_parts)
+        instructions.append(f"  {mnemonic}{(' ' + operands) if operands else ''}")
+        if len(instructions) == instruction_count:
+            break
+
+    if len(instructions) != instruction_count:
+        return "", result
+    assembly = "\n".join(("  .text", ".Lhot_block:", *instructions, ".Lhot_target:", ""))
+    output_path.write_text(assembly, encoding="utf-8")
+    return assembly, result
+
+
+def run_mca_analysis(
+    *,
+    hot_assembly: Path,
+    execution_count: int,
+    analysis_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    metrics = empty_profile_metrics(args)
+    metrics["dynamic_status"] = "OK"
+    command = [
+        args.llvm_mca,
+        "-mtriple=riscv64-unknown-linux-gnu",
+        f"-mcpu={args.mca_model}",
+        "-mattr=+64bit,+m,+a,+f,+d,+c",
+        f"-iterations={args.mca_iterations}",
+        str(hot_assembly),
+    ]
+    result = run_command(command, args.analysis_timeout)
+    (analysis_dir / "mca.stdout").write_bytes(result.stdout)
+    (analysis_dir / "mca.stderr").write_bytes(result.stderr)
+    if result.timed_out:
+        metrics["mca_status"] = "TIMEOUT"
+        return metrics
+    if result.return_code != 0:
+        metrics["mca_status"] = "FAIL"
+        return metrics
+
+    text = result.stdout.decode("utf-8", errors="replace")
+    parsed: dict[str, int | float] = {}
+    for name, pattern in MCA_VALUE_PATTERNS.items():
+        match = pattern.search(text)
+        if match is None:
+            metrics["mca_status"] = "PARSE_FAIL"
+            return metrics
+        parsed[name] = int(match.group(1)) if name in {
+            "mca_iterations", "mca_instruction_count"
+        } else float(match.group(1))
+    metrics.update(parsed)
+    iterations = int(parsed["mca_iterations"])
+    total_cycles = float(parsed["mca_total_cycles"])
+    cycles_per_iteration = total_cycles / iterations if iterations else 0.0
+    metrics["mca_cycles_per_iteration"] = cycles_per_iteration
+    metrics["mca_estimated_hot_cycles"] = cycles_per_iteration * execution_count
+    metrics["mca_status"] = "OK"
+    return metrics
+
+
+def profile_executable(
+    *,
+    executable: Path,
+    source: Path,
+    analysis_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    metrics = empty_profile_metrics(args)
+    if args.analysis == "none":
+        return metrics
+
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    start_pcs, stop_pc, marker_result = find_timing_markers(
+        executable=executable,
+        objdump=args.objdump,
+        timeout_sec=args.analysis_timeout,
+    )
+    (analysis_dir / "executable.objdump").write_bytes(marker_result.stdout)
+    (analysis_dir / "objdump.stderr").write_bytes(marker_result.stderr)
+    if not start_pcs or stop_pc == 0:
+        metrics["dynamic_status"] = "NO_TIMER"
+        return metrics
+
+    stdin = source.with_suffix(".in").read_bytes() if source.with_suffix(".in").is_file() else b""
+    command = [
+        str(args.analysis_runner),
+        "-d",
+        "plugin",
+        "-plugin",
+        ",".join(
+            (
+                f"file={args.timed_profile_plugin}",
+                *(f"start=0x{pc:x}" for pc in start_pcs),
+                f"stop=0x{stop_pc:x}",
+                "limit=128",
+            )
+        ),
+        str(executable),
+    ]
+    result = run_command(command, args.analysis_timeout, stdin)
+    (analysis_dir / "dynamic.stdout").write_bytes(result.stdout)
+    (analysis_dir / "dynamic.stderr").write_bytes(result.stderr)
+    metrics["dynamic_analysis_wall_sec"] = result.elapsed_sec
+    if result.timed_out:
+        metrics["dynamic_status"] = "TIMEOUT"
+        return metrics
+    if result.return_code < 0:
+        metrics["dynamic_status"] = "FAIL"
+        return metrics
+
+    stderr_text = result.stderr.decode("utf-8", errors="replace")
+    instruction_matches = DYNAMIC_INSN_PATTERN.findall(stderr_text)
+    hotblocks = parse_hotblocks(result.stderr)
+    if not instruction_matches or not hotblocks:
+        metrics["dynamic_status"] = "PARSE_FAIL"
+        return metrics
+    dynamic_count = int(instruction_matches[-1])
+    hottest = max(hotblocks, key=lambda item: item[1] * item[2])
+    pc, instruction_count, execution_count = hottest
+    hot_dynamic_count = instruction_count * execution_count
+    metrics.update(
+        {
+            "dynamic_status": "OK",
+            "dynamic_instruction_count": dynamic_count,
+            "hot_block_pc": f"0x{pc:016x}",
+            "hot_block_instruction_count": instruction_count,
+            "hot_block_execution_count": execution_count,
+            "hot_block_dynamic_instruction_count": hot_dynamic_count,
+            "hot_block_dynamic_instruction_share_pct": (
+                hot_dynamic_count / dynamic_count * 100.0 if dynamic_count else 0.0
+            ),
+        }
+    )
+
+    hot_assembly = analysis_dir / "hot-block.s"
+    _, objdump_result = extract_hot_block(
+        executable=executable,
+        pc=pc,
+        instruction_count=instruction_count,
+        objdump=args.objdump,
+        output_path=hot_assembly,
+        timeout_sec=args.analysis_timeout,
+    )
+    (analysis_dir / "hot-block.objdump").write_bytes(objdump_result.stdout)
+    (analysis_dir / "hot-block-objdump.stderr").write_bytes(objdump_result.stderr)
+    if not hot_assembly.is_file():
+        metrics["mca_status"] = "OBJDUMP_FAIL" if args.analysis == "full" else "SKIP"
+        return metrics
+    if args.analysis != "full":
+        return metrics
+
+    mca_metrics = run_mca_analysis(
+        hot_assembly=hot_assembly,
+        execution_count=execution_count,
+        analysis_dir=analysis_dir,
+        args=args,
+    )
+    for name, value in mca_metrics.items():
+        if name.startswith("mca_"):
+            metrics[name] = value
+    return metrics
+
+
 def save_failure(
     failure_dir: Path,
     source: Path,
@@ -443,6 +786,7 @@ def evaluate_case(
     timer_status = "SKIP"
     timer_sec: float | None = None
     assembly_metrics = analyze_assembly(assembly) if compile_status == "OK" else analyze_assembly(Path())
+    profile_metrics = empty_profile_metrics(args)
     expected = ""
     actual = ""
 
@@ -501,6 +845,14 @@ def evaluate_case(
     else:
         final_status = "AC"
 
+    if link_status == "OK" and run_status == "OK" and args.analysis != "none":
+        profile_metrics = profile_executable(
+            executable=executable,
+            source=source,
+            analysis_dir=work_dir.parent / "analysis" / channel / suite / source.stem,
+            args=args,
+        )
+
     link_sec = link_result.elapsed_sec if link_result else 0.0
     run_sec = run_result.elapsed_sec if run_result else 0.0
     result = CaseResult(
@@ -523,6 +875,7 @@ def evaluate_case(
         timer_sec=timer_sec,
         total_wall_sec=compile_result.elapsed_sec + link_sec + run_sec,
         **assembly_metrics,
+        **profile_metrics,
     )
 
     if final_status != "AC":
@@ -568,6 +921,16 @@ def write_results(output_dir: Path, results: list[CaseResult]) -> None:
         "total_wall_time_sec": sum(result.total_wall_sec for result in results),
         "performance_timer_sum_sec": sum(performance_times),
         "performance_timer_case_count": len(performance_times),
+        "dynamic_profile_case_count": sum(
+            result.dynamic_status == "OK" for result in results
+        ),
+        "dynamic_instruction_total": sum(
+            result.dynamic_instruction_count or 0 for result in results
+        ),
+        "dynamic_analysis_wall_time_sec": sum(
+            result.dynamic_analysis_wall_sec or 0.0 for result in results
+        ),
+        "mca_profile_case_count": sum(result.mca_status == "OK" for result in results),
         "assembly_totals": {
             name: sum(getattr(result, name) for result in results)
             for name in CaseResult.__dataclass_fields__
@@ -586,6 +949,10 @@ def write_results(output_dir: Path, results: list[CaseResult]) -> None:
         f"total_wall_time_sec={summary['total_wall_time_sec']:.6f}",
         f"performance_timer_case_count={summary['performance_timer_case_count']}",
         f"performance_timer_sum_sec={summary['performance_timer_sum_sec']:.6f}",
+        f"dynamic_profile_case_count={summary['dynamic_profile_case_count']}",
+        f"dynamic_instruction_total={summary['dynamic_instruction_total']}",
+        f"dynamic_analysis_wall_time_sec={summary['dynamic_analysis_wall_time_sec']:.6f}",
+        f"mca_profile_case_count={summary['mca_profile_case_count']}",
     ]
     (output_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n" + "\n".join(lines))
@@ -614,6 +981,7 @@ def write_baseline_comparison(
             for name in CaseResult.__dataclass_fields__
             if name.startswith("asm_")
         ),
+        *PROFILE_COMPARISON_FIELDS,
     ]
     fieldnames = ["channel", "suite", "case", "source"]
     for name in metric_names:
@@ -655,6 +1023,8 @@ def write_baseline_comparison(
 def main() -> int:
     args = parse_args()
     args.bench_root = args.bench_root.expanduser().resolve()
+    args.analysis_runner = args.analysis_runner.expanduser().resolve()
+    args.timed_profile_plugin = args.timed_profile_plugin.expanduser().resolve()
     compiler = resolve_compiler(args.compiler)
     filters = split_filters(args.sample)
     output_dir = make_output_dir(args.output_dir)
@@ -664,6 +1034,28 @@ def main() -> int:
     for tool in (args.linker, args.runner):
         if shutil.which(tool) is None:
             raise SystemExit(f"错误: 找不到工具 {tool}；请在 compiler-impl2026-dev 容器内运行")
+    if args.analysis != "none":
+        for path, description in (
+            (args.analysis_runner, "启用插件的 QEMU"),
+            (args.timed_profile_plugin, "计时区间动态分析插件"),
+        ):
+            if not path.is_file():
+                raise SystemExit(f"错误: 找不到{description} {path}")
+        if shutil.which(args.objdump) is None:
+            raise SystemExit(f"错误: 找不到反汇编工具 {args.objdump}")
+    if args.analysis == "full":
+        if args.mca_iterations <= 0:
+            raise SystemExit("错误: --mca-iterations 必须大于 0")
+        if shutil.which(args.llvm_mca) is None:
+            raise SystemExit(f"错误: 找不到 LLVM MCA {args.llvm_mca}")
+        cpu_help = run_command(
+            [args.llvm_mca, "-mtriple=riscv64-unknown-linux-gnu", "-mcpu=help"], 30
+        )
+        cpu_text = (cpu_help.stdout + cpu_help.stderr).decode("utf-8", errors="replace")
+        if args.mca_model not in cpu_text:
+            raise SystemExit(
+                f"错误: {args.llvm_mca} 不支持 RISC-V 调度模型 {args.mca_model}"
+            )
 
     runtime_source = output_dir / "runtime" / "sylib.c"
     runtime_source.parent.mkdir(parents=True, exist_ok=True)
@@ -692,10 +1084,21 @@ def main() -> int:
         )
         results.append(result)
         timer = f" timer={result.timer_sec:.6f}s" if result.timer_sec is not None else ""
+        dynamic = (
+            f" dyn={result.dynamic_instruction_count}"
+            if result.dynamic_instruction_count is not None
+            else ""
+        )
+        mca = (
+            f" mca={result.mca_cycles_per_iteration:.3f}cy/hot-block"
+            if result.mca_cycles_per_iteration is not None
+            else ""
+        )
         print(
             f"[{index:03d}/{len(cases):03d}] {channel}/{suite}/{source.stem}: "
             f"{result.final_status} compile={result.compile_sec:.3f}s "
-            f"link={result.link_sec:.3f}s run={result.run_wall_sec:.3f}s{timer}",
+            f"link={result.link_sec:.3f}s run={result.run_wall_sec:.3f}s"
+            f"{timer}{dynamic}{mca}",
             flush=True,
         )
 
