@@ -17,8 +17,7 @@ using compiler::backend::mir::StackObjectKind;
 using compiler::backend::mir::ValueType;
 
 bool isPromotableObject(const compiler::backend::mir::StackObject& object) {
-  return object.kind == StackObjectKind::Local && object.entryAllocated &&
-         !object.objectType.isArray() &&
+  return object.kind == StackObjectKind::Local && !object.objectType.isArray() &&
          object.objectType.isIntegerScalar();
 }
 
