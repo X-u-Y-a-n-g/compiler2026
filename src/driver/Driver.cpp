@@ -32,6 +32,7 @@
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
+#include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
@@ -179,6 +180,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::RemainderComparisonPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
