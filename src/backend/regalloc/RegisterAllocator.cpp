@@ -31,10 +31,20 @@ using compiler::backend::mir::StackObjectKind;
 using compiler::backend::mir::ValueType;
 
 struct GraphNode {
+  struct Affinity {
+    std::size_t node = 0;
+    double weight = 0.0;
+  };
+
+  struct RegisterPreference {
+    std::string name;
+    double weight = 0.0;
+  };
+
   std::string name;
   ValueType type;
-  std::vector<std::size_t> affinities;
-  std::vector<std::string> preferredRegisters;
+  std::vector<Affinity> affinities;
+  std::vector<RegisterPreference> preferredRegisters;
   std::string precoloredRegister;
   double spillCost = 0.0;
   bool crossesCall = false;
@@ -116,17 +126,37 @@ struct InterferenceGraph {
     sparseAdjacencyBuilder.shrink_to_fit();
   }
 
-  void addAffinity(std::size_t lhs, std::size_t rhs) {
+  void addAffinity(std::size_t lhs, std::size_t rhs, double weight) {
     if (lhs == rhs || nodes[lhs].type.isFloat() != nodes[rhs].type.isFloat()) {
       return;
     }
-    if (std::find(nodes[lhs].affinities.begin(), nodes[lhs].affinities.end(),
-                  rhs) == nodes[lhs].affinities.end()) {
-      nodes[lhs].affinities.push_back(rhs);
-    }
-    if (std::find(nodes[rhs].affinities.begin(), nodes[rhs].affinities.end(),
-                  lhs) == nodes[rhs].affinities.end()) {
-      nodes[rhs].affinities.push_back(lhs);
+    const auto addOneWay = [&](std::size_t from, std::size_t to) {
+      auto& affinities = nodes[from].affinities;
+      const auto found = std::find_if(
+          affinities.begin(), affinities.end(),
+          [&](const GraphNode::Affinity& affinity) { return affinity.node == to; });
+      if (found == affinities.end()) {
+        affinities.push_back(GraphNode::Affinity{to, weight});
+      } else {
+        found->weight += weight;
+      }
+    };
+    addOneWay(lhs, rhs);
+    addOneWay(rhs, lhs);
+  }
+
+  void addRegisterPreference(std::size_t node, const std::string& reg,
+                             double weight) {
+    auto& preferences = nodes[node].preferredRegisters;
+    const auto found = std::find_if(
+        preferences.begin(), preferences.end(),
+        [&](const GraphNode::RegisterPreference& preference) {
+          return preference.name == reg;
+        });
+    if (found == preferences.end()) {
+      preferences.push_back(GraphNode::RegisterPreference{reg, weight});
+    } else {
+      found->weight += weight;
     }
   }
 
@@ -384,6 +414,7 @@ std::vector<MachineOperand> virtualOperands(
 void buildInterferenceGraph(
     InterferenceGraph& graph,
     const compiler::backend::target::TargetInstrAdapter& adapter,
+    const compiler::backend::target::TargetRegInfo& regInfo,
     const MachineFunction& function,
     const compiler::backend::common::ControlFlowGraph& cfg,
     const std::unordered_set<std::string>& stackHomeParameters,
@@ -426,6 +457,44 @@ void buildInterferenceGraph(
             graph.nodes[index].crossesCall = true;
           }
         });
+
+        std::size_t integerArgument = 0;
+        std::size_t floatArgument = 0;
+        for (std::size_t operandIndex = 1;
+             operandIndex < instructionIt->operands.size(); ++operandIndex) {
+          const auto& operand = instructionIt->operands[operandIndex];
+          auto& argumentIndex =
+              operand.type.isFloat() ? floatArgument : integerArgument;
+          const auto& argumentRegisters =
+              operand.type.isFloat() ? regInfo.floatArgumentRegisters()
+                                     : regInfo.integerArgumentRegisters();
+          if (isVirtualRegister(operand) &&
+              stackHomeParameters.find(operand.text) ==
+                  stackHomeParameters.end() &&
+              argumentIndex < argumentRegisters.size()) {
+            graph.addRegisterPreference(graph.indexOf(operand.text),
+                                        argumentRegisters[argumentIndex],
+                                        weight);
+          }
+          ++argumentIndex;
+        }
+        if (defIndices.size() == 1) {
+          const auto& returnRegisters =
+              defs.front().type.isFloat() ? regInfo.floatArgumentRegisters()
+                                          : regInfo.integerArgumentRegisters();
+          if (!returnRegisters.empty()) {
+            graph.addRegisterPreference(defIndices.front(),
+                                        returnRegisters.front(), weight);
+          }
+        }
+      } else if (instructionIt->opcode == "ret" && useIndices.size() == 1) {
+        const auto& returnRegisters =
+            uses.front().type.isFloat() ? regInfo.floatArgumentRegisters()
+                                        : regInfo.integerArgumentRegisters();
+        if (!returnRegisters.empty()) {
+          graph.addRegisterPreference(useIndices.front(),
+                                      returnRegisters.front(), weight);
+        }
       }
 
       std::size_t copySource = graph.nodes.size();
@@ -436,10 +505,9 @@ void buildInterferenceGraph(
             stackHomeParameters.find(source.text) ==
                 stackHomeParameters.end()) {
           copySource = graph.indexOf(source.text);
-          graph.addAffinity(defIndices.front(), copySource);
+          graph.addAffinity(defIndices.front(), copySource, weight);
         } else if (source.kind == MachineOperandKind::PhysicalRegister) {
-          graph.nodes[defIndices.front()].preferredRegisters.push_back(
-              source.text);
+          graph.addRegisterPreference(defIndices.front(), source.text, weight);
         }
       }
 
@@ -465,7 +533,14 @@ void buildInterferenceGraph(
       continue;
     }
     if (!node.crossesCall && !node.preferredRegisters.empty()) {
-      node.precoloredRegister = node.preferredRegisters.front();
+      node.precoloredRegister =
+          std::max_element(
+              node.preferredRegisters.begin(), node.preferredRegisters.end(),
+              [](const GraphNode::RegisterPreference& lhs,
+                 const GraphNode::RegisterPreference& rhs) {
+                return lhs.weight < rhs.weight;
+              })
+              ->name;
     }
   }
   graph.freezeEdges();
@@ -502,17 +577,28 @@ std::size_t colorCount(std::uint64_t colors) {
   return static_cast<std::size_t>(__builtin_popcountll(colors));
 }
 
-int chooseColor(std::uint64_t colors, const ColorPalette& palette,
-                bool preferCalleeSaved) {
+int chooseWeightedColor(std::uint64_t colors,
+                        const std::vector<double>& weights,
+                        const ColorPalette& palette,
+                        bool preferCalleeSaved) {
   if (colors == 0) {
     return -1;
   }
   const std::uint64_t preferredGroup = preferCalleeSaved
                                            ? colors & palette.calleeSavedMask
                                            : colors & ~palette.calleeSavedMask;
-  const std::uint64_t candidates =
-      preferredGroup != 0 ? preferredGroup : colors;
-  return static_cast<int>(__builtin_ctzll(candidates));
+  std::uint64_t candidates = preferredGroup != 0 ? preferredGroup : colors;
+  int bestColor = -1;
+  double bestWeight = -1.0;
+  while (candidates != 0) {
+    const int color = static_cast<int>(__builtin_ctzll(candidates));
+    if (weights[static_cast<std::size_t>(color)] > bestWeight) {
+      bestColor = color;
+      bestWeight = weights[static_cast<std::size_t>(color)];
+    }
+    candidates &= candidates - 1;
+  }
+  return bestColor;
 }
 
 void allocateClassGraph(
@@ -631,24 +717,23 @@ void allocateClassGraph(
       }
     });
 
-    std::uint64_t preferred = 0;
+    std::vector<double> preferenceWeights(palette.registers.size(), 0.0);
     for (const auto& affinity : node.affinities) {
-      if (assignedColor[affinity] >= 0) {
-        preferred |= std::uint64_t{1} << assignedColor[affinity];
+      if (assignedColor[affinity.node] >= 0) {
+        preferenceWeights[static_cast<std::size_t>(
+            assignedColor[affinity.node])] += affinity.weight;
       }
     }
-    for (const auto& reg : node.preferredRegisters) {
-      if (const auto found = palette.indexByName.find(reg);
+    for (const auto& preference : node.preferredRegisters) {
+      if (const auto found = palette.indexByName.find(preference.name);
           found != palette.indexByName.end()) {
-        preferred |= std::uint64_t{1} << found->second;
+        preferenceWeights[found->second] += preference.weight;
       }
     }
 
     const std::uint64_t available = allowedByNode[entry.node] & ~unavailable;
-    int color = chooseColor(available & preferred, palette, node.crossesCall);
-    if (color < 0) {
-      color = chooseColor(available, palette, node.crossesCall);
-    }
+    const int color = chooseWeightedColor(available, preferenceWeights, palette,
+                                          node.crossesCall);
     if (color >= 0) {
       assignedColor[entry.node] = color;
       registerMap.emplace(node.name,
@@ -915,8 +1000,8 @@ void RegisterAllocator::allocate(
     }
     const auto livenessEnd = std::chrono::steady_clock::now();
 
-    buildInterferenceGraph(graph, adapter, function, cfg, stackHomeParameters,
-                           liveOut);
+    buildInterferenceGraph(graph, adapter, regInfo, function, cfg,
+                           stackHomeParameters, liveOut);
     const auto graphEnd = std::chrono::steady_clock::now();
 
     std::unordered_map<std::string, std::string> registerMap;
