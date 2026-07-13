@@ -124,6 +124,13 @@ void StackObjectPromotion::run(compiler::backend::mir::MachineModule& module) co
         }
       }
     }
+
+    for (const auto& [objectIndex, _] : promotedRegisters) {
+      auto& object =
+          function.stackObjects[static_cast<std::size_t>(objectIndex)];
+      object.size = 0;
+      object.alignment = 1;
+    }
   }
 }
 

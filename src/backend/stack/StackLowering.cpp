@@ -98,6 +98,37 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
   for (auto& function : module.functions) {
     collectUsedFloatCalleeSaved(function, regInfo);
 
+    const bool hasCall = std::any_of(
+        function.blocks.begin(), function.blocks.end(), [](const auto& block) {
+          return std::any_of(block.instructions.begin(), block.instructions.end(),
+                             [](const auto& instruction) {
+                               return instruction.opcode == "call";
+                             });
+        });
+    const bool hasStackObject =
+        std::any_of(function.stackObjects.begin(), function.stackObjects.end(),
+                    [](const auto& object) { return object.size != 0; });
+    const bool hasStackParameter =
+        std::any_of(function.parameters.begin(), function.parameters.end(),
+                    [](const auto& parameter) {
+                      return parameter.homeSlot >= 0;
+                    });
+    const bool canOmitFrame =
+        !hasCall && !hasStackObject && !hasStackParameter &&
+        function.outgoingArgSize == 0 &&
+        function.usedIntegerCalleeSavedRegisters.empty() &&
+        function.usedFloatCalleeSavedRegisters.empty();
+    if (canOmitFrame) {
+      function.frameSize = 0;
+      function.savedRaOffset = 0;
+      function.savedFpOffset = 0;
+      function.savedIntegerRegisterOffsets.clear();
+      function.savedFloatRegisterOffsets.clear();
+      function.prologueInstructions.clear();
+      function.epilogueInstructions.clear();
+      continue;
+    }
+
     function.savedRaOffset = static_cast<int>(module.target.pointerSize());
     function.savedFpOffset = static_cast<int>(module.target.pointerSize() * 2);
 
