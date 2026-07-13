@@ -28,6 +28,7 @@ add_library(compiler_lib
   src/midend/pass/PassManager.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
+  src/midend/pass/TailRecursionEliminationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp

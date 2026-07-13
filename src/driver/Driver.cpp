@@ -32,6 +32,7 @@
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
+#include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 
@@ -161,6 +162,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   if (invocation.options().optLevel > 0) {
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::TailRecursionEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::GlobalScalarLocalizationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
