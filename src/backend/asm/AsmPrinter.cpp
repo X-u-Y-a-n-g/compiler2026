@@ -259,6 +259,66 @@ void emitLoadFloatOperand(std::ostringstream& os, const MachineFunction& functio
   }
 }
 
+struct ArgumentMove {
+  std::string destination;
+  MachineOperand source;
+};
+
+void emitArgumentMove(std::ostringstream& os, const MachineFunction& function,
+                      const ArgumentMove& move, bool isFloat) {
+  if (isFloat) {
+    emitLoadFloatOperand(os, function, move.source, move.destination);
+  } else {
+    emitLoadIntegerOperand(os, function, move.source, move.destination);
+  }
+}
+
+void emitParallelArgumentMoves(std::ostringstream& os, const MachineFunction& function,
+                               std::vector<ArgumentMove> moves, bool isFloat) {
+  moves.erase(std::remove_if(moves.begin(), moves.end(), [](const ArgumentMove& move) {
+                return move.source.kind == MachineOperandKind::PhysicalRegister &&
+                       move.source.text == move.destination;
+              }),
+              moves.end());
+
+  while (!moves.empty()) {
+    auto ready = moves.end();
+    for (auto candidate = moves.begin(); candidate != moves.end(); ++candidate) {
+      const bool destinationStillNeeded =
+          std::any_of(moves.begin(), moves.end(), [&](const ArgumentMove& move) {
+            return move.source.kind == MachineOperandKind::PhysicalRegister &&
+                   move.source.text == candidate->destination;
+          });
+      if (!destinationStillNeeded) {
+        ready = candidate;
+        break;
+      }
+    }
+
+    if (ready != moves.end()) {
+      emitArgumentMove(os, function, *ready, isFloat);
+      moves.erase(ready);
+      continue;
+    }
+
+    // A cycle can only be formed by physical argument registers. Preserve one source in a
+    // reserved scratch register, then continue with the now-acyclic move set.
+    const auto cycleSource = moves.front().source;
+    const std::string scratch = isFloat ? "ft2" : "t2";
+    if (isFloat) {
+      emitLoadFloatOperand(os, function, cycleSource, scratch);
+    } else {
+      emitLoadIntegerOperand(os, function, cycleSource, scratch);
+    }
+    for (auto& move : moves) {
+      if (move.source.kind == MachineOperandKind::PhysicalRegister &&
+          move.source.text == cycleSource.text) {
+        move.source = MachineOperand::physicalRegister(scratch, move.source.type);
+      }
+    }
+  }
+}
+
 void emitLoadFromAddress(std::ostringstream& os, const MachineFunction& function,
                          const MachineOperand& address, const ValueType& valueType,
                          const std::string& dst) {
@@ -313,6 +373,18 @@ void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function
 
   const auto& source = instruction.operands[0];
   const auto& result = instruction.result;
+  if (result.kind == MachineOperandKind::PhysicalRegister) {
+    if (source.kind == MachineOperandKind::PhysicalRegister &&
+        source.text == result.text) {
+      return;
+    }
+    if (result.type.isFloat()) {
+      emitLoadFloatOperand(os, function, source, result.text);
+    } else {
+      emitLoadIntegerOperand(os, function, source, result.text);
+    }
+    return;
+  }
   if (result.type.isFloat()) {
     emitLoadFloatOperand(os, function, source, "ft0");
     emitStoreResult(os, function, result, "ft0");
@@ -575,11 +647,13 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     std::size_t integerRegs = 0;
     std::size_t floatRegs = 0;
     std::size_t stackOffset = 0;
+    std::vector<ArgumentMove> integerMoves;
+    std::vector<ArgumentMove> floatMoves;
     for (std::size_t i = 1; i < instruction.operands.size(); ++i) {
       const auto& argument = instruction.operands[i];
       if (argument.type.isFloat()) {
         if (floatRegs < 8) {
-          emitLoadFloatOperand(os, function, argument, "fa" + std::to_string(floatRegs));
+          floatMoves.push_back(ArgumentMove{"fa" + std::to_string(floatRegs), argument});
           ++floatRegs;
         } else {
           emitLoadFloatOperand(os, function, argument, "ft0");
@@ -588,7 +662,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
         }
       } else {
         if (integerRegs < 8) {
-          emitLoadIntegerOperand(os, function, argument, "a" + std::to_string(integerRegs));
+          integerMoves.push_back(ArgumentMove{"a" + std::to_string(integerRegs), argument});
           ++integerRegs;
         } else {
           emitLoadIntegerOperand(os, function, argument, "t0");
@@ -598,6 +672,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
         }
       }
     }
+    emitParallelArgumentMoves(os, function, std::move(integerMoves), false);
+    emitParallelArgumentMoves(os, function, std::move(floatMoves), true);
     os << "  call " << instruction.operands[0].text << '\n';
     if (instruction.hasResult) {
       if (instruction.result.type.isFloat()) {

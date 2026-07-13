@@ -1,7 +1,12 @@
 #include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <queue>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,61 +30,88 @@ using compiler::backend::mir::StackObject;
 using compiler::backend::mir::StackObjectKind;
 using compiler::backend::mir::ValueType;
 
-struct Segment {
-  std::size_t start = 0;
-  std::size_t end = 0;
-};
-
-struct Interval {
+struct GraphNode {
   std::string name;
   ValueType type;
-  std::vector<Segment> segments;
+  std::vector<std::size_t> affinities;
+  std::vector<std::string> preferredRegisters;
+  std::string precoloredRegister;
+  double spillCost = 0.0;
   bool crossesCall = false;
-  bool isRegisterParameter = false;
+  bool avoidArgumentRegisters = false;
+};
 
-  void addSegment(std::size_t start, std::size_t end) {
-    if (start >= end) {
+struct InterferenceGraph {
+  std::vector<GraphNode> nodes;
+  std::unordered_map<std::string, std::size_t> indexByName;
+  std::vector<std::uint64_t> adjacency;
+  std::size_t wordsPerNode = 0;
+
+  GraphNode& addNode(const std::string& name, const ValueType& type) {
+    const auto found = indexByName.find(name);
+    if (found != indexByName.end()) {
+      auto& node = nodes[found->second];
+      if (node.type.isVoid()) {
+        node.type = type;
+      }
+      return node;
+    }
+    const std::size_t index = nodes.size();
+    indexByName.emplace(name, index);
+    nodes.push_back(GraphNode{name, type, {}, {}, {}, 0.0, false, false});
+    return nodes.back();
+  }
+
+  [[nodiscard]] std::size_t indexOf(const std::string& name) const {
+    return indexByName.at(name);
+  }
+
+  void finalizeNodes() {
+    wordsPerNode = (nodes.size() + 63) / 64;
+    adjacency.assign(nodes.size() * wordsPerNode, 0);
+  }
+
+  void addEdge(std::size_t lhs, std::size_t rhs) {
+    if (lhs == rhs || nodes[lhs].type.isFloat() != nodes[rhs].type.isFloat()) {
       return;
     }
-    segments.push_back(Segment{start, end});
+    adjacency[lhs * wordsPerNode + rhs / 64] |= std::uint64_t{1} << (rhs % 64);
+    adjacency[rhs * wordsPerNode + lhs / 64] |= std::uint64_t{1} << (lhs % 64);
   }
 
-  void merge() {
-    if (segments.empty()) {
+  void addAffinity(std::size_t lhs, std::size_t rhs) {
+    if (lhs == rhs || nodes[lhs].type.isFloat() != nodes[rhs].type.isFloat()) {
       return;
     }
-    std::sort(segments.begin(), segments.end(), [](const Segment& lhs, const Segment& rhs) {
-      if (lhs.start != rhs.start) {
-        return lhs.start < rhs.start;
-      }
-      return lhs.end < rhs.end;
-    });
+    if (std::find(nodes[lhs].affinities.begin(), nodes[lhs].affinities.end(),
+                  rhs) == nodes[lhs].affinities.end()) {
+      nodes[lhs].affinities.push_back(rhs);
+    }
+    if (std::find(nodes[rhs].affinities.begin(), nodes[rhs].affinities.end(),
+                  lhs) == nodes[rhs].affinities.end()) {
+      nodes[rhs].affinities.push_back(lhs);
+    }
+  }
 
-    std::vector<Segment> merged;
-    merged.push_back(segments.front());
-    for (std::size_t i = 1; i < segments.size(); ++i) {
-      if (segments[i].start <= merged.back().end) {
-        merged.back().end = std::max(merged.back().end, segments[i].end);
-      } else {
-        merged.push_back(segments[i]);
+  template <typename Callback>
+  void forEachNeighbor(std::size_t index, Callback&& callback) const {
+    const std::size_t rowStart = index * wordsPerNode;
+    for (std::size_t wordIndex = 0; wordIndex < wordsPerNode; ++wordIndex) {
+      std::uint64_t bits = adjacency[rowStart + wordIndex];
+      while (bits != 0) {
+        const unsigned bit = static_cast<unsigned>(__builtin_ctzll(bits));
+        const std::size_t neighbor = wordIndex * 64 + bit;
+        if (neighbor < nodes.size()) {
+          callback(neighbor);
+        }
+        bits &= bits - 1;
       }
     }
-    segments.swap(merged);
-  }
-
-  [[nodiscard]] std::size_t begin() const {
-    return segments.empty() ? 0 : segments.front().start;
-  }
-
-  [[nodiscard]] std::size_t end() const {
-    return segments.empty() ? 0 : segments.back().end;
   }
 };
 
-struct ActiveInterval {
-  std::size_t end = 0;
-  std::string name;
-  std::string reg;
+struct ColoringStackEntry {
+  std::size_t node = 0;
 };
 
 struct AllocationClass {
@@ -88,15 +120,40 @@ struct AllocationClass {
   std::unordered_set<std::string> argumentRegisters;
 };
 
+using BitVector = std::vector<std::uint64_t>;
+
+void setBit(BitVector& bits, std::size_t index) {
+  bits[index / 64] |= std::uint64_t{1} << (index % 64);
+}
+
+void clearBit(BitVector& bits, std::size_t index) {
+  bits[index / 64] &= ~(std::uint64_t{1} << (index % 64));
+}
+
+template <typename Callback>
+void forEachSetBit(const BitVector& bits, std::size_t limit,
+                   Callback&& callback) {
+  for (std::size_t wordIndex = 0; wordIndex < bits.size(); ++wordIndex) {
+    std::uint64_t word = bits[wordIndex];
+    while (word != 0) {
+      const unsigned bit = static_cast<unsigned>(__builtin_ctzll(word));
+      const std::size_t index = wordIndex * 64 + bit;
+      if (index < limit) {
+        callback(index);
+      }
+      word &= word - 1;
+    }
+  }
+}
+
 bool isVirtualRegister(const MachineOperand& operand) {
   return operand.kind == MachineOperandKind::VirtualRegister;
 }
 
-bool isRegisterCandidate(const ValueType& type) {
-  return !type.isVoid();
-}
+bool isRegisterCandidate(const ValueType& type) { return !type.isVoid(); }
 
-int ensureSlot(MachineFunction& function, std::unordered_map<std::string, int>& slotMap,
+int ensureSlot(MachineFunction& function,
+               std::unordered_map<std::string, int>& slotMap,
                const std::string& name, const ValueType& type,
                const compiler::backend::target::TargetInfo& target) {
   const auto found = slotMap.find(name);
@@ -117,14 +174,17 @@ int ensureSlot(MachineFunction& function, std::unordered_map<std::string, int>& 
 }
 
 void collectBlockUsesAndDefs(
-    const compiler::backend::target::TargetInstrAdapter& adapter, const MachineFunction& function,
-    const std::unordered_set<std::string>& parameterNames, std::unordered_map<std::string, ValueType>& regTypes,
+    const compiler::backend::target::TargetInstrAdapter& adapter,
+    const MachineFunction& function,
+    const std::unordered_set<std::string>& parameterNames,
+    std::unordered_map<std::string, ValueType>& regTypes,
     std::vector<std::unordered_set<std::string>>& useSets,
     std::vector<std::unordered_set<std::string>>& defSets) {
   useSets.assign(function.blocks.size(), {});
   defSets.assign(function.blocks.size(), {});
 
-  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
+       ++blockIndex) {
     std::unordered_set<std::string> seenDefs;
     for (const auto& instruction : function.blocks[blockIndex].instructions) {
       std::vector<MachineOperand> uses;
@@ -133,7 +193,8 @@ void collectBlockUsesAndDefs(
       adapter.enumerateDefs(instruction, defs);
 
       for (const auto& operand : uses) {
-        if (!isVirtualRegister(operand) || parameterNames.find(operand.text) != parameterNames.end()) {
+        if (!isVirtualRegister(operand) ||
+            parameterNames.find(operand.text) != parameterNames.end()) {
           continue;
         }
         regTypes.emplace(operand.text, operand.type);
@@ -143,7 +204,8 @@ void collectBlockUsesAndDefs(
       }
 
       for (const auto& operand : defs) {
-        if (!isVirtualRegister(operand) || parameterNames.find(operand.text) != parameterNames.end()) {
+        if (!isVirtualRegister(operand) ||
+            parameterNames.find(operand.text) != parameterNames.end()) {
           continue;
         }
         regTypes.emplace(operand.text, operand.type);
@@ -152,200 +214,362 @@ void collectBlockUsesAndDefs(
       }
     }
   }
+
 }
 
-std::vector<Interval> buildIntervals(
-    const compiler::backend::target::TargetInstrAdapter& adapter, const MachineFunction& function,
-    const std::unordered_set<std::string>& parameterNames,
-    const std::unordered_set<std::string>& registerParameterNames,
-    const std::unordered_map<std::string, ValueType>& regTypes,
-    const std::vector<std::unordered_set<std::string>>& liveOut,
-    const std::vector<std::pair<std::size_t, std::size_t>>& blockRanges,
-    const std::unordered_set<std::size_t>& callPoints) {
-  std::unordered_map<std::string, Interval> intervals;
-  for (const auto& [name, type] : regTypes) {
-    intervals.emplace(name, Interval{name, type, {}, false,
-                                     registerParameterNames.find(name) !=
-                                         registerParameterNames.end()});
+std::vector<unsigned> computeLoopDepths(
+    const compiler::backend::common::ControlFlowGraph& cfg) {
+  const std::size_t blockCount = cfg.blocks.size();
+  std::vector<unsigned> loopDepth(blockCount, 0);
+  if (blockCount == 0) {
+    return loopDepth;
   }
 
-  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
-    const auto [blockStart, blockEnd] = blockRanges[blockIndex];
-    std::unordered_map<std::string, std::size_t> liveEnds;
-    for (const auto& reg : liveOut[blockIndex]) {
-      if (parameterNames.find(reg) == parameterNames.end()) {
-        liveEnds.emplace(reg, blockEnd);
-      }
-    }
+  const std::size_t wordCount = (blockCount + 63) / 64;
+  const std::uint64_t lastWordMask =
+      blockCount % 64 == 0 ? ~std::uint64_t{0}
+                           : (std::uint64_t{1} << (blockCount % 64)) - 1;
+  std::vector<std::vector<std::uint64_t>> dominators(
+      blockCount, std::vector<std::uint64_t>(wordCount, ~std::uint64_t{0}));
+  dominators[0].assign(wordCount, 0);
+  dominators[0][0] = 1;
+  for (std::size_t block = 1; block < blockCount; ++block) {
+    dominators[block].back() &= lastWordMask;
+  }
 
-    std::size_t position = blockEnd;
-    for (auto it = function.blocks[blockIndex].instructions.rbegin();
-         it != function.blocks[blockIndex].instructions.rend(); ++it) {
-      --position;
-      std::vector<MachineOperand> uses;
-      std::vector<MachineOperand> defs;
-      adapter.enumerateUses(*it, uses);
-      adapter.enumerateDefs(*it, defs);
-
-      for (const auto& operand : defs) {
-        if (!isVirtualRegister(operand) || parameterNames.find(operand.text) != parameterNames.end()) {
-          continue;
-        }
-        auto& interval = intervals.at(operand.text);
-        const auto live = liveEnds.find(operand.text);
-        if (live != liveEnds.end()) {
-          interval.addSegment(position, live->second);
-          liveEnds.erase(live);
-        } else {
-          interval.addSegment(position, position + 1);
-        }
-      }
-
-      for (const auto& operand : uses) {
-        if (!isVirtualRegister(operand) || parameterNames.find(operand.text) != parameterNames.end()) {
-          continue;
-        }
-        if (liveEnds.find(operand.text) == liveEnds.end()) {
-          liveEnds.emplace(operand.text, position + 1);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block = 1; block < blockCount; ++block) {
+      std::vector<std::uint64_t> updated(wordCount, 0);
+      if (cfg.predecessors[block].empty()) {
+        // An unreachable block is only dominated by itself.
+      } else {
+        updated = dominators[cfg.predecessors[block].front()];
+        for (std::size_t predIndex = 1;
+             predIndex < cfg.predecessors[block].size(); ++predIndex) {
+          const auto& predDominators =
+              dominators[cfg.predecessors[block][predIndex]];
+          for (std::size_t word = 0; word < wordCount; ++word) {
+            updated[word] &= predDominators[word];
+          }
         }
       }
-    }
-
-    for (const auto& [name, segmentEnd] : liveEnds) {
-      intervals.at(name).addSegment(blockStart, segmentEnd);
+      updated[block / 64] |= std::uint64_t{1} << (block % 64);
+      if (updated != dominators[block]) {
+        dominators[block] = std::move(updated);
+        changed = true;
+      }
     }
   }
 
-  std::vector<Interval> result;
-  result.reserve(intervals.size());
-  for (auto& [_, interval] : intervals) {
-    interval.merge();
-    for (const auto& segment : interval.segments) {
-      for (const auto callPoint : callPoints) {
-        if (segment.start <= callPoint && callPoint < segment.end) {
-          interval.crossesCall = true;
-          break;
+  for (std::size_t tail = 0; tail < blockCount; ++tail) {
+    for (const auto head : cfg.successors[tail]) {
+      if ((dominators[tail][head / 64] & (std::uint64_t{1} << (head % 64))) ==
+          0) {
+        continue;
+      }
+
+      std::unordered_set<std::size_t> loopBlocks{head, tail};
+      std::vector<std::size_t> worklist;
+      if (tail != head) {
+        worklist.push_back(tail);
+      }
+      while (!worklist.empty()) {
+        const std::size_t block = worklist.back();
+        worklist.pop_back();
+        for (const auto pred : cfg.predecessors[block]) {
+          if (loopBlocks.insert(pred).second && pred != head) {
+            worklist.push_back(pred);
+          }
         }
       }
-      if (interval.crossesCall) {
-        break;
+      for (const auto block : loopBlocks) {
+        ++loopDepth[block];
       }
     }
-    result.push_back(std::move(interval));
   }
+  return loopDepth;
+}
 
-  std::sort(result.begin(), result.end(), [](const Interval& lhs, const Interval& rhs) {
-    if (lhs.begin() != rhs.begin()) {
-      return lhs.begin() < rhs.begin();
+double blockWeight(unsigned loopDepth) {
+  double weight = 1.0;
+  while (loopDepth-- > 0 && weight < 10000.0) {
+    weight *= 10.0;
+  }
+  return weight;
+}
+
+std::vector<MachineOperand> virtualOperands(
+    const std::vector<MachineOperand>& operands,
+    const std::unordered_set<std::string>& parameterNames) {
+  std::vector<MachineOperand> result;
+  for (const auto& operand : operands) {
+    if (isVirtualRegister(operand) &&
+        parameterNames.find(operand.text) == parameterNames.end()) {
+      result.push_back(operand);
     }
-    return lhs.end() < rhs.end();
-  });
+  }
   return result;
 }
 
-void expireOldIntervals(std::vector<ActiveInterval>& active, std::vector<std::string>& freeRegs,
-                        std::size_t position) {
-  std::vector<ActiveInterval> stillActive;
-  stillActive.reserve(active.size());
-  for (auto& entry : active) {
-    if (entry.end <= position) {
-      freeRegs.push_back(entry.reg);
-    } else {
-      stillActive.push_back(std::move(entry));
-    }
-  }
-  active.swap(stillActive);
-}
+void buildInterferenceGraph(
+    InterferenceGraph& graph,
+    const compiler::backend::target::TargetInstrAdapter& adapter,
+    const MachineFunction& function,
+    const compiler::backend::common::ControlFlowGraph& cfg,
+    const std::unordered_set<std::string>& stackHomeParameters,
+    const std::vector<BitVector>& liveOut) {
+  const auto loopDepths = computeLoopDepths(cfg);
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
+       ++blockIndex) {
+    const double weight = blockWeight(loopDepths[blockIndex]);
+    BitVector live = liveOut[blockIndex];
 
-std::vector<std::string> orderedFreeRegisters(const std::vector<std::string>& freeRegs,
-                                              const std::unordered_set<std::string>& calleeSaved,
-                                              bool preferCalleeSaved) {
-  std::vector<std::string> ordered = freeRegs;
-  std::sort(ordered.begin(), ordered.end(), [&](const std::string& lhs, const std::string& rhs) {
-    const bool lhsSaved = calleeSaved.find(lhs) != calleeSaved.end();
-    const bool rhsSaved = calleeSaved.find(rhs) != calleeSaved.end();
-    if (preferCalleeSaved && lhsSaved != rhsSaved) {
-      return lhsSaved > rhsSaved;
-    }
-    if (!preferCalleeSaved && lhsSaved != rhsSaved) {
-      return lhsSaved < rhsSaved;
-    }
-    return lhs < rhs;
-  });
-  return ordered;
-}
+    for (auto instructionIt = function.blocks[blockIndex].instructions.rbegin();
+         instructionIt != function.blocks[blockIndex].instructions.rend();
+         ++instructionIt) {
+      std::vector<MachineOperand> allUses;
+      std::vector<MachineOperand> allDefs;
+      adapter.enumerateUses(*instructionIt, allUses);
+      adapter.enumerateDefs(*instructionIt, allDefs);
+      const auto uses = virtualOperands(allUses, stackHomeParameters);
+      const auto defs = virtualOperands(allDefs, stackHomeParameters);
 
-bool registerAllowedForInterval(const std::string& reg, const AllocationClass& klass,
-                                const Interval& interval) {
-  if (interval.isRegisterParameter &&
-      klass.argumentRegisters.find(reg) != klass.argumentRegisters.end()) {
-    return false;
-  }
-  return !interval.crossesCall || klass.calleeSaved.find(reg) != klass.calleeSaved.end();
-}
+      std::vector<std::size_t> useIndices;
+      std::vector<std::size_t> defIndices;
+      useIndices.reserve(uses.size());
+      defIndices.reserve(defs.size());
+      for (const auto& operand : defs) {
+        const std::size_t index = graph.indexOf(operand.text);
+        graph.nodes[index].spillCost += weight;
+        defIndices.push_back(index);
+      }
+      for (const auto& operand : uses) {
+        const std::size_t index = graph.indexOf(operand.text);
+        graph.nodes[index].spillCost += weight;
+        useIndices.push_back(index);
+      }
 
-void allocateClassIntervals(const std::vector<Interval>& intervals, const AllocationClass& klass,
-                            bool selectFloat,
-                            std::unordered_map<std::string, std::string>& registerMap) {
-  std::vector<ActiveInterval> active;
-  std::vector<std::string> freeRegs = klass.allocatable;
+      if (adapter.isCall(*instructionIt)) {
+        forEachSetBit(live, graph.nodes.size(), [&](std::size_t index) {
+          if (std::find(defIndices.begin(), defIndices.end(), index) ==
+              defIndices.end()) {
+            graph.nodes[index].crossesCall = true;
+          }
+        });
+      }
 
-  for (const auto& interval : intervals) {
-    if (interval.segments.empty() || interval.type.isFloat() != selectFloat ||
-        !isRegisterCandidate(interval.type)) {
-      continue;
-    }
+      std::size_t copySource = graph.nodes.size();
+      if (instructionIt->kind == MachineInstructionKind::Copy &&
+          defs.size() == 1 && allUses.size() == 1) {
+        const auto& source = allUses.front();
+        if (isVirtualRegister(source) &&
+            stackHomeParameters.find(source.text) ==
+                stackHomeParameters.end()) {
+          copySource = graph.indexOf(source.text);
+          graph.addAffinity(defIndices.front(), copySource);
+        } else if (source.kind == MachineOperandKind::PhysicalRegister) {
+          graph.nodes[defIndices.front()].preferredRegisters.push_back(
+              source.text);
+        }
+      }
 
-    expireOldIntervals(active, freeRegs, interval.begin());
-    std::vector<std::string> allowedFree;
-    allowedFree.reserve(freeRegs.size());
-    for (const auto& reg : freeRegs) {
-      if (registerAllowedForInterval(reg, klass, interval)) {
-        allowedFree.push_back(reg);
+      for (const auto def : defIndices) {
+        forEachSetBit(live, graph.nodes.size(), [&](std::size_t liveNode) {
+          if (liveNode != copySource) {
+            graph.addEdge(def, liveNode);
+          }
+        });
+      }
+
+      for (const auto def : defIndices) {
+        clearBit(live, def);
+      }
+      for (const auto use : useIndices) {
+        setBit(live, use);
       }
     }
-    const auto preferredFree =
-        orderedFreeRegisters(allowedFree, klass.calleeSaved, interval.crossesCall);
+  }
 
-    if (!preferredFree.empty()) {
-      const std::string reg = preferredFree.front();
-      freeRegs.erase(std::find(freeRegs.begin(), freeRegs.end(), reg));
-      registerMap.emplace(interval.name, reg);
-      active.push_back(ActiveInterval{interval.end(), interval.name, reg});
+  for (auto& node : graph.nodes) {
+    if (!node.avoidArgumentRegisters) {
       continue;
     }
+    if (!node.crossesCall && !node.preferredRegisters.empty()) {
+      node.precoloredRegister = node.preferredRegisters.front();
+    }
+    node.avoidArgumentRegisters = false;
+  }
+}
 
-    const auto spillIt = std::max_element(active.begin(), active.end(),
-                                          [&](const ActiveInterval& lhs,
-                                              const ActiveInterval& rhs) {
-                                            const bool lhsAllowed =
-                                                registerAllowedForInterval(lhs.reg, klass, interval);
-                                            const bool rhsAllowed =
-                                                registerAllowedForInterval(rhs.reg, klass, interval);
-                                            if (lhsAllowed != rhsAllowed) {
-                                              return lhsAllowed < rhsAllowed;
-                                            }
-                                            return lhs.end < rhs.end;
-                                          });
-    if (spillIt != active.end() && spillIt->end > interval.end()) {
-      if (!registerAllowedForInterval(spillIt->reg, klass, interval)) {
-        continue;
+std::vector<std::string> allowedRegisters(const GraphNode& node,
+                                          const AllocationClass& klass) {
+  std::vector<std::string> allowed;
+  allowed.reserve(klass.allocatable.size());
+  for (const auto& reg : klass.allocatable) {
+    if (node.crossesCall &&
+        klass.calleeSaved.find(reg) == klass.calleeSaved.end()) {
+      continue;
+    }
+    if (node.avoidArgumentRegisters &&
+        klass.argumentRegisters.find(reg) != klass.argumentRegisters.end()) {
+      continue;
+    }
+    allowed.push_back(reg);
+  }
+  return allowed;
+}
+
+void allocateClassGraph(
+    const InterferenceGraph& graph, const AllocationClass& klass,
+    bool selectFloat,
+    std::unordered_map<std::string, std::string>& registerMap) {
+  std::vector<bool> remaining(graph.nodes.size(), false);
+  std::vector<std::vector<std::string>> allowedByNode(graph.nodes.size());
+  std::size_t remainingCount = 0;
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    const auto& node = graph.nodes[index];
+    if (node.type.isFloat() != selectFloat || !isRegisterCandidate(node.type)) {
+      continue;
+    }
+    allowedByNode[index] = allowedRegisters(node, klass);
+    if (!node.precoloredRegister.empty() &&
+        std::find(allowedByNode[index].begin(), allowedByNode[index].end(),
+                  node.precoloredRegister) != allowedByNode[index].end()) {
+      registerMap.emplace(node.name, node.precoloredRegister);
+      continue;
+    }
+    remaining[index] = true;
+    ++remainingCount;
+  }
+
+  std::vector<std::size_t> degree(graph.nodes.size(), 0);
+  std::vector<std::size_t> simplifyWorklist;
+  using SpillCandidate = std::pair<double, std::size_t>;
+  std::priority_queue<SpillCandidate, std::vector<SpillCandidate>,
+                      std::greater<SpillCandidate>>
+      spillWorklist;
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    if (!remaining[index]) {
+      continue;
+    }
+    std::size_t nodeDegree = 0;
+    graph.forEachNeighbor(index, [&](std::size_t neighbor) {
+      if (remaining[neighbor]) {
+        ++nodeDegree;
       }
-      registerMap.erase(spillIt->name);
-      registerMap.emplace(interval.name, spillIt->reg);
-      *spillIt = ActiveInterval{interval.end(), interval.name, spillIt->reg};
+    });
+    degree[index] = nodeDegree;
+    if (nodeDegree < allowedByNode[index].size()) {
+      simplifyWorklist.push_back(index);
+    }
+    const double spillScore = (graph.nodes[index].spillCost + 1.0) /
+                              static_cast<double>(nodeDegree + 1);
+    spillWorklist.emplace(spillScore, index);
+  }
+
+  std::vector<ColoringStackEntry> stack;
+  stack.reserve(remainingCount);
+  while (remainingCount > 0) {
+    std::size_t selected = graph.nodes.size();
+    while (!simplifyWorklist.empty()) {
+      const std::size_t candidate = simplifyWorklist.back();
+      simplifyWorklist.pop_back();
+      if (remaining[candidate] &&
+          degree[candidate] < allowedByNode[candidate].size()) {
+        selected = candidate;
+        break;
+      }
+    }
+
+    if (selected == graph.nodes.size()) {
+      while (!spillWorklist.empty() && !remaining[spillWorklist.top().second]) {
+        spillWorklist.pop();
+      }
+      selected = spillWorklist.top().second;
+      spillWorklist.pop();
+    }
+
+    stack.push_back(ColoringStackEntry{selected});
+    remaining[selected] = false;
+    --remainingCount;
+    graph.forEachNeighbor(selected, [&](std::size_t neighbor) {
+      if (remaining[neighbor]) {
+        if (degree[neighbor] > 0) {
+          --degree[neighbor];
+        }
+        if (degree[neighbor] < allowedByNode[neighbor].size()) {
+          simplifyWorklist.push_back(neighbor);
+        }
+      }
+    });
+  }
+
+  while (!stack.empty()) {
+    const ColoringStackEntry entry = stack.back();
+    stack.pop_back();
+    const auto& node = graph.nodes[entry.node];
+    std::unordered_set<std::string> unavailable;
+    graph.forEachNeighbor(entry.node, [&](std::size_t neighbor) {
+      if (const auto assigned = registerMap.find(graph.nodes[neighbor].name);
+          assigned != registerMap.end()) {
+        unavailable.insert(assigned->second);
+      }
+    });
+
+    std::vector<std::string> preferred;
+    for (const auto& affinity : node.affinities) {
+      if (const auto assigned = registerMap.find(graph.nodes[affinity].name);
+          assigned != registerMap.end()) {
+        preferred.push_back(assigned->second);
+      }
+    }
+    preferred.insert(preferred.end(), node.preferredRegisters.begin(),
+                     node.preferredRegisters.end());
+
+    auto ordered = allowedByNode[entry.node];
+    std::sort(ordered.begin(), ordered.end(),
+              [&](const std::string& lhs, const std::string& rhs) {
+                const bool lhsPreferred =
+                    std::find(preferred.begin(), preferred.end(), lhs) !=
+                    preferred.end();
+                const bool rhsPreferred =
+                    std::find(preferred.begin(), preferred.end(), rhs) !=
+                    preferred.end();
+                if (lhsPreferred != rhsPreferred) {
+                  return lhsPreferred > rhsPreferred;
+                }
+                const bool lhsSaved =
+                    klass.calleeSaved.find(lhs) != klass.calleeSaved.end();
+                const bool rhsSaved =
+                    klass.calleeSaved.find(rhs) != klass.calleeSaved.end();
+                if (lhsSaved != rhsSaved) {
+                  return node.crossesCall ? lhsSaved > rhsSaved
+                                          : lhsSaved < rhsSaved;
+                }
+                return lhs < rhs;
+              });
+
+    for (const auto& reg : ordered) {
+      if (unavailable.find(reg) == unavailable.end()) {
+        registerMap.emplace(node.name, reg);
+        break;
+      }
     }
   }
 }
 
 bool keepUseInFrame(const MachineInstruction& instruction) {
-  return instruction.opcode == "call" || instruction.opcode == "ret" || instruction.opcode == "br" ||
+  return instruction.opcode == "call" || instruction.opcode == "ret" ||
+         instruction.opcode == "br" ||
          instruction.kind == MachineInstructionKind::Phi;
 }
 
-std::string takeScratchRegister(const ValueType& type,
-                                const compiler::backend::target::TargetRegInfo& regInfo,
-                                std::size_t& integerIndex, std::size_t& floatIndex) {
+std::string takeScratchRegister(
+    const ValueType& type,
+    const compiler::backend::target::TargetRegInfo& regInfo,
+    std::size_t& integerIndex, std::size_t& floatIndex) {
   if (type.isFloat()) {
     if (floatIndex >= regInfo.scratchFloatRegisters().size()) {
       return {};
@@ -378,27 +602,29 @@ void rewriteFunctionInstructions(
           return;
         }
 
-        if (const auto reg = registerMap.find(operand.text); reg != registerMap.end()) {
+        if (const auto reg = registerMap.find(operand.text);
+            reg != registerMap.end()) {
           operand = MachineOperand::physicalRegister(reg->second, operand.type);
           return;
         }
 
-        const int slot = ensureSlot(function, slotMap, operand.text, operand.type, target);
+        const int slot =
+            ensureSlot(function, slotMap, operand.text, operand.type, target);
         if (keepUseInFrame(rewritten)) {
           operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
-        const std::string scratch =
-            takeScratchRegister(operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
+        const std::string scratch = takeScratchRegister(
+            operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
         if (scratch.empty()) {
           operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
         auto physical = MachineOperand::physicalRegister(scratch, operand.type);
-        before.push_back(
-            MachineInstruction::spillReload(physical, MachineOperand::stackSlot(slot, operand.type)));
+        before.push_back(MachineInstruction::spillReload(
+            physical, MachineOperand::stackSlot(slot, operand.type)));
         operand = std::move(physical);
       };
 
@@ -407,20 +633,22 @@ void rewriteFunctionInstructions(
           return;
         }
 
-        if (const auto reg = registerMap.find(operand.text); reg != registerMap.end()) {
+        if (const auto reg = registerMap.find(operand.text);
+            reg != registerMap.end()) {
           operand = MachineOperand::physicalRegister(reg->second, operand.type);
           return;
         }
 
-        const int slot = ensureSlot(function, slotMap, operand.text, operand.type, target);
+        const int slot =
+            ensureSlot(function, slotMap, operand.text, operand.type, target);
         if (rewritten.kind == MachineInstructionKind::Copy ||
             rewritten.kind == MachineInstructionKind::Phi) {
           operand = MachineOperand::stackSlot(slot, operand.type);
           return;
         }
 
-        const std::string scratch =
-            takeScratchRegister(operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
+        const std::string scratch = takeScratchRegister(
+            operand.type, regInfo, nextIntegerScratch, nextFloatScratch);
         if (scratch.empty()) {
           operand = MachineOperand::stackSlot(slot, operand.type);
           return;
@@ -428,8 +656,9 @@ void rewriteFunctionInstructions(
 
         auto physical = MachineOperand::physicalRegister(scratch, operand.type);
         operand = physical;
-        after.push_back(
-            MachineInstruction::spillStore(std::move(physical), MachineOperand::stackSlot(slot, operand.type)));
+        after.push_back(MachineInstruction::spillStore(
+            std::move(physical),
+            MachineOperand::stackSlot(slot, operand.type)));
       };
 
       if (rewritten.kind == MachineInstructionKind::Phi) {
@@ -456,7 +685,8 @@ void rewriteFunctionInstructions(
 }
 
 void materializeRegisterParameters(
-    MachineFunction& function, std::unordered_set<std::string>& stackHomeParameters,
+    MachineFunction& function,
+    std::unordered_set<std::string>& stackHomeParameters,
     std::unordered_set<std::string>& registerHomeParameters,
     std::unordered_map<std::string, int>& slotMap,
     const compiler::backend::target::TargetInfo& target,
@@ -470,8 +700,8 @@ void materializeRegisterParameters(
   std::size_t floatRegs = 0;
   for (auto& parameter : function.parameters) {
     const bool isFloat = parameter.type.isFloat();
-    const auto& argRegs =
-        isFloat ? regInfo.floatArgumentRegisters() : regInfo.integerArgumentRegisters();
+    const auto& argRegs = isFloat ? regInfo.floatArgumentRegisters()
+                                  : regInfo.integerArgumentRegisters();
     auto& regIndex = isFloat ? floatRegs : intRegs;
     if (regIndex < argRegs.size()) {
       parameter.homeSlot = -1;
@@ -483,66 +713,90 @@ void materializeRegisterParameters(
       continue;
     }
 
-    parameter.homeSlot = ensureSlot(function, slotMap, parameter.name, parameter.type, target);
+    parameter.homeSlot =
+        ensureSlot(function, slotMap, parameter.name, parameter.type, target);
     stackHomeParameters.insert(parameter.name);
     ++regIndex;
   }
 
   auto& entryInstructions = function.blocks.front().instructions;
-  entryInstructions.insert(entryInstructions.begin(), copies.begin(), copies.end());
+  entryInstructions.insert(entryInstructions.begin(), copies.begin(),
+                           copies.end());
 }
 
 }  // namespace
 
-void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) const {
-  const auto& adapter = compiler::backend::target::instrAdapterFor(module.target);
+void RegisterAllocator::allocate(
+    compiler::backend::mir::MachineModule& module) const {
+  const auto& adapter =
+      compiler::backend::target::instrAdapterFor(module.target);
   const auto& regInfo = compiler::backend::target::regInfoFor(module.target);
 
   for (auto& function : module.functions) {
+    const auto allocationStart = std::chrono::steady_clock::now();
     std::unordered_map<std::string, int> slotMap;
     std::unordered_set<std::string> stackHomeParameters;
     std::unordered_set<std::string> registerHomeParameters;
-    materializeRegisterParameters(function, stackHomeParameters, registerHomeParameters, slotMap,
+    materializeRegisterParameters(function, stackHomeParameters,
+                                  registerHomeParameters, slotMap,
                                   module.target, regInfo);
-
-    std::vector<std::pair<std::size_t, std::size_t>> blockRanges(function.blocks.size());
-    std::unordered_set<std::size_t> callPoints;
-    std::size_t instructionIndex = 0;
-    for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
-      const std::size_t blockStart = instructionIndex;
-      for (const auto& instruction : function.blocks[blockIndex].instructions) {
-        if (adapter.isCall(instruction)) {
-          callPoints.insert(instructionIndex);
-        }
-        ++instructionIndex;
-      }
-      blockRanges[blockIndex] = {blockStart, instructionIndex};
-    }
 
     std::unordered_map<std::string, ValueType> regTypes;
     std::vector<std::unordered_set<std::string>> useSets;
     std::vector<std::unordered_set<std::string>> defSets;
-    collectBlockUsesAndDefs(adapter, function, stackHomeParameters, regTypes, useSets, defSets);
+    collectBlockUsesAndDefs(adapter, function, stackHomeParameters, regTypes,
+                            useSets, defSets);
+
+    InterferenceGraph graph;
+    for (const auto& [name, type] : regTypes) {
+      auto& node = graph.addNode(name, type);
+      if (registerHomeParameters.find(name) != registerHomeParameters.end()) {
+        node.avoidArgumentRegisters = true;
+      }
+    }
+    graph.finalizeNodes();
+
+    const std::size_t registerWordCount = (graph.nodes.size() + 63) / 64;
+    std::vector<BitVector> blockUses(
+        function.blocks.size(), BitVector(registerWordCount, 0));
+    std::vector<BitVector> blockDefs(
+        function.blocks.size(), BitVector(registerWordCount, 0));
+    for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
+         ++blockIndex) {
+      for (const auto& name : useSets[blockIndex]) {
+        setBit(blockUses[blockIndex], graph.indexOf(name));
+      }
+      for (const auto& name : defSets[blockIndex]) {
+        setBit(blockDefs[blockIndex], graph.indexOf(name));
+      }
+    }
+    useSets.clear();
+    defSets.clear();
 
     const auto cfg = CFGBuilder{}.build(function, adapter);
-    std::vector<std::unordered_set<std::string>> liveIn(function.blocks.size());
-    std::vector<std::unordered_set<std::string>> liveOut(function.blocks.size());
+    std::vector<BitVector> liveIn(
+        function.blocks.size(), BitVector(registerWordCount, 0));
+    std::vector<BitVector> liveOut(
+        function.blocks.size(), BitVector(registerWordCount, 0));
     bool changed = true;
     while (changed) {
       changed = false;
-      for (std::size_t reverse = function.blocks.size(); reverse > 0; --reverse) {
+      for (std::size_t reverse = function.blocks.size(); reverse > 0;
+           --reverse) {
         const std::size_t blockIndex = reverse - 1;
 
-        std::unordered_set<std::string> newOut;
+        BitVector newOut(registerWordCount, 0);
         for (const auto succ : cfg.successors[blockIndex]) {
-          newOut.insert(liveIn[succ].begin(), liveIn[succ].end());
+          for (std::size_t word = 0; word < registerWordCount; ++word) {
+            newOut[word] |= liveIn[succ][word];
+          }
         }
 
-        std::unordered_set<std::string> newIn = useSets[blockIndex];
-        for (const auto& reg : newOut) {
-          if (defSets[blockIndex].find(reg) == defSets[blockIndex].end()) {
-            newIn.insert(reg);
-          }
+        BitVector newIn(registerWordCount, 0);
+        for (std::size_t word = 0; word < registerWordCount; ++word) {
+          newIn[word] =
+              blockUses[blockIndex][word] |
+              (newOut[word] & ~blockDefs[blockIndex][word]);
         }
 
         if (newOut != liveOut[blockIndex] || newIn != liveIn[blockIndex]) {
@@ -552,28 +806,34 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
         }
       }
     }
+    const auto livenessEnd = std::chrono::steady_clock::now();
 
-    const auto intervals =
-        buildIntervals(adapter, function, stackHomeParameters, registerHomeParameters, regTypes,
-                       liveOut, blockRanges, callPoints);
+    buildInterferenceGraph(graph, adapter, function, cfg, stackHomeParameters,
+                           liveOut);
+    const auto graphEnd = std::chrono::steady_clock::now();
 
     std::unordered_map<std::string, std::string> registerMap;
-    allocateClassIntervals(
-        intervals,
+    allocateClassGraph(
+        graph,
         AllocationClass{regInfo.allocatableIntegerRegisters(),
-                        std::unordered_set<std::string>(regInfo.calleeSavedIntegerRegisters().begin(),
-                                                        regInfo.calleeSavedIntegerRegisters().end()),
-                        std::unordered_set<std::string>(regInfo.integerArgumentRegisters().begin(),
-                                                        regInfo.integerArgumentRegisters().end())},
+                        std::unordered_set<std::string>(
+                            regInfo.calleeSavedIntegerRegisters().begin(),
+                            regInfo.calleeSavedIntegerRegisters().end()),
+                        std::unordered_set<std::string>(
+                            regInfo.integerArgumentRegisters().begin(),
+                            regInfo.integerArgumentRegisters().end())},
         false, registerMap);
-    allocateClassIntervals(
-        intervals,
+    allocateClassGraph(
+        graph,
         AllocationClass{regInfo.allocatableFloatRegisters(),
-                        std::unordered_set<std::string>(regInfo.calleeSavedFloatRegisters().begin(),
-                                                        regInfo.calleeSavedFloatRegisters().end()),
-                        std::unordered_set<std::string>(regInfo.floatArgumentRegisters().begin(),
-                                                        regInfo.floatArgumentRegisters().end())},
+                        std::unordered_set<std::string>(
+                            regInfo.calleeSavedFloatRegisters().begin(),
+                            regInfo.calleeSavedFloatRegisters().end()),
+                        std::unordered_set<std::string>(
+                            regInfo.floatArgumentRegisters().begin(),
+                            regInfo.floatArgumentRegisters().end())},
         true, registerMap);
+    const auto coloringEnd = std::chrono::steady_clock::now();
 
     std::unordered_set<std::string> usedRegs;
     std::unordered_set<std::string> usedFloatRegs;
@@ -589,14 +849,30 @@ void RegisterAllocator::allocate(compiler::backend::mir::MachineModule& module) 
         usedFloatRegs.insert(reg);
       }
     }
-    function.usedIntegerCalleeSavedRegisters.assign(usedRegs.begin(), usedRegs.end());
+    function.usedIntegerCalleeSavedRegisters.assign(usedRegs.begin(),
+                                                    usedRegs.end());
     std::sort(function.usedIntegerCalleeSavedRegisters.begin(),
               function.usedIntegerCalleeSavedRegisters.end());
-    function.usedFloatCalleeSavedRegisters.assign(usedFloatRegs.begin(), usedFloatRegs.end());
+    function.usedFloatCalleeSavedRegisters.assign(usedFloatRegs.begin(),
+                                                  usedFloatRegs.end());
     std::sort(function.usedFloatCalleeSavedRegisters.begin(),
               function.usedFloatCalleeSavedRegisters.end());
 
-    rewriteFunctionInstructions(function, slotMap, registerMap, module.target, regInfo);
+    rewriteFunctionInstructions(function, slotMap, registerMap, module.target,
+                                regInfo);
+    if (std::getenv("COMPILER_REGALLOC_STATS") != nullptr) {
+      const auto rewriteEnd = std::chrono::steady_clock::now();
+      const auto milliseconds = [](const auto begin, const auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+      };
+      std::cerr << "regalloc " << function.name
+                << ": nodes=" << graph.nodes.size()
+                << " liveness_ms=" << milliseconds(allocationStart, livenessEnd)
+                << " graph_ms=" << milliseconds(livenessEnd, graphEnd)
+                << " color_ms=" << milliseconds(graphEnd, coloringEnd)
+                << " rewrite_ms=" << milliseconds(coloringEnd, rewriteEnd)
+                << '\n';
+    }
   }
 }
 
