@@ -564,13 +564,9 @@ struct ColorPalette {
   }
 };
 
-std::uint64_t allowedColorMask(const GraphNode& node,
+std::uint64_t allowedColorMask(const GraphNode&,
                                const ColorPalette& palette) {
-  std::uint64_t allowed = palette.allMask;
-  if (node.crossesCall) {
-    allowed &= palette.calleeSavedMask;
-  }
-  return allowed;
+  return palette.allMask;
 }
 
 std::size_t colorCount(std::uint64_t colors) {
@@ -746,6 +742,89 @@ bool keepUseInFrame(const MachineInstruction& instruction) {
   return instruction.opcode == "call" || instruction.opcode == "ret" ||
          instruction.opcode == "br" ||
          instruction.kind == MachineInstructionKind::Phi;
+}
+
+void insertCallerSaves(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter,
+    const InterferenceGraph& graph, const std::vector<BitVector>& liveOut,
+    const std::unordered_set<std::string>& stackHomeParameters,
+    const std::unordered_map<std::string, std::string>& registerMap,
+    std::unordered_map<std::string, int>& slotMap,
+    const compiler::backend::target::TargetInfo& target,
+    const compiler::backend::target::TargetRegInfo& regInfo) {
+  std::unordered_set<std::string> calleeSaved(
+      regInfo.calleeSavedIntegerRegisters().begin(),
+      regInfo.calleeSavedIntegerRegisters().end());
+  calleeSaved.insert(regInfo.calleeSavedFloatRegisters().begin(),
+                     regInfo.calleeSavedFloatRegisters().end());
+
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size();
+       ++blockIndex) {
+    auto& block = function.blocks[blockIndex];
+    std::vector<std::vector<std::size_t>> saves(block.instructions.size());
+    BitVector live = liveOut[blockIndex];
+    for (std::size_t instructionIndex = block.instructions.size();
+         instructionIndex-- > 0;) {
+      const auto& instruction = block.instructions[instructionIndex];
+      std::vector<MachineOperand> allUses;
+      std::vector<MachineOperand> allDefs;
+      adapter.enumerateUses(instruction, allUses);
+      adapter.enumerateDefs(instruction, allDefs);
+      const auto uses = virtualOperands(allUses, stackHomeParameters);
+      const auto defs = virtualOperands(allDefs, stackHomeParameters);
+      std::vector<std::size_t> defIndices;
+      defIndices.reserve(defs.size());
+      for (const auto& operand : defs) {
+        defIndices.push_back(graph.indexOf(operand.text));
+      }
+
+      if (adapter.isCall(instruction)) {
+        forEachSetBit(live, graph.nodes.size(), [&](std::size_t nodeIndex) {
+          if (std::find(defIndices.begin(), defIndices.end(), nodeIndex) !=
+              defIndices.end()) {
+            return;
+          }
+          const auto assigned = registerMap.find(graph.nodes[nodeIndex].name);
+          if (assigned != registerMap.end() &&
+              calleeSaved.find(assigned->second) == calleeSaved.end()) {
+            saves[instructionIndex].push_back(nodeIndex);
+          }
+        });
+      }
+
+      for (const auto def : defIndices) {
+        clearBit(live, def);
+      }
+      for (const auto& operand : uses) {
+        setBit(live, graph.indexOf(operand.text));
+      }
+    }
+
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(block.instructions.size());
+    for (std::size_t instructionIndex = 0;
+         instructionIndex < block.instructions.size(); ++instructionIndex) {
+      for (const auto nodeIndex : saves[instructionIndex]) {
+        const auto& node = graph.nodes[nodeIndex];
+        const int slot =
+            ensureSlot(function, slotMap, node.name, node.type, target);
+        rewritten.push_back(MachineInstruction::spillStore(
+            MachineOperand::virtualRegister(node.name, node.type),
+            MachineOperand::stackSlot(slot, node.type)));
+      }
+      rewritten.push_back(std::move(block.instructions[instructionIndex]));
+      for (const auto nodeIndex : saves[instructionIndex]) {
+        const auto& node = graph.nodes[nodeIndex];
+        const int slot =
+            ensureSlot(function, slotMap, node.name, node.type, target);
+        rewritten.push_back(MachineInstruction::spillReload(
+            MachineOperand::virtualRegister(node.name, node.type),
+            MachineOperand::stackSlot(slot, node.type)));
+      }
+    }
+    block.instructions = std::move(rewritten);
+  }
 }
 
 std::string takeScratchRegister(
@@ -1020,6 +1099,9 @@ void RegisterAllocator::allocate(
                             regInfo.calleeSavedFloatRegisters().end())},
         true, registerMap);
     const auto coloringEnd = std::chrono::steady_clock::now();
+
+    insertCallerSaves(function, adapter, graph, liveOut, stackHomeParameters,
+                      registerMap, slotMap, module.target, regInfo);
 
     std::unordered_set<std::string> usedRegs;
     std::unordered_set<std::string> usedFloatRegs;
