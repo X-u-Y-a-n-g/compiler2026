@@ -900,6 +900,22 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       commitResult(os, function, instruction.result, result);
       return;
     }
+    if (wordResult && isRemainder &&
+        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+        rhsOperand.intValue == 65535) {
+      emitLi(os, "t1", -2147450879LL);
+      os << "  mul t1, " << lhs << ", t1\n";
+      os << "  srli t1, t1, 32\n";
+      os << "  add t1, t1, " << lhs << '\n';
+      os << "  srliw t2, t1, 31\n";
+      os << "  sraiw t1, t1, 15\n";
+      os << "  add t1, t1, t2\n";
+      os << "  slli t2, t1, 16\n";
+      os << "  add t1, " << lhs << ", t1\n";
+      os << "  subw " << result << ", t1, t2\n";
+      commitResult(os, function, instruction.result, result);
+      return;
+    }
     const std::string rhs = integerOperandRegister(os, function, rhsOperand, "t1");
     if (opcode == "add") {
       os << "  " << (wordResult ? "addw " : "add ") << result << ", " << lhs << ", " << rhs
