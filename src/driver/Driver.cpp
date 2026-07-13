@@ -32,6 +32,7 @@
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
+#include "../../include/compiler/midend/pass/RadixDigitExtractionPass.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
@@ -174,6 +175,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::BitwiseIdiomRecognitionPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::PowerOfTwoDispatchPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::RadixDigitExtractionPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());

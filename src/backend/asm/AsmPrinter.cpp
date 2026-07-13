@@ -907,7 +907,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" ||
-      opcode == "xor" || opcode == "shl" || opcode == "ashr") {
+      opcode == "xor" || opcode == "shl" || opcode == "ashr" || opcode == "lshr") {
     const std::string lhs =
         integerOperandRegister(os, function, instruction.operands[0], "t0");
     const std::string result = resultRegister(instruction.result, "t2");
@@ -1032,6 +1032,9 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
          << '\n';
     } else if (opcode == "ashr") {
       os << "  " << (wordResult ? "sraw " : "sra ") << result << ", " << lhs << ", " << rhs
+         << '\n';
+    } else if (opcode == "lshr") {
+      os << "  " << (wordResult ? "srlw " : "srl ") << result << ", " << lhs << ", " << rhs
          << '\n';
     }
     if (instruction.result.type.isBool()) {

@@ -428,7 +428,8 @@ ValueType inferInstructionResultType(const compiler::ir::core::Instruction& inst
   }
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
       opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-      opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr") {
+      opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr" ||
+      opcode == "lshr") {
     return inferIntegerType(operands, state, globals);
   }
   if (opcode == "select") {
@@ -578,7 +579,8 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
       opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-      opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr") {
+      opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr" ||
+      opcode == "lshr") {
     const ValueType valueType = inferIntegerType(operands, state, globals);
     os << opcode << " " << printValueType(valueType) << " "
        << renderOperand(operands[0], valueType) << ", " << renderOperand(operands[1], valueType);
