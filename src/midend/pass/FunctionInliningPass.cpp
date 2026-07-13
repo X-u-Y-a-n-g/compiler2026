@@ -289,13 +289,20 @@ bool inlineFunctionCalls(
 }  // namespace
 
 void FunctionInliningPass::run(compiler::ir::core::Module& module) {
-  const auto candidates = collectInlineCandidates(module);
-  if (candidates.empty()) {
-    return;
-  }
+  constexpr std::size_t kMaxInliningRounds = 4;
+  for (std::size_t round = 0; round < kMaxInliningRounds; ++round) {
+    const auto candidates = collectInlineCandidates(module);
+    if (candidates.empty()) {
+      return;
+    }
 
-  for (auto& function : module.functions()) {
-    inlineFunctionCalls(function, candidates);
+    bool changed = false;
+    for (auto& function : module.functions()) {
+      changed |= inlineFunctionCalls(function, candidates);
+    }
+    if (!changed) {
+      return;
+    }
   }
 }
 
