@@ -434,7 +434,7 @@ class FunctionLoweringContext {
 
     if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
         opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-        opcode == "or") {
+        opcode == "or" || opcode == "xor") {
       const ValueType resultType = inferIntegerType(operands);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
            {lowerValueOperand(operands[0], resultType), lowerValueOperand(operands[1], resultType)});

@@ -905,7 +905,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   }
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
-      opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or") {
+      opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" ||
+      opcode == "xor") {
     const std::string lhs =
         integerOperandRegister(os, function, instruction.operands[0], "t0");
     const std::string result = resultRegister(instruction.result, "t2");
@@ -913,10 +914,12 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const bool isDivision = opcode == "div" || opcode == "sdiv";
     const bool isRemainder = opcode == "mod" || opcode == "srem";
     const auto& rhsOperand = instruction.operands[1];
-    if ((opcode == "and" || opcode == "or") &&
+    if ((opcode == "and" || opcode == "or" || opcode == "xor") &&
         rhsOperand.kind == MachineOperandKind::ImmediateInt &&
         rhsOperand.intValue >= 0 && fitsSigned12(rhsOperand.intValue)) {
-      os << "  " << (opcode == "and" ? "andi " : "ori ") << result << ", " << lhs
+      const char* immediateOpcode =
+          opcode == "and" ? "andi " : (opcode == "or" ? "ori " : "xori ");
+      os << "  " << immediateOpcode << result << ", " << lhs
          << ", " << rhsOperand.intValue << '\n';
       if (instruction.result.type.isBool()) {
         os << "  andi " << result << ", " << result << ", 1\n";
@@ -1021,10 +1024,12 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       os << "  and " << result << ", " << lhs << ", " << rhs << '\n';
     } else if (opcode == "or") {
       os << "  or " << result << ", " << lhs << ", " << rhs << '\n';
+    } else if (opcode == "xor") {
+      os << "  xor " << result << ", " << lhs << ", " << rhs << '\n';
     }
     if (instruction.result.type.isBool()) {
       os << "  andi " << result << ", " << result << ", 1\n";
-    } else if (wordResult && (opcode == "and" || opcode == "or")) {
+    } else if (wordResult && (opcode == "and" || opcode == "or" || opcode == "xor")) {
       os << "  sext.w " << result << ", " << result << '\n';
     }
     commitResult(os, function, instruction.result, result);

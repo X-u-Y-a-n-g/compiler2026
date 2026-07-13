@@ -49,6 +49,9 @@ std::optional<std::string> foldIntegerBinary(const std::string& opcode,
   if (opcode == "or") {
     return detail::formatIntegerLiteral(lhs | rhs);
   }
+  if (opcode == "xor") {
+    return detail::formatIntegerLiteral(lhs ^ rhs);
+  }
   return std::nullopt;
 }
 
@@ -207,7 +210,7 @@ std::optional<std::string> foldInstruction(const Instruction& instruction) {
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
       opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-      opcode == "or") {
+      opcode == "or" || opcode == "xor") {
     if (auto folded = foldIntegerBinary(opcode, operands); folded.has_value()) {
       return folded;
     }

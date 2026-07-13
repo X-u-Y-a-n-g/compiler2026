@@ -185,6 +185,7 @@ std::vector<std::vector<std::size_t>> buildDominatorTree(const std::vector<Block
 
 bool isCommutative(const std::string& opcode) {
   return opcode == "add" || opcode == "mul" || opcode == "and" || opcode == "or" ||
+         opcode == "xor" ||
          opcode == "fadd" || opcode == "fmul" || opcode == "icmp.eq" || opcode == "icmp.ne" ||
          opcode == "fcmp.oeq" || opcode == "fcmp.one";
 }
