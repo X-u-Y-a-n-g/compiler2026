@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace compiler::backend::asmcode {
 
@@ -1134,8 +1135,36 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
 void emitFunction(std::ostringstream& os, const MachineModule& module, const MachineFunction& function) {
   std::unordered_map<std::string, std::string> labels;
+  std::unordered_map<std::string, std::size_t> blockIndices;
   for (const auto& block : function.blocks) {
     labels.emplace(block.name, blockLabel(function, block));
+    blockIndices.emplace(block.name, blockIndices.size());
+  }
+  std::unordered_set<std::string> loopHeaders;
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
+    const auto markBackwardTarget = [&](const MachineOperand& operand) {
+      if (operand.kind != MachineOperandKind::Label) {
+        return;
+      }
+      const auto target = blockIndices.find(operand.text);
+      if (target != blockIndices.end() && target->second <= blockIndex) {
+        loopHeaders.insert(operand.text);
+      }
+    };
+    for (const auto& instruction : function.blocks[blockIndex].instructions) {
+      if (instruction.opcode == "br") {
+        if (instruction.operands.size() == 1) {
+          markBackwardTarget(instruction.operands[0]);
+        } else if (instruction.operands.size() == 3) {
+          markBackwardTarget(instruction.operands[1]);
+          markBackwardTarget(instruction.operands[2]);
+        }
+      } else if (instruction.opcode.rfind("br.icmp.", 0) == 0 &&
+                 instruction.operands.size() == 4) {
+        markBackwardTarget(instruction.operands[2]);
+        markBackwardTarget(instruction.operands[3]);
+      }
+    }
   }
   const std::string retLabel = epilogueLabel(function);
 
@@ -1147,6 +1176,9 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
 
   for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
     const auto& block = function.blocks[blockIndex];
+    if (loopHeaders.find(block.name) != loopHeaders.end()) {
+      os << ".p2align 4\n";
+    }
     os << labels.at(block.name) << ":\n";
     const std::string* fallthroughLabel = nullptr;
     if (blockIndex + 1 < function.blocks.size()) {
