@@ -579,7 +579,8 @@ void emitGlobal(std::ostringstream& os, const MachineModule& module,
 
 void emitInstruction(std::ostringstream& os, const MachineModule& module, const MachineFunction& function,
                      const MachineInstruction& instruction, const std::string& returnLabel,
-                     const std::unordered_map<std::string, std::string>& labels) {
+                     const std::unordered_map<std::string, std::string>& labels,
+                     const std::string* fallthroughLabel = nullptr) {
   const auto& opcode = instruction.opcode;
 
   if (opcode == "stack.adjust") {
@@ -688,14 +689,25 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "br") {
     if (instruction.operands.size() == 1) {
-      os << "  j " << labels.at(instruction.operands[0].text) << '\n';
+      const std::string& target = labels.at(instruction.operands[0].text);
+      if (fallthroughLabel == nullptr || target != *fallthroughLabel) {
+        os << "  j " << target << '\n';
+      }
       return;
     }
     const std::string condition =
         integerOperandRegister(os, function, instruction.operands[0], "t0");
-    os << "  bne " << condition << ", x0, " << labels.at(instruction.operands[1].text)
-       << '\n';
-    os << "  j " << labels.at(instruction.operands[2].text) << '\n';
+    const std::string& trueLabel = labels.at(instruction.operands[1].text);
+    const std::string& falseLabel = labels.at(instruction.operands[2].text);
+    const bool allowFallthrough = fallthroughLabel != nullptr;
+    if (allowFallthrough && falseLabel == *fallthroughLabel) {
+      os << "  bne " << condition << ", x0, " << trueLabel << '\n';
+    } else if (allowFallthrough && trueLabel == *fallthroughLabel) {
+      os << "  beq " << condition << ", x0, " << falseLabel << '\n';
+    } else {
+      os << "  bne " << condition << ", x0, " << trueLabel << '\n';
+      os << "  j " << falseLabel << '\n';
+    }
     return;
   }
 
@@ -706,28 +718,46 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
         integerOperandRegister(os, function, instruction.operands[1], "t1");
     const std::string& predicate = opcode.substr(3);
     std::string mnemonic;
+    std::string inverseMnemonic;
     std::string first = lhs;
     std::string second = rhs;
     if (predicate == "icmp.eq") {
       mnemonic = "beq";
+      inverseMnemonic = "bne";
     } else if (predicate == "icmp.ne") {
       mnemonic = "bne";
+      inverseMnemonic = "beq";
     } else if (predicate == "icmp.slt") {
       mnemonic = "blt";
+      inverseMnemonic = "bge";
     } else if (predicate == "icmp.sle") {
       mnemonic = "bge";
+      inverseMnemonic = "blt";
       first = rhs;
       second = lhs;
     } else if (predicate == "icmp.sgt") {
       mnemonic = "blt";
+      inverseMnemonic = "bge";
       first = rhs;
       second = lhs;
     } else if (predicate == "icmp.sge") {
       mnemonic = "bge";
+      inverseMnemonic = "blt";
     }
-    os << "  " << mnemonic << ' ' << first << ", " << second << ", "
-       << labels.at(instruction.operands[2].text) << '\n';
-    os << "  j " << labels.at(instruction.operands[3].text) << '\n';
+    const std::string& trueLabel = labels.at(instruction.operands[2].text);
+    const std::string& falseLabel = labels.at(instruction.operands[3].text);
+    const bool allowFallthrough = fallthroughLabel != nullptr;
+    if (allowFallthrough && falseLabel == *fallthroughLabel) {
+      os << "  " << mnemonic << ' ' << first << ", " << second << ", " << trueLabel
+         << '\n';
+    } else if (allowFallthrough && trueLabel == *fallthroughLabel) {
+      os << "  " << inverseMnemonic << ' ' << first << ", " << second << ", "
+         << falseLabel << '\n';
+    } else {
+      os << "  " << mnemonic << ' ' << first << ", " << second << ", " << trueLabel
+         << '\n';
+      os << "  j " << falseLabel << '\n';
+    }
     return;
   }
 
@@ -1099,10 +1129,16 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
     emitInstruction(os, module, function, instruction, retLabel, labels);
   }
 
-  for (const auto& block : function.blocks) {
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
+    const auto& block = function.blocks[blockIndex];
     os << labels.at(block.name) << ":\n";
+    const std::string* fallthroughLabel = nullptr;
+    if (blockIndex + 1 < function.blocks.size()) {
+      fallthroughLabel = &labels.at(function.blocks[blockIndex + 1].name);
+    }
     for (const auto& instruction : block.instructions) {
-      emitInstruction(os, module, function, instruction, retLabel, labels);
+      emitInstruction(os, module, function, instruction, retLabel, labels,
+                      fallthroughLabel);
     }
   }
 
