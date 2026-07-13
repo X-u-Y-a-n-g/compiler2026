@@ -56,7 +56,7 @@ std::unordered_set<std::string> collectRecursiveFunctions(const Module& module) 
 }
 
 std::unordered_map<std::string, InlineCandidate> collectInlineCandidates(const Module& module) {
-  constexpr std::size_t kMaxInlineInstructions = 8;
+  constexpr std::size_t kMaxInlineInstructions = 16;
   std::unordered_map<std::string, InlineCandidate> candidates;
   const auto recursive = collectRecursiveFunctions(module);
 
