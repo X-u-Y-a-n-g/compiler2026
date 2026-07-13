@@ -26,6 +26,13 @@ CHANNEL_SUITES = {
 TOTAL_PATTERN = re.compile(
     r"TOTAL:\s*(\d+)H-(\d+)M-(\d+)S-(\d+)us", re.MULTILINE
 )
+ASM_INSTRUCTION_PATTERN = re.compile(r"^\s+([A-Za-z][A-Za-z0-9_.]*)\s*(.*?)\s*$")
+ASM_LOAD_MNEMONICS = {"lb", "lbu", "lh", "lhu", "lw", "lwu", "ld", "flw", "fld"}
+ASM_STORE_MNEMONICS = {"sb", "sh", "sw", "sd", "fsw", "fsd"}
+ASM_BRANCH_MNEMONICS = {
+    "beq", "bne", "blt", "bge", "bltu", "bgeu", "beqz", "bnez",
+    "blez", "bgez", "bltz", "bgtz", "j", "jr", "ret",
+}
 
 # The public SysY2022 runtime linked from the 2026 contest page. Keeping the
 # runtime here makes the evaluator self-contained and preserves the official
@@ -112,6 +119,20 @@ class CaseResult:
     run_wall_sec: float
     timer_sec: float | None
     total_wall_sec: float
+    asm_instruction_count: int
+    asm_load_count: int
+    asm_store_count: int
+    asm_stack_memory_count: int
+    asm_branch_count: int
+    asm_call_count: int
+    asm_move_count: int
+    asm_mul_count: int
+    asm_divrem_count: int
+    asm_vector_count: int
+    asm_max_loop_depth: int
+    asm_loop_weighted_instructions: int
+    asm_loop_weighted_memory: int
+    asm_loop_weighted_branches: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,6 +164,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-timeout", type=int, default=300)
     parser.add_argument("--linker", default="riscv64-linux-gnu-gcc")
     parser.add_argument("--runner", default="qemu-riscv64")
+    parser.add_argument(
+        "--baseline-results",
+        type=Path,
+        default=None,
+        help="上一版 results.tsv 或其目录；生成逐用例时间与汇编指标差异表",
+    )
     parser.add_argument(
         "--verify-output",
         action=argparse.BooleanOptionalAction,
@@ -278,6 +305,89 @@ def parse_total_seconds(stderr: bytes) -> float | None:
     return hours * 3600 + minutes * 60 + seconds + microseconds / 1_000_000
 
 
+def analyze_assembly(path: Path) -> dict[str, int]:
+    metric_names = (
+        "asm_instruction_count",
+        "asm_load_count",
+        "asm_store_count",
+        "asm_stack_memory_count",
+        "asm_branch_count",
+        "asm_call_count",
+        "asm_move_count",
+        "asm_mul_count",
+        "asm_divrem_count",
+        "asm_vector_count",
+        "asm_max_loop_depth",
+        "asm_loop_weighted_instructions",
+        "asm_loop_weighted_memory",
+        "asm_loop_weighted_branches",
+    )
+    metrics = {name: 0 for name in metric_names}
+    if not path.is_file():
+        return metrics
+
+    labels: dict[str, int] = {}
+    instructions: list[tuple[str, str]] = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        if line.endswith(":") and not line.startswith((" ", "\t")):
+            labels[line[:-1]] = len(instructions)
+            continue
+        match = ASM_INSTRUCTION_PATTERN.match(line)
+        if match is None or match.group(1).startswith("."):
+            continue
+        instructions.append((match.group(1).lower(), match.group(2)))
+
+    loop_intervals: list[tuple[int, int]] = []
+    for index, (mnemonic, operands) in enumerate(instructions):
+        if mnemonic not in ASM_BRANCH_MNEMONICS or not operands:
+            continue
+        target = operands.split(",")[-1].strip()
+        target_index = labels.get(target)
+        if target_index is not None and target_index <= index:
+            loop_intervals.append((target_index, index))
+
+    loop_depths = [0] * len(instructions)
+    for begin, end in loop_intervals:
+        for index in range(begin, end + 1):
+            loop_depths[index] += 1
+
+    metrics["asm_instruction_count"] = len(instructions)
+    for index, (mnemonic, operands) in enumerate(instructions):
+        is_load = mnemonic in ASM_LOAD_MNEMONICS
+        is_store = mnemonic in ASM_STORE_MNEMONICS
+        is_branch = mnemonic in ASM_BRANCH_MNEMONICS
+        weight = 10 ** min(loop_depths[index], 4)
+        metrics["asm_max_loop_depth"] = max(
+            metrics["asm_max_loop_depth"], loop_depths[index]
+        )
+        metrics["asm_loop_weighted_instructions"] += weight
+        if is_load:
+            metrics["asm_load_count"] += 1
+        if is_store:
+            metrics["asm_store_count"] += 1
+        if (is_load or is_store) and ("(sp)" in operands or "(s0)" in operands):
+            metrics["asm_stack_memory_count"] += 1
+        if is_load or is_store:
+            metrics["asm_loop_weighted_memory"] += weight
+        if is_branch:
+            metrics["asm_branch_count"] += 1
+            metrics["asm_loop_weighted_branches"] += weight
+        if mnemonic in {"call", "tail"}:
+            metrics["asm_call_count"] += 1
+        if mnemonic in {"mv", "fmv.s", "fmv.d"}:
+            metrics["asm_move_count"] += 1
+        if mnemonic.startswith("mul"):
+            metrics["asm_mul_count"] += 1
+        if mnemonic.startswith(("div", "rem")):
+            metrics["asm_divrem_count"] += 1
+        if mnemonic.startswith("v"):
+            metrics["asm_vector_count"] += 1
+    return metrics
+
+
 def save_failure(
     failure_dir: Path,
     source: Path,
@@ -332,6 +442,7 @@ def evaluate_case(
     compare_status = "SKIP"
     timer_status = "SKIP"
     timer_sec: float | None = None
+    assembly_metrics = analyze_assembly(assembly) if compile_status == "OK" else analyze_assembly(Path())
     expected = ""
     actual = ""
 
@@ -411,6 +522,7 @@ def evaluate_case(
         run_wall_sec=run_sec,
         timer_sec=timer_sec,
         total_wall_sec=compile_result.elapsed_sec + link_sec + run_sec,
+        **assembly_metrics,
     )
 
     if final_status != "AC":
@@ -456,6 +568,11 @@ def write_results(output_dir: Path, results: list[CaseResult]) -> None:
         "total_wall_time_sec": sum(result.total_wall_sec for result in results),
         "performance_timer_sum_sec": sum(performance_times),
         "performance_timer_case_count": len(performance_times),
+        "assembly_totals": {
+            name: sum(getattr(result, name) for result in results)
+            for name in CaseResult.__dataclass_fields__
+            if name.startswith("asm_")
+        },
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -473,6 +590,66 @@ def write_results(output_dir: Path, results: list[CaseResult]) -> None:
     (output_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n" + "\n".join(lines))
     print(f"结果目录: {output_dir}")
+
+
+def write_baseline_comparison(
+    output_dir: Path, results: list[CaseResult], requested: Path | None
+) -> None:
+    if requested is None:
+        return
+    baseline_path = requested.expanduser().resolve()
+    if baseline_path.is_dir():
+        baseline_path /= "results.tsv"
+    if not baseline_path.is_file():
+        raise SystemExit(f"错误: 找不到基线结果 {baseline_path}")
+
+    with baseline_path.open(newline="", encoding="utf-8") as handle:
+        baseline_rows = {
+            row["source"]: row for row in csv.DictReader(handle, delimiter="\t")
+        }
+    metric_names = [
+        "timer_sec",
+        *(
+            name
+            for name in CaseResult.__dataclass_fields__
+            if name.startswith("asm_")
+        ),
+    ]
+    fieldnames = ["channel", "suite", "case", "source"]
+    for name in metric_names:
+        fieldnames.extend((f"baseline_{name}", f"current_{name}", f"delta_{name}_pct"))
+
+    with (output_dir / "comparison.tsv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        for result in results:
+            baseline = baseline_rows.get(result.source)
+            if baseline is None:
+                continue
+            row: dict[str, object] = {
+                "channel": result.channel,
+                "suite": result.suite,
+                "case": result.case,
+                "source": result.source,
+            }
+            for name in metric_names:
+                baseline_text = baseline.get(name, "")
+                current_value = getattr(result, name)
+                row[f"baseline_{name}"] = baseline_text
+                row[f"current_{name}"] = "" if current_value is None else current_value
+                try:
+                    baseline_value = float(baseline_text)
+                    current_number = float(current_value) if current_value is not None else 0.0
+                    delta = (
+                        (current_number - baseline_value) / baseline_value * 100.0
+                        if baseline_value != 0.0
+                        else 0.0
+                    )
+                    row[f"delta_{name}_pct"] = f"{delta:.6f}"
+                except (TypeError, ValueError):
+                    row[f"delta_{name}_pct"] = ""
+            writer.writerow(row)
+    print(f"汇编/时间差异: {output_dir / 'comparison.tsv'}")
 
 
 def main() -> int:
@@ -523,6 +700,7 @@ def main() -> int:
         )
 
     write_results(output_dir, results)
+    write_baseline_comparison(output_dir, results, args.baseline_results)
     return 0 if all(result.final_status == "AC" for result in results) else 1
 
 

@@ -190,6 +190,7 @@ COMPILER_REGALLOC_STATS=1 /workspace/.docker-build/compiler input.sy -O1 -o outp
 4. 将标准输出和程序返回值与 `.out` 对拍。
 5. 性能通道从标准错误解析 `TOTAL: xH-xM-xS-xus`。
 6. 记录编译、链接、运行墙钟时间和程序内部计时。
+7. 解析生成汇编，记录指令、load/store、栈访存、分支、调用、搬运、乘除和向量指令数量，并用汇编回边估算热循环加权指令、访存与分支规模。
 
 ### 正确性入口
 
@@ -224,6 +225,16 @@ python3 scripts/eval.py performance --sample optimization_scheduling2.sy
 python3 scripts/eval.py performance --sample performance/matmul2.sy
 ```
 
+### 与上一版汇编逐用例对比
+
+```bash
+python3 scripts/eval.py performance \
+  --baseline-results .eval-2026/上一版/results.tsv \
+  --output-dir .eval-2026/当前方案
+```
+
+评测会额外生成 `comparison.tsv`，同时给出内部计时与全部 `asm_*` 指标的前后值和百分比变化。由于 QEMU 单次时间存在噪声，热点汇编指标用于确认提速是否来自动态指令、访存、分支或调用的真实减少。
+
 ### 超时和产物选项
 
 ```bash
@@ -243,7 +254,8 @@ python3 scripts/eval.py correctness --keep-artifacts
 
 主要结果文件：
 
-- `results.tsv`：逐用例状态及 `compile_sec`、`link_sec`、`run_wall_sec`、`timer_sec`、`total_wall_sec`。
+- `results.tsv`：逐用例状态、计时以及全部 `asm_*` 汇编质量指标。
+- `comparison.tsv`：指定 `--baseline-results` 时生成的逐用例计时与汇编差异。
 - `summary.txt`：适合终端查看的汇总。
 - `summary.json`：机器可读汇总。
 - `failures/`：失败用例的源码、stdout、stderr、期望输出和实际输出。
@@ -257,4 +269,5 @@ python3 scripts/eval.py correctness --keep-artifacts
 - 类型检查和语义分析仍有部分语言边界未完整覆盖。
 - IR 尚未形成完整 use-def 链，优化框架仍在演进。
 - 当前只维护完整的 `riscv64` 后端链路。
+- 当前比赛链接口径为 `rv64gc`，不包含 RISC-V Vector Extension，因此不能直接生成 RVV 指令；可继续采用标量循环展开、软件流水、访存合并和指令调度。
 - 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较。
