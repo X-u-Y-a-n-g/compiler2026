@@ -282,6 +282,9 @@ std::string integerOperandRegister(std::ostringstream& os, const MachineFunction
   if (operand.kind == MachineOperandKind::PhysicalRegister) {
     return operand.text;
   }
+  if (operand.kind == MachineOperandKind::ImmediateInt && operand.intValue == 0) {
+    return "x0";
+  }
   emitLoadIntegerOperand(os, function, operand, scratch);
   return scratch;
 }
