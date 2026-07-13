@@ -259,6 +259,38 @@ void emitLoadFloatOperand(std::ostringstream& os, const MachineFunction& functio
   }
 }
 
+std::string integerOperandRegister(std::ostringstream& os, const MachineFunction& function,
+                                   const MachineOperand& operand, const std::string& scratch) {
+  if (operand.kind == MachineOperandKind::PhysicalRegister) {
+    return operand.text;
+  }
+  emitLoadIntegerOperand(os, function, operand, scratch);
+  return scratch;
+}
+
+std::string floatOperandRegister(std::ostringstream& os, const MachineFunction& function,
+                                 const MachineOperand& operand, const std::string& scratch) {
+  if (operand.kind == MachineOperandKind::PhysicalRegister) {
+    return operand.text;
+  }
+  emitLoadFloatOperand(os, function, operand, scratch);
+  return scratch;
+}
+
+std::string resultRegister(const MachineOperand& result, const std::string& scratch) {
+  return result.kind == MachineOperandKind::PhysicalRegister ? result.text : scratch;
+}
+
+void emitStoreResult(std::ostringstream& os, const MachineFunction& function,
+                     const MachineOperand& result, const std::string& src);
+
+void commitResult(std::ostringstream& os, const MachineFunction& function,
+                  const MachineOperand& result, const std::string& reg) {
+  if (result.kind != MachineOperandKind::PhysicalRegister) {
+    emitStoreResult(os, function, result, reg);
+  }
+}
+
 struct ArgumentMove {
   std::string destination;
   MachineOperand source;
@@ -322,6 +354,10 @@ void emitParallelArgumentMoves(std::ostringstream& os, const MachineFunction& fu
 void emitLoadFromAddress(std::ostringstream& os, const MachineFunction& function,
                          const MachineOperand& address, const ValueType& valueType,
                          const std::string& dst) {
+  if (address.kind == MachineOperandKind::PhysicalRegister) {
+    emitLoadBaseOffset(os, loadMnemonic(valueType), dst, address.text, 0);
+    return;
+  }
   emitMaterializeAddress(os, function, address, "t0");
   emitLoadBaseOffset(os, loadMnemonic(valueType), dst, "t0", 0);
 }
@@ -329,6 +365,10 @@ void emitLoadFromAddress(std::ostringstream& os, const MachineFunction& function
 void emitStoreToAddress(std::ostringstream& os, const MachineFunction& function,
                         const MachineOperand& address, const ValueType& valueType,
                         const std::string& src) {
+  if (address.kind == MachineOperandKind::PhysicalRegister) {
+    emitStoreBaseOffset(os, storeMnemonic(valueType), src, address.text, 0);
+    return;
+  }
   emitMaterializeAddress(os, function, address, "t0");
   emitStoreBaseOffset(os, storeMnemonic(valueType), src, "t0", 0);
 }
@@ -395,42 +435,44 @@ void emitCopyInstruction(std::ostringstream& os, const MachineFunction& function
   emitStoreResult(os, function, result, "t0");
 }
 
-void emitIntegerCompare(std::ostringstream& os, const MachineInstruction& instruction) {
-  const auto& opcode = instruction.opcode;
+void emitIntegerCompare(std::ostringstream& os, const std::string& opcode,
+                        const std::string& dst, const std::string& lhs,
+                        const std::string& rhs) {
   if (opcode == "icmp.eq") {
-    os << "  xor t2, t0, t1\n";
-    os << "  seqz t2, t2\n";
+    os << "  xor " << dst << ", " << lhs << ", " << rhs << '\n';
+    os << "  seqz " << dst << ", " << dst << '\n';
   } else if (opcode == "icmp.ne") {
-    os << "  xor t2, t0, t1\n";
-    os << "  snez t2, t2\n";
+    os << "  xor " << dst << ", " << lhs << ", " << rhs << '\n';
+    os << "  snez " << dst << ", " << dst << '\n';
   } else if (opcode == "icmp.slt") {
-    os << "  slt t2, t0, t1\n";
+    os << "  slt " << dst << ", " << lhs << ", " << rhs << '\n';
   } else if (opcode == "icmp.sle") {
-    os << "  slt t2, t1, t0\n";
-    os << "  xori t2, t2, 1\n";
+    os << "  slt " << dst << ", " << rhs << ", " << lhs << '\n';
+    os << "  xori " << dst << ", " << dst << ", 1\n";
   } else if (opcode == "icmp.sgt") {
-    os << "  slt t2, t1, t0\n";
+    os << "  slt " << dst << ", " << rhs << ", " << lhs << '\n';
   } else if (opcode == "icmp.sge") {
-    os << "  slt t2, t0, t1\n";
-    os << "  xori t2, t2, 1\n";
+    os << "  slt " << dst << ", " << lhs << ", " << rhs << '\n';
+    os << "  xori " << dst << ", " << dst << ", 1\n";
   }
 }
 
-void emitFloatCompare(std::ostringstream& os, const MachineInstruction& instruction) {
-  const auto& opcode = instruction.opcode;
+void emitFloatCompare(std::ostringstream& os, const std::string& opcode,
+                      const std::string& dst, const std::string& lhs,
+                      const std::string& rhs) {
   if (opcode == "fcmp.oeq") {
-    os << "  feq.s t2, ft0, ft1\n";
+    os << "  feq.s " << dst << ", " << lhs << ", " << rhs << '\n';
   } else if (opcode == "fcmp.one") {
-    os << "  feq.s t2, ft0, ft1\n";
-    os << "  xori t2, t2, 1\n";
+    os << "  feq.s " << dst << ", " << lhs << ", " << rhs << '\n';
+    os << "  xori " << dst << ", " << dst << ", 1\n";
   } else if (opcode == "fcmp.olt") {
-    os << "  flt.s t2, ft0, ft1\n";
+    os << "  flt.s " << dst << ", " << lhs << ", " << rhs << '\n';
   } else if (opcode == "fcmp.ole") {
-    os << "  fle.s t2, ft0, ft1\n";
+    os << "  fle.s " << dst << ", " << lhs << ", " << rhs << '\n';
   } else if (opcode == "fcmp.ogt") {
-    os << "  flt.s t2, ft1, ft0\n";
+    os << "  flt.s " << dst << ", " << rhs << ", " << lhs << '\n';
   } else if (opcode == "fcmp.oge") {
-    os << "  fle.s t2, ft1, ft0\n";
+    os << "  fle.s " << dst << ", " << rhs << ", " << lhs << '\n';
   }
 }
 
@@ -548,11 +590,13 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   if (opcode == "stack.param.load") {
     const auto offset = instruction.operands[0].intValue;
     if (instruction.result.type.isFloat()) {
-      emitLoadBaseOffset(os, "flw", "ft0", "s0", offset);
-      emitStoreResult(os, function, instruction.result, "ft0");
+      const std::string result = resultRegister(instruction.result, "ft0");
+      emitLoadBaseOffset(os, "flw", result, "s0", offset);
+      commitResult(os, function, instruction.result, result);
     } else {
-      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), "t0", "s0", offset);
-      emitStoreResult(os, function, instruction.result, "t0");
+      const std::string result = resultRegister(instruction.result, "t0");
+      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), result, "s0", offset);
+      commitResult(os, function, instruction.result, result);
     }
     return;
   }
@@ -572,20 +616,20 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const auto& source = instruction.operands[0];
     const auto& frame = instruction.operands[1];
     if (source.type.isFloat()) {
-      emitLoadFloatOperand(os, function, source, "ft0");
+      const std::string sourceReg = floatOperandRegister(os, function, source, "ft0");
       if (frame.kind == MachineOperandKind::FrameIndex) {
-        emitStoreBaseOffset(os, storeMnemonic(source.type), "ft0", "s0",
+        emitStoreBaseOffset(os, storeMnemonic(source.type), sourceReg, "s0",
                             -stackObject(function, frame.index).offset);
       } else {
-        emitStoreStackSlot(os, function, frame.index, "ft0", source.type);
+        emitStoreStackSlot(os, function, frame.index, sourceReg, source.type);
       }
     } else {
-      emitLoadIntegerOperand(os, function, source, "t0");
+      const std::string sourceReg = integerOperandRegister(os, function, source, "t0");
       if (frame.kind == MachineOperandKind::FrameIndex) {
-        emitStoreBaseOffset(os, storeMnemonic(source.type), "t0", "s0",
+        emitStoreBaseOffset(os, storeMnemonic(source.type), sourceReg, "s0",
                             -stackObject(function, frame.index).offset);
       } else {
-        emitStoreStackSlot(os, function, frame.index, "t0", source.type);
+        emitStoreStackSlot(os, function, frame.index, sourceReg, source.type);
       }
     }
     return;
@@ -593,11 +637,15 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "load") {
     if (instruction.result.type.isFloat()) {
-      emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type, "ft0");
-      emitStoreResult(os, function, instruction.result, "ft0");
+      const std::string resultReg = resultRegister(instruction.result, "ft0");
+      emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type,
+                          resultReg);
+      commitResult(os, function, instruction.result, resultReg);
     } else {
-      emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type, "t0");
-      emitStoreResult(os, function, instruction.result, "t0");
+      const std::string resultReg = resultRegister(instruction.result, "t0");
+      emitLoadFromAddress(os, function, instruction.operands[0], instruction.result.type,
+                          resultReg);
+      commitResult(os, function, instruction.result, resultReg);
     }
     return;
   }
@@ -611,11 +659,11 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const auto& value = instruction.operands[0];
     const auto& address = instruction.operands[1];
     if (value.type.isFloat()) {
-      emitLoadFloatOperand(os, function, value, "ft0");
-      emitStoreToAddress(os, function, address, value.type, "ft0");
+      const std::string valueReg = floatOperandRegister(os, function, value, "ft0");
+      emitStoreToAddress(os, function, address, value.type, valueReg);
     } else {
-      emitLoadIntegerOperand(os, function, value, "t1");
-      emitStoreToAddress(os, function, address, value.type, "t1");
+      const std::string valueReg = integerOperandRegister(os, function, value, "t1");
+      emitStoreToAddress(os, function, address, value.type, valueReg);
     }
     return;
   }
@@ -625,8 +673,10 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       os << "  j " << labels.at(instruction.operands[0].text) << '\n';
       return;
     }
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
-    os << "  bne t0, x0, " << labels.at(instruction.operands[1].text) << '\n';
+    const std::string condition =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    os << "  bne " << condition << ", x0, " << labels.at(instruction.operands[1].text)
+       << '\n';
     os << "  j " << labels.at(instruction.operands[2].text) << '\n';
     return;
   }
@@ -687,156 +737,193 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "gep" || opcode == "gep.linear" || opcode == "getelementptr" ||
       opcode == "getelementptr.linear") {
-    emitMaterializeAddress(os, function, instruction.operands[0], "t0");
+    const auto& baseOperand = instruction.operands[0];
+    const std::string base =
+        baseOperand.kind == MachineOperandKind::PhysicalRegister
+            ? baseOperand.text
+            : (emitMaterializeAddress(os, function, baseOperand, "t0"), std::string("t0"));
     const auto& index = instruction.operands[1];
     const auto scale = instruction.operands[2].intValue;
+    const std::string result = resultRegister(instruction.result, "t2");
 
     if (index.kind == MachineOperandKind::ImmediateInt) {
       const long long offset = index.intValue * scale;
       if (offset == 0) {
-        emitStoreResult(os, function, instruction.result, "t0");
+        if (result != base) {
+          os << "  mv " << result << ", " << base << '\n';
+        }
       } else {
-        emitAddImmediate(os, "t2", "t0", offset, "t1");
-        emitStoreResult(os, function, instruction.result, "t2");
+        emitAddImmediate(os, result, base, offset, "t1");
       }
+      commitResult(os, function, instruction.result, result);
       return;
     }
 
-    emitLoadIntegerOperand(os, function, index, "t1");
+    const std::string indexReg = integerOperandRegister(os, function, index, "t1");
     if (scale == 0) {
-      emitStoreResult(os, function, instruction.result, "t0");
+      if (result != base) {
+        os << "  mv " << result << ", " << base << '\n';
+      }
+      commitResult(os, function, instruction.result, result);
       return;
     }
     if (scale == 1) {
-      os << "  add t2, t0, t1\n";
-      emitStoreResult(os, function, instruction.result, "t2");
+      os << "  add " << result << ", " << base << ", " << indexReg << '\n';
+      commitResult(os, function, instruction.result, result);
       return;
     }
     if (isPowerOfTwo(scale)) {
-      os << "  slli t1, t1, " << log2PowerOfTwo(scale) << '\n';
-      os << "  add t2, t0, t1\n";
-      emitStoreResult(os, function, instruction.result, "t2");
+      os << "  slli t1, " << indexReg << ", " << log2PowerOfTwo(scale) << '\n';
+      os << "  add " << result << ", " << base << ", t1\n";
+      commitResult(os, function, instruction.result, result);
       return;
     }
 
     emitLi(os, "t2", scale);
-    os << "  mul t1, t1, t2\n";
-    os << "  add t2, t0, t1\n";
-    emitStoreResult(os, function, instruction.result, "t2");
+    os << "  mul t1, " << indexReg << ", t2\n";
+    os << "  add " << result << ", " << base << ", t1\n";
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "neg") {
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
-    os << "  neg t1, t0\n";
-    emitStoreResult(os, function, instruction.result, "t1");
+    const std::string source =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string result = resultRegister(instruction.result, "t1");
+    os << "  " << (instruction.result.type.isInt32() ? "negw " : "neg ") << result << ", "
+       << source << '\n';
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "fneg") {
-    emitLoadFloatOperand(os, function, instruction.operands[0], "ft0");
-    os << "  fneg.s ft1, ft0\n";
-    emitStoreResult(os, function, instruction.result, "ft1");
+    const std::string source =
+        floatOperandRegister(os, function, instruction.operands[0], "ft0");
+    const std::string result = resultRegister(instruction.result, "ft1");
+    os << "  fneg.s " << result << ", " << source << '\n';
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or") {
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
-    emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
+    const std::string lhs =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string rhs =
+        integerOperandRegister(os, function, instruction.operands[1], "t1");
+    const std::string result = resultRegister(instruction.result, "t2");
+    const bool wordResult = instruction.result.type.isInt32();
     if (opcode == "add") {
-      os << "  add t2, t0, t1\n";
+      os << "  " << (wordResult ? "addw " : "add ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     } else if (opcode == "sub") {
-      os << "  sub t2, t0, t1\n";
+      os << "  " << (wordResult ? "subw " : "sub ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     } else if (opcode == "mul") {
-      os << "  mul t2, t0, t1\n";
+      os << "  " << (wordResult ? "mulw " : "mul ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     } else if (opcode == "div" || opcode == "sdiv") {
-      os << "  div t2, t0, t1\n";
+      os << "  " << (wordResult ? "divw " : "div ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     } else if (opcode == "mod" || opcode == "srem") {
-      os << "  rem t2, t0, t1\n";
+      os << "  " << (wordResult ? "remw " : "rem ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     } else if (opcode == "and") {
-      os << "  and t2, t0, t1\n";
+      os << "  and " << result << ", " << lhs << ", " << rhs << '\n';
     } else if (opcode == "or") {
-      os << "  or t2, t0, t1\n";
+      os << "  or " << result << ", " << lhs << ", " << rhs << '\n';
     }
     if (instruction.result.type.isBool()) {
-      os << "  andi t2, t2, 1\n";
-    } else if (instruction.result.type.isInt32()) {
-      os << "  sext.w t2, t2\n";
+      os << "  andi " << result << ", " << result << ", 1\n";
+    } else if (wordResult && (opcode == "and" || opcode == "or")) {
+      os << "  sext.w " << result << ", " << result << '\n';
     }
-    emitStoreResult(os, function, instruction.result, "t2");
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" || opcode == "fdiv") {
-    emitLoadFloatOperand(os, function, instruction.operands[0], "ft0");
-    emitLoadFloatOperand(os, function, instruction.operands[1], "ft1");
+    const std::string lhs =
+        floatOperandRegister(os, function, instruction.operands[0], "ft0");
+    const std::string rhs =
+        floatOperandRegister(os, function, instruction.operands[1], "ft1");
+    const std::string result = resultRegister(instruction.result, "ft2");
     if (opcode == "fadd") {
-      os << "  fadd.s ft2, ft0, ft1\n";
+      os << "  fadd.s " << result << ", " << lhs << ", " << rhs << '\n';
     } else if (opcode == "fsub") {
-      os << "  fsub.s ft2, ft0, ft1\n";
+      os << "  fsub.s " << result << ", " << lhs << ", " << rhs << '\n';
     } else if (opcode == "fmul") {
-      os << "  fmul.s ft2, ft0, ft1\n";
+      os << "  fmul.s " << result << ", " << lhs << ", " << rhs << '\n';
     } else {
-      os << "  fdiv.s ft2, ft0, ft1\n";
+      os << "  fdiv.s " << result << ", " << lhs << ", " << rhs << '\n';
     }
-    emitStoreResult(os, function, instruction.result, "ft2");
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode.rfind("icmp.", 0) == 0) {
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
-    emitLoadIntegerOperand(os, function, instruction.operands[1], "t1");
-    emitIntegerCompare(os, instruction);
-    emitStoreResult(os, function, instruction.result, "t2");
+    const std::string lhs =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string rhs =
+        integerOperandRegister(os, function, instruction.operands[1], "t1");
+    const std::string result = resultRegister(instruction.result, "t2");
+    emitIntegerCompare(os, opcode, result, lhs, rhs);
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode.rfind("fcmp.", 0) == 0) {
-    emitLoadFloatOperand(os, function, instruction.operands[0], "ft0");
-    emitLoadFloatOperand(os, function, instruction.operands[1], "ft1");
-    emitFloatCompare(os, instruction);
-    emitStoreResult(os, function, instruction.result, "t2");
+    const std::string lhs =
+        floatOperandRegister(os, function, instruction.operands[0], "ft0");
+    const std::string rhs =
+        floatOperandRegister(os, function, instruction.operands[1], "ft1");
+    const std::string result = resultRegister(instruction.result, "t2");
+    emitFloatCompare(os, opcode, result, lhs, rhs);
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
+    const std::string source =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string result = resultRegister(instruction.result, "t1");
     if (instruction.result.type.isBool()) {
-      os << "  andi t1, t0, 1\n";
+      os << "  andi " << result << ", " << source << ", 1\n";
     } else if (instruction.result.type.isInt32()) {
-      os << "  sext.w t1, t0\n";
-    } else {
-      os << "  mv t1, t0\n";
+      os << "  sext.w " << result << ", " << source << '\n';
+    } else if (result != source) {
+      os << "  mv " << result << ", " << source << '\n';
     }
-    emitStoreResult(os, function, instruction.result, "t1");
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "sitofp" || opcode == "uitofp") {
-    emitLoadIntegerOperand(os, function, instruction.operands[0], "t0");
+    const std::string source =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string result = resultRegister(instruction.result, "ft0");
     if (instruction.operands[0].type.isInt64() || instruction.operands[0].type.isPointer()) {
-      os << "  fcvt.s.l ft0, t0\n";
+      os << "  fcvt.s.l " << result << ", " << source << '\n';
     } else {
-      os << "  fcvt.s.w ft0, t0\n";
+      os << "  fcvt.s.w " << result << ", " << source << '\n';
     }
-    emitStoreResult(os, function, instruction.result, "ft0");
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
   if (opcode == "fptosi") {
-    emitLoadFloatOperand(os, function, instruction.operands[0], "ft0");
+    const std::string source =
+        floatOperandRegister(os, function, instruction.operands[0], "ft0");
+    const std::string result = resultRegister(instruction.result, "t0");
     if (instruction.result.type.isInt64()) {
-      os << "  fcvt.l.s t0, ft0, rtz\n";
+      os << "  fcvt.l.s " << result << ", " << source << ", rtz\n";
     } else {
-      os << "  fcvt.w.s t0, ft0, rtz\n";
+      os << "  fcvt.w.s " << result << ", " << source << ", rtz\n";
       if (instruction.result.type.isBool()) {
-        os << "  andi t0, t0, 1\n";
-      } else {
-        os << "  sext.w t0, t0\n";
+        os << "  andi " << result << ", " << result << ", 1\n";
       }
     }
-    emitStoreResult(os, function, instruction.result, "t0");
+    commitResult(os, function, instruction.result, result);
     return;
   }
 
