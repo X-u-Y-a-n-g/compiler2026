@@ -26,6 +26,7 @@
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
+#include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
@@ -158,6 +159,9 @@ int Pipeline::execute(const CompilerInvocation& invocation,
   if (invocation.options().optLevel > 0) {
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::GlobalScalarLocalizationPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(

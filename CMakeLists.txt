@@ -21,6 +21,7 @@ add_library(compiler_lib
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
+  src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp
