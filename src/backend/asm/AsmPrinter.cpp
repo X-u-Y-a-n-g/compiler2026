@@ -832,6 +832,17 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const bool isDivision = opcode == "div" || opcode == "sdiv";
     const bool isRemainder = opcode == "mod" || opcode == "srem";
     const auto& rhsOperand = instruction.operands[1];
+    if ((opcode == "and" || opcode == "or") &&
+        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+        rhsOperand.intValue >= 0 && fitsSigned12(rhsOperand.intValue)) {
+      os << "  " << (opcode == "and" ? "andi " : "ori ") << result << ", " << lhs
+         << ", " << rhsOperand.intValue << '\n';
+      if (instruction.result.type.isBool()) {
+        os << "  andi " << result << ", " << result << ", 1\n";
+      }
+      commitResult(os, function, instruction.result, result);
+      return;
+    }
     std::uint64_t divisorMagnitude = 0;
     if (wordResult && (isDivision || isRemainder) &&
         rhsOperand.kind == MachineOperandKind::ImmediateInt &&
