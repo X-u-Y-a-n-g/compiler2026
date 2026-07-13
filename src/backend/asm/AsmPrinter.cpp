@@ -903,6 +903,25 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     if (wordResult && isRemainder &&
         rhsOperand.kind == MachineOperandKind::ImmediateInt &&
         rhsOperand.intValue == 65535) {
+      emitLi(os, "t1", 65535);
+      os << "  blt " << lhs << ", x0, 1f\n";
+      os << "  blt " << lhs << ", t1, 3f\n";
+      emitLi(os, "t2", 131070);
+      os << "  blt " << lhs << ", t2, 2f\n";
+      os << "  j 4f\n";
+      os << "1:\n";
+      emitLi(os, "t2", -65535);
+      os << "  blt t2, " << lhs << ", 3f\n";
+      os << "  j 4f\n";
+      os << "2:\n";
+      os << "  subw " << result << ", " << lhs << ", t1\n";
+      os << "  j 5f\n";
+      os << "3:\n";
+      if (result != lhs) {
+        os << "  mv " << result << ", " << lhs << '\n';
+      }
+      os << "  j 5f\n";
+      os << "4:\n";
       emitLi(os, "t1", -2147450879LL);
       os << "  mul t1, " << lhs << ", t1\n";
       os << "  srli t1, t1, 32\n";
@@ -913,6 +932,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       os << "  slli t2, t1, 16\n";
       os << "  add t1, " << lhs << ", t1\n";
       os << "  subw " << result << ", t1, t2\n";
+      os << "5:\n";
       commitResult(os, function, instruction.result, result);
       return;
     }
