@@ -699,6 +699,38 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     return;
   }
 
+  if (opcode.rfind("br.icmp.", 0) == 0) {
+    const std::string lhs =
+        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const std::string rhs =
+        integerOperandRegister(os, function, instruction.operands[1], "t1");
+    const std::string& predicate = opcode.substr(3);
+    std::string mnemonic;
+    std::string first = lhs;
+    std::string second = rhs;
+    if (predicate == "icmp.eq") {
+      mnemonic = "beq";
+    } else if (predicate == "icmp.ne") {
+      mnemonic = "bne";
+    } else if (predicate == "icmp.slt") {
+      mnemonic = "blt";
+    } else if (predicate == "icmp.sle") {
+      mnemonic = "bge";
+      first = rhs;
+      second = lhs;
+    } else if (predicate == "icmp.sgt") {
+      mnemonic = "blt";
+      first = rhs;
+      second = lhs;
+    } else if (predicate == "icmp.sge") {
+      mnemonic = "bge";
+    }
+    os << "  " << mnemonic << ' ' << first << ", " << second << ", "
+       << labels.at(instruction.operands[2].text) << '\n';
+    os << "  j " << labels.at(instruction.operands[3].text) << '\n';
+    return;
+  }
+
   if (opcode == "ret") {
     if (!instruction.operands.empty()) {
       if (instruction.operands[0].type.isFloat()) {

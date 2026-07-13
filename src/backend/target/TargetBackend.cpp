@@ -4,6 +4,7 @@
 
 #include "../../../include/compiler/backend/asm/AsmPrinter.h"
 #include "../../../include/compiler/backend/frame/FrameLowering.h"
+#include "../../../include/compiler/backend/opt/CompareBranchFusion.h"
 #include "../../../include/compiler/backend/opt/PhiElimination.h"
 #include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
 #include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
@@ -22,6 +23,7 @@ class Riscv64Backend final : public BackendTarget {
     const auto target = TargetInfo::fromName("riscv64");
     auto machineModule = loweringFor(target).lowerModule(module, target);
     compiler::backend::opt::PhiElimination{}.run(machineModule);
+    compiler::backend::opt::CompareBranchFusion{}.run(machineModule);
     compiler::backend::opt::StackObjectPromotion{}.run(machineModule);
     compiler::backend::regalloc::RegisterAllocator{}.allocate(machineModule);
     compiler::backend::frame::FrameLowering{}.lower(machineModule);

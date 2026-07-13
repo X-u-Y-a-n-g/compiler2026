@@ -39,7 +39,9 @@ bool InstrAdapter::isUnconditionalBranch(const MachineInstruction& instruction) 
 }
 
 bool InstrAdapter::isConditionalBranch(const MachineInstruction& instruction) const {
-  return instruction.opcode == "br" && instruction.operands.size() == 3;
+  return (instruction.opcode == "br" && instruction.operands.size() == 3) ||
+         (instruction.opcode.rfind("br.icmp.", 0) == 0 &&
+          instruction.operands.size() == 4);
 }
 
 std::vector<std::string> InstrAdapter::branchTargets(const MachineInstruction& instruction) const {
@@ -47,8 +49,9 @@ std::vector<std::string> InstrAdapter::branchTargets(const MachineInstruction& i
   if (isUnconditionalBranch(instruction)) {
     targets.push_back(instruction.operands[0].text);
   } else if (isConditionalBranch(instruction)) {
-    targets.push_back(instruction.operands[1].text);
-    targets.push_back(instruction.operands[2].text);
+    const std::size_t targetIndex = instruction.opcode == "br" ? 1 : 2;
+    targets.push_back(instruction.operands[targetIndex].text);
+    targets.push_back(instruction.operands[targetIndex + 1].text);
   }
   return targets;
 }
