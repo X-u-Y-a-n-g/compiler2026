@@ -906,7 +906,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" ||
-      opcode == "xor") {
+      opcode == "xor" || opcode == "shl" || opcode == "ashr") {
     const std::string lhs =
         integerOperandRegister(os, function, instruction.operands[0], "t0");
     const std::string result = resultRegister(instruction.result, "t2");
@@ -1026,10 +1026,18 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       os << "  or " << result << ", " << lhs << ", " << rhs << '\n';
     } else if (opcode == "xor") {
       os << "  xor " << result << ", " << lhs << ", " << rhs << '\n';
+    } else if (opcode == "shl") {
+      os << "  " << (wordResult ? "sllw " : "sll ") << result << ", " << lhs << ", " << rhs
+         << '\n';
+    } else if (opcode == "ashr") {
+      os << "  " << (wordResult ? "sraw " : "sra ") << result << ", " << lhs << ", " << rhs
+         << '\n';
     }
     if (instruction.result.type.isBool()) {
       os << "  andi " << result << ", " << result << ", 1\n";
-    } else if (wordResult && (opcode == "and" || opcode == "or" || opcode == "xor")) {
+    } else if (wordResult &&
+               (opcode == "and" || opcode == "or" || opcode == "xor" || opcode == "shl" ||
+                opcode == "ashr")) {
       os << "  sext.w " << result << ", " << result << '\n';
     }
     commitResult(os, function, instruction.result, result);

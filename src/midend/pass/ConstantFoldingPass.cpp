@@ -52,6 +52,13 @@ std::optional<std::string> foldIntegerBinary(const std::string& opcode,
   if (opcode == "xor") {
     return detail::formatIntegerLiteral(lhs ^ rhs);
   }
+  if (opcode == "shl" && rhs >= 0 && rhs < 32) {
+    return detail::formatIntegerLiteral(
+        static_cast<int>(static_cast<unsigned int>(lhs) << static_cast<unsigned>(rhs)));
+  }
+  if (opcode == "ashr" && rhs >= 0 && rhs < 32) {
+    return detail::formatIntegerLiteral(static_cast<int>(lhs) >> static_cast<unsigned>(rhs));
+  }
   return std::nullopt;
 }
 
@@ -210,7 +217,7 @@ std::optional<std::string> foldInstruction(const Instruction& instruction) {
 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
       opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
-      opcode == "or" || opcode == "xor") {
+      opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr") {
     if (auto folded = foldIntegerBinary(opcode, operands); folded.has_value()) {
       return folded;
     }

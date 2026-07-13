@@ -27,6 +27,7 @@ add_library(compiler_lib
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
+  src/midend/pass/PowerOfTwoDispatchPass.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp

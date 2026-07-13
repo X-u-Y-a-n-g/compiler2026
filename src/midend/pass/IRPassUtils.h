@@ -119,7 +119,8 @@ inline bool isSideEffectFree(const compiler::ir::core::Instruction& instruction)
          opcode == "sext" || opcode == "trunc" || opcode == "sitofp" || opcode == "uitofp" ||
          opcode == "fptosi" || opcode == "add" || opcode == "sub" || opcode == "mul" ||
          opcode == "div" || opcode == "mod" || opcode == "sdiv" || opcode == "srem" ||
-         opcode == "and" || opcode == "or" || opcode == "xor" || opcode == "select" || opcode == "fadd" || opcode == "fsub" ||
+         opcode == "and" || opcode == "or" || opcode == "xor" || opcode == "shl" ||
+         opcode == "ashr" || opcode == "select" || opcode == "fadd" || opcode == "fsub" ||
          opcode == "fmul" || opcode == "fdiv" || opcode.rfind("icmp.", 0) == 0 ||
          opcode.rfind("fcmp.", 0) == 0;
 }
