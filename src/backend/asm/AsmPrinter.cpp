@@ -36,6 +36,24 @@ bool isPowerOfTwo(std::int64_t value) {
   return (unsignedValue & (unsignedValue - 1U)) == 0;
 }
 
+bool powerOfTwoMagnitude(std::int64_t value, std::uint64_t& magnitude) {
+  if (value == 0) {
+    return false;
+  }
+  magnitude = value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                        : static_cast<std::uint64_t>(value);
+  return (magnitude & (magnitude - 1U)) == 0;
+}
+
+unsigned log2PowerOfTwoMagnitude(std::uint64_t value) {
+  unsigned shift = 0;
+  while (value > 1U) {
+    value >>= 1U;
+    ++shift;
+  }
+  return shift;
+}
+
 unsigned log2PowerOfTwo(std::int64_t value) {
   unsigned shift = 0;
   auto unsignedValue = static_cast<std::uint64_t>(value);
@@ -809,10 +827,42 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or") {
     const std::string lhs =
         integerOperandRegister(os, function, instruction.operands[0], "t0");
-    const std::string rhs =
-        integerOperandRegister(os, function, instruction.operands[1], "t1");
     const std::string result = resultRegister(instruction.result, "t2");
     const bool wordResult = instruction.result.type.isInt32();
+    const bool isDivision = opcode == "div" || opcode == "sdiv";
+    const bool isRemainder = opcode == "mod" || opcode == "srem";
+    const auto& rhsOperand = instruction.operands[1];
+    std::uint64_t divisorMagnitude = 0;
+    if (wordResult && (isDivision || isRemainder) &&
+        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+        rhsOperand.intValue >= INT32_MIN && rhsOperand.intValue <= INT32_MAX &&
+        powerOfTwoMagnitude(rhsOperand.intValue, divisorMagnitude)) {
+      const unsigned shift = log2PowerOfTwoMagnitude(divisorMagnitude);
+      if (shift == 0) {
+        if (isRemainder) {
+          emitLi(os, result, 0);
+        } else if (rhsOperand.intValue < 0) {
+          os << "  negw " << result << ", " << lhs << '\n';
+        } else if (result != lhs) {
+          os << "  mv " << result << ", " << lhs << '\n';
+        }
+      } else {
+        os << "  sraiw t1, " << lhs << ", 31\n";
+        os << "  srliw t1, t1, " << 32U - shift << '\n';
+        const std::string quotient = isRemainder ? "t2" : result;
+        os << "  addw " << quotient << ", " << lhs << ", t1\n";
+        os << "  sraiw " << quotient << ", " << quotient << ", " << shift << '\n';
+        if (isRemainder) {
+          os << "  slli t1, t2, " << shift << '\n';
+          os << "  subw " << result << ", " << lhs << ", t1\n";
+        } else if (rhsOperand.intValue < 0) {
+          os << "  negw " << result << ", " << result << '\n';
+        }
+      }
+      commitResult(os, function, instruction.result, result);
+      return;
+    }
+    const std::string rhs = integerOperandRegister(os, function, rhsOperand, "t1");
     if (opcode == "add") {
       os << "  " << (wordResult ? "addw " : "add ") << result << ", " << lhs << ", " << rhs
          << '\n';
@@ -822,10 +872,10 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     } else if (opcode == "mul") {
       os << "  " << (wordResult ? "mulw " : "mul ") << result << ", " << lhs << ", " << rhs
          << '\n';
-    } else if (opcode == "div" || opcode == "sdiv") {
+    } else if (isDivision) {
       os << "  " << (wordResult ? "divw " : "div ") << result << ", " << lhs << ", " << rhs
          << '\n';
-    } else if (opcode == "mod" || opcode == "srem") {
+    } else if (isRemainder) {
       os << "  " << (wordResult ? "remw " : "rem ") << result << ", " << lhs << ", " << rhs
          << '\n';
     } else if (opcode == "and") {
