@@ -144,6 +144,61 @@ void add(BasicBlock &block, std::string opcode,
       Instruction{std::move(opcode), std::move(operands), std::move(result)});
 }
 
+void buildBlockedArrayStep(BasicBlock &block, const std::string &prefix,
+                           const std::string &k, const std::string &sum0,
+                           const std::string &sum1, const std::string &sum2,
+                           const std::string &sum3,
+                           const std::string &matrixA,
+                           const std::string &successor) {
+  add(block, "getelementptr", {"%c.row", k},
+      prefix + ".coefficient.address");
+  add(block, "load", {"int", prefix + ".coefficient.address"},
+      prefix + ".coefficient");
+  add(block, "getelementptr", {matrixA, k}, prefix + ".source.row");
+  add(block, "getelementptr", {prefix + ".source.row", "%j"},
+      prefix + ".source0.address");
+  add(block, "getelementptr", {prefix + ".source.row", "%j1"},
+      prefix + ".source1.address");
+  add(block, "getelementptr", {prefix + ".source.row", "%j2"},
+      prefix + ".source2.address");
+  add(block, "getelementptr", {prefix + ".source.row", "%j3"},
+      prefix + ".source3.address");
+  for (int column = 0; column < 4; ++column) {
+    const std::string suffix = std::to_string(column);
+    add(block, "load", {"int", prefix + ".source" + suffix + ".address"},
+        prefix + ".source" + suffix);
+    add(block, "mul",
+        {prefix + ".coefficient", prefix + ".source" + suffix},
+        prefix + ".product" + suffix);
+  }
+  add(block, "add", {sum0, prefix + ".product0"}, prefix + ".sum0.next");
+  add(block, "add", {sum1, prefix + ".product1"}, prefix + ".sum1.next");
+  add(block, "add", {sum2, prefix + ".product2"}, prefix + ".sum2.next");
+  add(block, "add", {sum3, prefix + ".product3"}, prefix + ".sum3.next");
+  add(block, "add", {k, "1"}, prefix + ".k.next");
+  add(block, "br", {successor});
+}
+
+void buildScalarArrayStep(BasicBlock &block, const std::string &prefix,
+                          const std::string &k, const std::string &sum,
+                          const std::string &matrixA,
+                          const std::string &successor) {
+  add(block, "getelementptr", {"%c.row", k},
+      prefix + ".coefficient.address");
+  add(block, "load", {"int", prefix + ".coefficient.address"},
+      prefix + ".coefficient");
+  add(block, "getelementptr", {matrixA, k}, prefix + ".source.row");
+  add(block, "getelementptr", {prefix + ".source.row", "%scalar.j"},
+      prefix + ".source.address");
+  add(block, "load", {"int", prefix + ".source.address"},
+      prefix + ".source");
+  add(block, "mul", {prefix + ".coefficient", prefix + ".source"},
+      prefix + ".product");
+  add(block, "add", {sum, prefix + ".product"}, prefix + ".sum.next");
+  add(block, "add", {k, "1"}, prefix + ".k.next");
+  add(block, "br", {successor});
+}
+
 Function buildOptimizedMultiply(const std::string &name,
                                 const std::string &temp,
                                 const std::string &matrixA,
@@ -185,80 +240,90 @@ Function buildOptimizedMultiply(const std::string &name,
   add(blockHeader, "add", {"%j", "1"}, "%j1");
   add(blockHeader, "add", {"%j", "2"}, "%j2");
   add(blockHeader, "add", {"%j", "3"}, "%j3");
-  add(blockHeader, "br", {"%block.cond", "block.k.header", "scalar.header"});
+  add(blockHeader, "br", {"%block.cond", "block.pre.header", "scalar.header"});
 
-  BasicBlock blockKHeader{"block.k.header"};
-  add(blockKHeader, "phi",
-      {"int", "0", "block.header", "%k.next", "block.merge"}, "%k");
-  add(blockKHeader, "phi",
-      {"int", "0", "block.header", "%sum0.next", "block.merge"}, "%sum0");
-  add(blockKHeader, "phi",
-      {"int", "0", "block.header", "%sum1.next", "block.merge"}, "%sum1");
-  add(blockKHeader, "phi",
-      {"int", "0", "block.header", "%sum2.next", "block.merge"}, "%sum2");
-  add(blockKHeader, "phi",
-      {"int", "0", "block.header", "%sum3.next", "block.merge"}, "%sum3");
-  add(blockKHeader, "icmp.slt", {"%k", "%n"}, "%k.cond");
-  add(blockKHeader, "br", {"%k.cond", "block.dispatch", "block.store"});
+  BasicBlock blockPreHeader{"block.pre.header"};
+  add(blockPreHeader, "phi",
+      {"int", "0", "block.header", "%block.pre.k.next", "block.pre.body"},
+      "%block.pre.k");
+  add(blockPreHeader, "phi",
+      {"int", "0", "block.header", "%block.pre.sum0.next", "block.pre.body"},
+      "%block.pre.sum0");
+  add(blockPreHeader, "phi",
+      {"int", "0", "block.header", "%block.pre.sum1.next", "block.pre.body"},
+      "%block.pre.sum1");
+  add(blockPreHeader, "phi",
+      {"int", "0", "block.header", "%block.pre.sum2.next", "block.pre.body"},
+      "%block.pre.sum2");
+  add(blockPreHeader, "phi",
+      {"int", "0", "block.header", "%block.pre.sum3.next", "block.pre.body"},
+      "%block.pre.sum3");
+  add(blockPreHeader, "icmp.slt", {"%block.pre.k", "%i"},
+      "%block.pre.cond");
+  add(blockPreHeader, "br",
+      {"%block.pre.cond", "block.pre.body", "block.temp"});
 
-  BasicBlock blockDispatch{"block.dispatch"};
-  add(blockDispatch, "getelementptr", {"%c.row", "%k"}, "%coefficient.address");
-  add(blockDispatch, "load", {"int", "%coefficient.address"}, "%coefficient");
-  add(blockDispatch, "icmp.eq", {"%k", "%i"}, "%use.temp");
-  add(blockDispatch, "br", {"%use.temp", "block.temp", "block.array"});
+  BasicBlock blockPreBody{"block.pre.body"};
+  buildBlockedArrayStep(blockPreBody, "%block.pre", "%block.pre.k",
+                        "%block.pre.sum0", "%block.pre.sum1",
+                        "%block.pre.sum2", "%block.pre.sum3", matrixA,
+                        "block.pre.header");
 
   BasicBlock blockTemp{"block.temp"};
-  add(blockTemp, "getelementptr.linear", {temp, "%j"}, "%temp0.address");
-  add(blockTemp, "getelementptr.linear", {temp, "%j1"}, "%temp1.address");
-  add(blockTemp, "getelementptr.linear", {temp, "%j2"}, "%temp2.address");
-  add(blockTemp, "getelementptr.linear", {temp, "%j3"}, "%temp3.address");
-  add(blockTemp, "load", {"int", "%temp0.address"}, "%temp0");
-  add(blockTemp, "load", {"int", "%temp1.address"}, "%temp1");
-  add(blockTemp, "load", {"int", "%temp2.address"}, "%temp2");
-  add(blockTemp, "load", {"int", "%temp3.address"}, "%temp3");
-  add(blockTemp, "br", {"block.merge"});
+  add(blockTemp, "getelementptr", {"%c.row", "%i"},
+      "%block.temp.coefficient.address");
+  add(blockTemp, "load", {"int", "%block.temp.coefficient.address"},
+      "%block.temp.coefficient");
+  for (int column = 0; column < 4; ++column) {
+    const std::string suffix = std::to_string(column);
+    const std::string index = column == 0 ? "%j" : "%j" + suffix;
+    add(blockTemp, "getelementptr.linear", {temp, index},
+        "%block.temp.source" + suffix + ".address");
+    add(blockTemp, "load",
+        {"int", "%block.temp.source" + suffix + ".address"},
+        "%block.temp.source" + suffix);
+    add(blockTemp, "mul",
+        {"%block.temp.coefficient", "%block.temp.source" + suffix},
+        "%block.temp.product" + suffix);
+    add(blockTemp, "add",
+        {"%block.pre.sum" + suffix, "%block.temp.product" + suffix},
+        "%block.temp.sum" + suffix);
+  }
+  add(blockTemp, "add", {"%i", "1"}, "%block.post.start");
+  add(blockTemp, "br", {"block.post.header"});
 
-  BasicBlock blockArray{"block.array"};
-  add(blockArray, "getelementptr", {matrixA, "%k"}, "%source.row");
-  add(blockArray, "getelementptr", {"%source.row", "%j"}, "%source0.address");
-  add(blockArray, "getelementptr", {"%source.row", "%j1"}, "%source1.address");
-  add(blockArray, "getelementptr", {"%source.row", "%j2"}, "%source2.address");
-  add(blockArray, "getelementptr", {"%source.row", "%j3"}, "%source3.address");
-  add(blockArray, "load", {"int", "%source0.address"}, "%source0");
-  add(blockArray, "load", {"int", "%source1.address"}, "%source1");
-  add(blockArray, "load", {"int", "%source2.address"}, "%source2");
-  add(blockArray, "load", {"int", "%source3.address"}, "%source3");
-  add(blockArray, "br", {"block.merge"});
+  BasicBlock blockPostHeader{"block.post.header"};
+  add(blockPostHeader, "phi",
+      {"int", "%block.post.start", "block.temp", "%block.post.k.next",
+       "block.post.body"},
+      "%block.post.k");
+  for (int column = 0; column < 4; ++column) {
+    const std::string suffix = std::to_string(column);
+    add(blockPostHeader, "phi",
+        {"int", "%block.temp.sum" + suffix, "block.temp",
+         "%block.post.sum" + suffix + ".next", "block.post.body"},
+        "%block.post.sum" + suffix);
+  }
+  add(blockPostHeader, "icmp.slt", {"%block.post.k", "%n"},
+      "%block.post.cond");
+  add(blockPostHeader, "br",
+      {"%block.post.cond", "block.post.body", "block.store"});
 
-  BasicBlock blockMerge{"block.merge"};
-  add(blockMerge, "phi",
-      {"int", "%temp0", "block.temp", "%source0", "block.array"}, "%value0");
-  add(blockMerge, "phi",
-      {"int", "%temp1", "block.temp", "%source1", "block.array"}, "%value1");
-  add(blockMerge, "phi",
-      {"int", "%temp2", "block.temp", "%source2", "block.array"}, "%value2");
-  add(blockMerge, "phi",
-      {"int", "%temp3", "block.temp", "%source3", "block.array"}, "%value3");
-  add(blockMerge, "mul", {"%coefficient", "%value0"}, "%product0");
-  add(blockMerge, "mul", {"%coefficient", "%value1"}, "%product1");
-  add(blockMerge, "mul", {"%coefficient", "%value2"}, "%product2");
-  add(blockMerge, "mul", {"%coefficient", "%value3"}, "%product3");
-  add(blockMerge, "add", {"%sum0", "%product0"}, "%sum0.next");
-  add(blockMerge, "add", {"%sum1", "%product1"}, "%sum1.next");
-  add(blockMerge, "add", {"%sum2", "%product2"}, "%sum2.next");
-  add(blockMerge, "add", {"%sum3", "%product3"}, "%sum3.next");
-  add(blockMerge, "add", {"%k", "1"}, "%k.next");
-  add(blockMerge, "br", {"block.k.header"});
+  BasicBlock blockPostBody{"block.post.body"};
+  buildBlockedArrayStep(blockPostBody, "%block.post", "%block.post.k",
+                        "%block.post.sum0", "%block.post.sum1",
+                        "%block.post.sum2", "%block.post.sum3", matrixA,
+                        "block.post.header");
 
   BasicBlock blockStore{"block.store"};
   add(blockStore, "getelementptr", {"%a.row", "%j"}, "%target0.address");
   add(blockStore, "getelementptr", {"%a.row", "%j1"}, "%target1.address");
   add(blockStore, "getelementptr", {"%a.row", "%j2"}, "%target2.address");
   add(blockStore, "getelementptr", {"%a.row", "%j3"}, "%target3.address");
-  add(blockStore, "store", {"int", "%sum0", "%target0.address"});
-  add(blockStore, "store", {"int", "%sum1", "%target1.address"});
-  add(blockStore, "store", {"int", "%sum2", "%target2.address"});
-  add(blockStore, "store", {"int", "%sum3", "%target3.address"});
+  add(blockStore, "store", {"int", "%block.post.sum0", "%target0.address"});
+  add(blockStore, "store", {"int", "%block.post.sum1", "%target1.address"});
+  add(blockStore, "store", {"int", "%block.post.sum2", "%target2.address"});
+  add(blockStore, "store", {"int", "%block.post.sum3", "%target3.address"});
   add(blockStore, "add", {"%j", "4"}, "%j.next");
   add(blockStore, "br", {"block.header"});
 
@@ -267,60 +332,67 @@ Function buildOptimizedMultiply(const std::string &name,
       {"int", "%j", "block.header", "%scalar.j.next", "scalar.store"},
       "%scalar.j");
   add(scalarHeader, "icmp.slt", {"%scalar.j", "%n"}, "%scalar.j.cond");
-  add(scalarHeader, "br", {"%scalar.j.cond", "scalar.k.header", "row.next"});
+  add(scalarHeader, "br",
+      {"%scalar.j.cond", "scalar.pre.header", "row.next"});
 
-  BasicBlock scalarKHeader{"scalar.k.header"};
-  add(scalarKHeader, "phi",
-      {"int", "0", "scalar.header", "%scalar.k.next", "scalar.merge"},
-      "%scalar.k");
-  add(scalarKHeader, "phi",
-      {"int", "0", "scalar.header", "%scalar.sum.next", "scalar.merge"},
-      "%scalar.sum");
-  add(scalarKHeader, "icmp.slt", {"%scalar.k", "%n"}, "%scalar.k.cond");
-  add(scalarKHeader, "br",
-      {"%scalar.k.cond", "scalar.dispatch", "scalar.store"});
+  BasicBlock scalarPreHeader{"scalar.pre.header"};
+  add(scalarPreHeader, "phi",
+      {"int", "0", "scalar.header", "%scalar.pre.k.next",
+       "scalar.pre.body"},
+      "%scalar.pre.k");
+  add(scalarPreHeader, "phi",
+      {"int", "0", "scalar.header", "%scalar.pre.sum.next",
+       "scalar.pre.body"},
+      "%scalar.pre.sum");
+  add(scalarPreHeader, "icmp.slt", {"%scalar.pre.k", "%i"},
+      "%scalar.pre.cond");
+  add(scalarPreHeader, "br",
+      {"%scalar.pre.cond", "scalar.pre.body", "scalar.temp"});
 
-  BasicBlock scalarDispatch{"scalar.dispatch"};
-  add(scalarDispatch, "getelementptr", {"%c.row", "%scalar.k"},
-      "%scalar.coefficient.address");
-  add(scalarDispatch, "load", {"int", "%scalar.coefficient.address"},
-      "%scalar.coefficient");
-  add(scalarDispatch, "icmp.eq", {"%scalar.k", "%i"}, "%scalar.use.temp");
-  add(scalarDispatch, "br",
-      {"%scalar.use.temp", "scalar.temp", "scalar.array"});
+  BasicBlock scalarPreBody{"scalar.pre.body"};
+  buildScalarArrayStep(scalarPreBody, "%scalar.pre", "%scalar.pre.k",
+                       "%scalar.pre.sum", matrixA, "scalar.pre.header");
 
   BasicBlock scalarTemp{"scalar.temp"};
+  add(scalarTemp, "getelementptr", {"%c.row", "%i"},
+      "%scalar.temp.coefficient.address");
+  add(scalarTemp, "load", {"int", "%scalar.temp.coefficient.address"},
+      "%scalar.temp.coefficient");
   add(scalarTemp, "getelementptr.linear", {temp, "%scalar.j"},
       "%scalar.temp.address");
   add(scalarTemp, "load", {"int", "%scalar.temp.address"},
       "%scalar.temp.value");
-  add(scalarTemp, "br", {"scalar.merge"});
+  add(scalarTemp, "mul",
+      {"%scalar.temp.coefficient", "%scalar.temp.value"},
+      "%scalar.temp.product");
+  add(scalarTemp, "add", {"%scalar.pre.sum", "%scalar.temp.product"},
+      "%scalar.temp.sum");
+  add(scalarTemp, "add", {"%i", "1"}, "%scalar.post.start");
+  add(scalarTemp, "br", {"scalar.post.header"});
 
-  BasicBlock scalarArray{"scalar.array"};
-  add(scalarArray, "getelementptr", {matrixA, "%scalar.k"},
-      "%scalar.source.row");
-  add(scalarArray, "getelementptr", {"%scalar.source.row", "%scalar.j"},
-      "%scalar.source.address");
-  add(scalarArray, "load", {"int", "%scalar.source.address"},
-      "%scalar.source.value");
-  add(scalarArray, "br", {"scalar.merge"});
+  BasicBlock scalarPostHeader{"scalar.post.header"};
+  add(scalarPostHeader, "phi",
+      {"int", "%scalar.post.start", "scalar.temp", "%scalar.post.k.next",
+       "scalar.post.body"},
+      "%scalar.post.k");
+  add(scalarPostHeader, "phi",
+      {"int", "%scalar.temp.sum", "scalar.temp", "%scalar.post.sum.next",
+       "scalar.post.body"},
+      "%scalar.post.sum");
+  add(scalarPostHeader, "icmp.slt", {"%scalar.post.k", "%n"},
+      "%scalar.post.cond");
+  add(scalarPostHeader, "br",
+      {"%scalar.post.cond", "scalar.post.body", "scalar.store"});
 
-  BasicBlock scalarMerge{"scalar.merge"};
-  add(scalarMerge, "phi",
-      {"int", "%scalar.temp.value", "scalar.temp", "%scalar.source.value",
-       "scalar.array"},
-      "%scalar.value");
-  add(scalarMerge, "mul", {"%scalar.coefficient", "%scalar.value"},
-      "%scalar.product");
-  add(scalarMerge, "add", {"%scalar.sum", "%scalar.product"},
-      "%scalar.sum.next");
-  add(scalarMerge, "add", {"%scalar.k", "1"}, "%scalar.k.next");
-  add(scalarMerge, "br", {"scalar.k.header"});
+  BasicBlock scalarPostBody{"scalar.post.body"};
+  buildScalarArrayStep(scalarPostBody, "%scalar.post", "%scalar.post.k",
+                       "%scalar.post.sum", matrixA, "scalar.post.header");
 
   BasicBlock scalarStore{"scalar.store"};
   add(scalarStore, "getelementptr", {"%a.row", "%scalar.j"},
       "%scalar.target.address");
-  add(scalarStore, "store", {"int", "%scalar.sum", "%scalar.target.address"});
+  add(scalarStore, "store",
+      {"int", "%scalar.post.sum", "%scalar.target.address"});
   add(scalarStore, "add", {"%scalar.j", "1"}, "%scalar.j.next");
   add(scalarStore, "br", {"scalar.header"});
 
@@ -337,18 +409,18 @@ Function buildOptimizedMultiply(const std::string &name,
   function.addBlock(std::move(copyHeader));
   function.addBlock(std::move(copyBody));
   function.addBlock(std::move(blockHeader));
-  function.addBlock(std::move(blockKHeader));
-  function.addBlock(std::move(blockDispatch));
+  function.addBlock(std::move(blockPreHeader));
+  function.addBlock(std::move(blockPreBody));
   function.addBlock(std::move(blockTemp));
-  function.addBlock(std::move(blockArray));
-  function.addBlock(std::move(blockMerge));
+  function.addBlock(std::move(blockPostHeader));
+  function.addBlock(std::move(blockPostBody));
   function.addBlock(std::move(blockStore));
   function.addBlock(std::move(scalarHeader));
-  function.addBlock(std::move(scalarKHeader));
-  function.addBlock(std::move(scalarDispatch));
+  function.addBlock(std::move(scalarPreHeader));
+  function.addBlock(std::move(scalarPreBody));
   function.addBlock(std::move(scalarTemp));
-  function.addBlock(std::move(scalarArray));
-  function.addBlock(std::move(scalarMerge));
+  function.addBlock(std::move(scalarPostHeader));
+  function.addBlock(std::move(scalarPostBody));
   function.addBlock(std::move(scalarStore));
   function.addBlock(std::move(rowNext));
   function.addBlock(std::move(done));
