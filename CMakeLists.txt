@@ -18,29 +18,19 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/analysis/FunctionEffectAnalysis.cpp
-  src/midend/pass/BitwiseIdiomRecognitionPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalScalarLocalizationPass.cpp
-  src/midend/pass/InPlaceMatrixLoopInterchangePass.cpp
-  src/midend/pass/KnapsackDynamicProgrammingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/PassManager.cpp
-  src/midend/pass/PowerOfTwoDispatchPass.cpp
-  src/midend/pass/RadixDigitExtractionPass.cpp
   src/midend/pass/RedundantLoadEliminationPass.cpp
   src/midend/pass/RedundantStoreEliminationPass.cpp
-  src/midend/pass/RecursiveModularMultiplicationPass.cpp
-  src/midend/pass/RepeatedResetComputationPass.cpp
-  src/midend/pass/RepeatedModularAddEliminationPass.cpp
-  src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp
-  src/midend/pass/TransposeTraceEliminationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp

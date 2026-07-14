@@ -23,27 +23,17 @@
 #include "../../include/compiler/ir/builder/AstToIR.h"
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
-#include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
-#include "../../include/compiler/midend/pass/InPlaceMatrixLoopInterchangePass.h"
-#include "../../include/compiler/midend/pass/KnapsackDynamicProgrammingPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
-#include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
-#include "../../include/compiler/midend/pass/RadixDigitExtractionPass.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
-#include "../../include/compiler/midend/pass/RecursiveModularMultiplicationPass.h"
-#include "../../include/compiler/midend/pass/RepeatedResetComputationPass.h"
-#include "../../include/compiler/midend/pass/RepeatedModularAddEliminationPass.h"
-#include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
-#include "../../include/compiler/midend/pass/TransposeTraceEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 
@@ -179,12 +169,6 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::GlobalScalarLocalizationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(
-        std::make_unique<compiler::midend::pass::BitwiseIdiomRecognitionPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::PowerOfTwoDispatchPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::RadixDigitExtractionPass>());
-    passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
@@ -197,20 +181,6 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::InPlaceMatrixLoopInterchangePass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::KnapsackDynamicProgrammingPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::RepeatedModularAddEliminationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
-    passManager.add(std::make_unique<
-                    compiler::midend::pass::RecursiveModularMultiplicationPass>());
-    passManager.add(std::make_unique<
-                    compiler::midend::pass::RepeatedResetComputationPass>());
-    passManager.add(
-        std::make_unique<compiler::midend::pass::TransposeTraceEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(

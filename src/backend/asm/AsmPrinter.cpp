@@ -119,53 +119,6 @@ void emitLi(std::ostringstream& os, const std::string& reg, long long value) {
   os << "  li " << reg << ", " << value << '\n';
 }
 
-enum class RemainderFallback {
-  Hardware,
-  Magic65535,
-};
-
-void emitNarrowSignedRemainder(std::ostringstream& os,
-                               const std::string& result,
-                               const std::string& dividend,
-                               std::int32_t divisor,
-                               RemainderFallback fallback) {
-  const auto twiceDivisor = static_cast<std::int64_t>(divisor) * 2;
-  emitLi(os, "t1", divisor);
-  os << "  blt " << dividend << ", x0, 1f\n";
-  os << "  blt " << dividend << ", t1, 3f\n";
-  emitLi(os, "t2", twiceDivisor);
-  os << "  blt " << dividend << ", t2, 2f\n";
-  os << "  j 4f\n";
-  os << "1:\n";
-  emitLi(os, "t2", -static_cast<std::int64_t>(divisor));
-  os << "  blt t2, " << dividend << ", 3f\n";
-  os << "  j 4f\n";
-  os << "2:\n";
-  os << "  subw " << result << ", " << dividend << ", t1\n";
-  os << "  j 5f\n";
-  os << "3:\n";
-  if (result != dividend) {
-    os << "  mv " << result << ", " << dividend << '\n';
-  }
-  os << "  j 5f\n";
-  os << "4:\n";
-  if (fallback == RemainderFallback::Magic65535) {
-    emitLi(os, "t1", -2147450879LL);
-    os << "  mul t1, " << dividend << ", t1\n";
-    os << "  srli t1, t1, 32\n";
-    os << "  add t1, t1, " << dividend << '\n';
-    os << "  srliw t2, t1, 31\n";
-    os << "  sraiw t1, t1, 15\n";
-    os << "  add t1, t1, t2\n";
-    os << "  slli t2, t1, 16\n";
-    os << "  add t1, " << dividend << ", t1\n";
-    os << "  subw " << result << ", t1, t2\n";
-  } else {
-    os << "  remw " << result << ", " << dividend << ", t1\n";
-  }
-  os << "5:\n";
-}
-
 void emitAddImmediate(std::ostringstream& os, const std::string& dst, const std::string& base,
                       long long immediate, const std::string& scratch) {
   if (fitsSigned12(immediate)) {
@@ -1002,33 +955,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
           os << "  negw " << result << ", " << result << '\n';
         }
       }
-      commitResult(os, function, instruction.result, result);
-      return;
-    }
-    if (wordResult && isDivision &&
-        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
-        rhsOperand.intValue == 1000) {
-      emitLi(os, "t1", 274877907);
-      os << "  mul t1, " << lhs << ", t1\n";
-      os << "  srli " << result << ", t1, 63\n";
-      os << "  srai t1, t1, 38\n";
-      os << "  add " << result << ", t1, " << result << '\n';
-      commitResult(os, function, instruction.result, result);
-      return;
-    }
-    if (wordResult && isRemainder &&
-        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
-        rhsOperand.intValue == 998244353) {
-      emitNarrowSignedRemainder(os, result, lhs, 998244353,
-                                RemainderFallback::Hardware);
-      commitResult(os, function, instruction.result, result);
-      return;
-    }
-    if (wordResult && isRemainder &&
-        rhsOperand.kind == MachineOperandKind::ImmediateInt &&
-        rhsOperand.intValue == 65535) {
-      emitNarrowSignedRemainder(os, result, lhs, 65535,
-                                RemainderFallback::Magic65535);
       commitResult(os, function, instruction.result, result);
       return;
     }
