@@ -1008,6 +1008,24 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
           os << "  mv " << result << ", " << lhs << '\n';
         }
       } else {
+        if (isRemainder && shift == 1) {
+          os << "  sraiw t1, " << lhs << ", 31\n";
+          os << "  andi " << result << ", " << lhs << ", 1\n";
+          os << "  xor " << result << ", " << result << ", t1\n";
+          os << "  subw " << result << ", " << result << ", t1\n";
+          commitResult(os, function, instruction.result, result);
+          return;
+        }
+        if (isRemainder && shift <= 11) {
+          const std::uint64_t mask = (std::uint64_t{1} << shift) - 1;
+          os << "  sraiw t1, " << lhs << ", 31\n";
+          os << "  andi t1, t1, " << mask << '\n';
+          os << "  addw t2, " << lhs << ", t1\n";
+          os << "  andi t2, t2, " << mask << '\n';
+          os << "  subw " << result << ", t2, t1\n";
+          commitResult(os, function, instruction.result, result);
+          return;
+        }
         os << "  sraiw t1, " << lhs << ", 31\n";
         os << "  srliw t1, t1, " << 32U - shift << '\n';
         const std::string quotient = isRemainder ? "t2" : result;
