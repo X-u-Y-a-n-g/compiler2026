@@ -736,6 +736,86 @@ void allocateClassGraph(
                           palette.registers[static_cast<std::size_t>(color)]);
     }
   }
+
+  // Greedy coloring only sees affinity partners that have already received a
+  // color.  In particular, phi copies on loop backedges are often colored in
+  // the opposite order and miss an otherwise legal coalescing opportunity.
+  // Revisit colored nodes and move them to an affinity partner's color when
+  // that color is free of interference.  This preserves the graph-coloring
+  // constraints while eliminating copies without speculative live-range
+  // merging.
+  constexpr unsigned kAffinityRecolorPasses = 4;
+  for (unsigned pass = 0; pass < kAffinityRecolorPasses; ++pass) {
+    bool changed = false;
+    for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+      const auto& node = graph.nodes[index];
+      if (node.type.isFloat() != selectFloat || assignedColor[index] < 0 ||
+          !node.precoloredRegister.empty()) {
+        continue;
+      }
+
+      std::uint64_t unavailable = 0;
+      graph.forEachNeighbor(index, [&](std::size_t neighbor) {
+        if (assignedColor[neighbor] >= 0) {
+          unavailable |= std::uint64_t{1} << assignedColor[neighbor];
+        }
+      });
+      std::uint64_t available = allowedByNode[index] & ~unavailable;
+      const int current = assignedColor[index];
+      const bool currentIsCalleeSaved =
+          (palette.calleeSavedMask & (std::uint64_t{1} << current)) != 0;
+      const std::uint64_t sameSaveClass =
+          currentIsCalleeSaved ? palette.calleeSavedMask
+                               : palette.allMask & ~palette.calleeSavedMask;
+      available &= sameSaveClass;
+      if (available == 0) {
+        continue;
+      }
+
+      std::vector<double> weights(palette.registers.size(), 0.0);
+      for (const auto& affinity : node.affinities) {
+        if (assignedColor[affinity.node] >= 0) {
+          weights[static_cast<std::size_t>(assignedColor[affinity.node])] +=
+              affinity.weight;
+        }
+      }
+      for (const auto& preference : node.preferredRegisters) {
+        if (const auto found = palette.indexByName.find(preference.name);
+            found != palette.indexByName.end()) {
+          weights[found->second] += preference.weight;
+        }
+      }
+
+      int best = current;
+      double bestWeight = weights[static_cast<std::size_t>(current)];
+      std::uint64_t candidates = available;
+      while (candidates != 0) {
+        const int candidate = static_cast<int>(__builtin_ctzll(candidates));
+        const double candidateWeight =
+            weights[static_cast<std::size_t>(candidate)];
+        if (candidateWeight > bestWeight) {
+          best = candidate;
+          bestWeight = candidateWeight;
+        }
+        candidates &= candidates - 1;
+      }
+      if (best != current) {
+        assignedColor[index] = best;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      break;
+    }
+  }
+
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    if (graph.nodes[index].type.isFloat() == selectFloat &&
+        assignedColor[index] >= 0) {
+      registerMap[graph.nodes[index].name] =
+          palette.registers[static_cast<std::size_t>(assignedColor[index])];
+    }
+  }
 }
 
 bool keepUseInFrame(const MachineInstruction& instruction) {
