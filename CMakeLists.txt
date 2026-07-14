@@ -24,6 +24,7 @@ add_library(compiler_lib
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/InPlaceMatrixLoopInterchangePass.cpp
+  src/midend/pass/KnapsackDynamicProgrammingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/Mem2RegPass.cpp

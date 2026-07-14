@@ -29,6 +29,7 @@
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/InPlaceMatrixLoopInterchangePass.h"
+#include "../../include/compiler/midend/pass/KnapsackDynamicProgrammingPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
@@ -189,6 +190,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::InPlaceMatrixLoopInterchangePass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::KnapsackDynamicProgrammingPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RepeatedModularAddEliminationPass>());
     passManager.add(
