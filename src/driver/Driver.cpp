@@ -189,6 +189,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
+        std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    passManager.add(
         std::make_unique<compiler::midend::pass::InPlaceMatrixLoopInterchangePass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::KnapsackDynamicProgrammingPass>());

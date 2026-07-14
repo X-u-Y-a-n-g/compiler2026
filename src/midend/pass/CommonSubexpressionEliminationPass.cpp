@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/midend/analysis/FunctionEffectAnalysis.h"
 #include "IRPassUtils.h"
 
 namespace compiler::midend::pass {
@@ -18,6 +19,18 @@ namespace {
 
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
+using compiler::midend::analysis::FunctionEffectAnalysis;
+
+std::string calledFunctionName(const Instruction& instruction) {
+  if (instruction.opcode() != "call" || instruction.operands().empty()) {
+    return {};
+  }
+  const auto& callee = instruction.operands().front();
+  if (callee.size() < 2 || callee.front() != '@') {
+    return {};
+  }
+  return callee.substr(1);
+}
 
 struct BlockInfo {
   std::string name;
@@ -190,8 +203,17 @@ bool isCommutative(const std::string& opcode) {
          opcode == "fcmp.oeq" || opcode == "fcmp.one";
 }
 
-bool isCseCandidate(const Instruction& instruction) {
-  if (!instruction.hasResult() || !detail::isSideEffectFree(instruction)) {
+bool isCseCandidate(const Instruction& instruction,
+                    const FunctionEffectAnalysis& functionEffects) {
+  if (!instruction.hasResult()) {
+    return false;
+  }
+
+  if (instruction.opcode() == "call") {
+    const auto callee = calledFunctionName(instruction);
+    return !callee.empty() && functionEffects.isReadNone(callee);
+  }
+  if (!detail::isSideEffectFree(instruction)) {
     return false;
   }
 
@@ -231,7 +253,8 @@ void rewriteFunctionOperands(
   }
 }
 
-void runCse(Function& function) {
+void runCse(Function& function,
+            const FunctionEffectAnalysis& functionEffects) {
   const auto cfg = buildCFG(function);
   if (cfg.empty()) {
     return;
@@ -254,7 +277,7 @@ void runCse(Function& function) {
       Instruction rewrittenInstruction{instruction.opcode(), std::move(operands),
                                        instruction.result()};
 
-      if (isCseCandidate(rewrittenInstruction)) {
+      if (isCseCandidate(rewrittenInstruction, functionEffects)) {
         const auto key = expressionKey(rewrittenInstruction);
         const auto available = availableExpressions.find(key);
         if (available != availableExpressions.end()) {
@@ -293,8 +316,9 @@ void runCse(Function& function) {
 }  // namespace
 
 void CommonSubexpressionEliminationPass::run(compiler::ir::core::Module& module) {
+  const FunctionEffectAnalysis functionEffects(module);
   for (auto& function : module.functions()) {
-    runCse(function);
+    runCse(function, functionEffects);
   }
 }
 
