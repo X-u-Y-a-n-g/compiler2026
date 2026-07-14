@@ -36,6 +36,7 @@
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
 #include "../../include/compiler/midend/pass/RadixDigitExtractionPass.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
+#include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RepeatedModularAddEliminationPass.h"
 #include "../../include/compiler/midend/pass/RepeatedAccumulationEliminationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
@@ -189,6 +190,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(
