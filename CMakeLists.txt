@@ -30,6 +30,7 @@ add_library(compiler_lib
   src/midend/pass/PowerOfTwoDispatchPass.cpp
   src/midend/pass/RadixDigitExtractionPass.cpp
   src/midend/pass/RedundantLoadEliminationPass.cpp
+  src/midend/pass/RepeatedModularAddEliminationPass.cpp
   src/midend/pass/RepeatedAccumulationEliminationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp
