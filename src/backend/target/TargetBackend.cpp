@@ -6,6 +6,7 @@
 #include "../../../include/compiler/backend/frame/FrameLowering.h"
 #include "../../../include/compiler/backend/opt/AddressReassociation.h"
 #include "../../../include/compiler/backend/opt/CompareBranchFusion.h"
+#include "../../../include/compiler/backend/opt/MachineDeadCodeElimination.h"
 #include "../../../include/compiler/backend/opt/PhiElimination.h"
 #include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
 #include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
@@ -28,6 +29,7 @@ class Riscv64Backend final : public BackendTarget {
     compiler::backend::opt::StackObjectPromotion{}.run(machineModule);
     compiler::backend::opt::AddressReassociation{}.run(machineModule);
     compiler::backend::regalloc::RegisterAllocator{}.allocate(machineModule);
+    compiler::backend::opt::MachineDeadCodeElimination{}.run(machineModule);
     compiler::backend::frame::FrameLowering{}.lower(machineModule);
     compiler::backend::stack::StackLowering{}.lower(machineModule);
     return compiler::backend::asmcode::AsmPrinter{}.print(machineModule);
