@@ -338,16 +338,10 @@ std::unordered_map<std::string, std::size_t> computeDefinitionBlocks(const Funct
   return definitions;
 }
 
+bool isSpeculatableInvariantDependency(const Instruction& instruction);
+
 bool isHoistableCandidate(const Instruction& instruction) {
-  if (!instruction.hasResult() || !detail::isSideEffectFree(instruction)) {
-    return false;
-  }
-  const auto& opcode = instruction.opcode();
-  const bool isGep = opcode == "gep" || opcode == "gep.linear" ||
-                     opcode == "getelementptr" || opcode == "getelementptr.linear";
-  return isGep && !instruction.operands().empty() &&
-         !instruction.operands().front().empty() &&
-         instruction.operands().front().front() == '@';
+  return isSpeculatableInvariantDependency(instruction);
 }
 
 bool operandsAreLoopInvariant(
@@ -465,8 +459,8 @@ bool isSpeculatableInvariantDependency(const Instruction& instruction) {
   }
   const auto& opcode = instruction.opcode();
   return opcode != "alloca" && opcode != "load" && opcode != "phi" &&
-         opcode != "sdiv" && opcode != "udiv" && opcode != "srem" &&
-         opcode != "urem";
+         opcode != "div" && opcode != "mod" && opcode != "sdiv" &&
+         opcode != "udiv" && opcode != "srem" && opcode != "urem";
 }
 
 bool materializeInvariantValue(
