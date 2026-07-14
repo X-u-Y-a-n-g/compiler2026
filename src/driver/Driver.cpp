@@ -29,6 +29,7 @@
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
@@ -173,6 +174,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(std::make_unique<compiler::midend::pass::RemainderComparisonPass>());
     passManager.add(
