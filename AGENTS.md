@@ -29,3 +29,20 @@ These rules are mandatory for every compiler optimization in this repository.
 7. Document AI-assisted implementation scope and any external technical references.
 
 If a proposed optimization cannot satisfy these rules, do not implement or restore it.
+
+## Official FPGA access
+
+- Read `docs/fpga-performance.md` before using the official BOOM FPGA board.
+- Build target assembly and ELF inside `compiler-impl2026-dev`; use
+  `scripts/fpga/build_elf.sh` for the bare-metal image and
+  `scripts/fpga/run_gdb.sh` for one GDB run.
+- The macOS forwarding client runs on the host. The container connects to it at
+  `host.docker.internal:3333`, not `127.0.0.1:3333`.
+- The client/OpenOCD path is effectively one GDB session per setup. Before each
+  new run, close and restart RISC-V GDB in the web UI, restart the client, and
+  reconnect the port forward.
+- Do not load the Linux static ELF produced by `scripts/eval.py` onto the FPGA.
+  The BOOM target is bare metal and uses the linker/runtime under `scripts/fpga/`.
+- The proven smoke test is `tests/performance/transpose0.sy`: output
+  `135935384`, return value `0`, and `37,619,737` timed cycles on the allocated
+  50 MHz BOOM board on 2026-07-15.

@@ -308,6 +308,8 @@ python3 scripts/eval.py correctness --keep-artifacts
 
 注意：QEMU 时间只适合本地回归和不同提交之间的粗略比较，不能替代官方 FPGA BOOM CPU 开发板成绩。平台上一次 AC 记录中的 `1582.7551s` 是 60 个 2026 性能用例在官方开发板上的计时总和。
 
+官方 BOOM FPGA 的开发板申请、macOS 端口转发、容器内裸机 ELF 构建、GDB 下载运行、周期读取和每轮重置步骤见 [docs/fpga-performance.md](docs/fpga-performance.md)。可复用的裸机运行时与命令入口位于 `scripts/fpga/`。
+
 ## 当前限制
 
 - 仅支持单输入文件。
