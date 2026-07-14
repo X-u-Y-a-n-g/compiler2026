@@ -1,6 +1,7 @@
 #include "../../../include/compiler/backend/opt/AddressReassociation.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
@@ -235,6 +236,114 @@ void insertBeforeTerminator(
   block.instructions.insert(position, std::move(instruction));
 }
 
+std::uint64_t nestedLoopWeight(unsigned relativeDepth) {
+  std::uint64_t weight = 1;
+  while (relativeDepth-- > 0 && weight < 4096) {
+    weight *= 8;
+  }
+  return weight;
+}
+
+void promoteNestedGlobalAddresses(
+    MachineFunction& function, const std::vector<LoopInfo>& loops,
+    const compiler::backend::target::TargetInstrAdapter& adapter,
+    std::size_t& nextTemporary) {
+  if (loops.empty()) {
+    return;
+  }
+
+  std::vector<unsigned> blockDepth(function.blocks.size(), 0);
+  for (const auto& loop : loops) {
+    for (const auto block : loop.blocks) {
+      ++blockDepth[block];
+    }
+  }
+
+  std::vector<const LoopInfo*> outerFirst;
+  outerFirst.reserve(loops.size());
+  for (const auto& loop : loops) {
+    outerFirst.push_back(&loop);
+  }
+  std::sort(outerFirst.begin(), outerFirst.end(), [](const LoopInfo* lhs, const LoopInfo* rhs) {
+    return lhs->blocks.size() > rhs->blocks.size();
+  });
+
+  struct Candidate {
+    MachineOperand address;
+    std::uint64_t benefit = 0;
+  };
+
+  for (const auto* loop : outerFirst) {
+    std::unordered_map<std::string, Candidate> candidates;
+    const unsigned headerDepth = blockDepth[loop->header];
+    for (const auto blockIndex : loop->blocks) {
+      const unsigned relativeDepth =
+          blockDepth[blockIndex] >= headerDepth
+              ? blockDepth[blockIndex] - headerDepth + 1
+              : 1;
+      const std::uint64_t weight = nestedLoopWeight(relativeDepth);
+      for (const auto& instruction : function.blocks[blockIndex].instructions) {
+        for (const auto& operand : instruction.operands) {
+          if (operand.kind != MachineOperandKind::GlobalAddress) {
+            continue;
+          }
+          auto& candidate = candidates[operand.text];
+          candidate.address = operand;
+          candidate.benefit += weight;
+        }
+        for (const auto& incoming : instruction.phiInputs) {
+          if (incoming.value.kind != MachineOperandKind::GlobalAddress) {
+            continue;
+          }
+          auto& candidate = candidates[incoming.value.text];
+          candidate.address = incoming.value;
+          candidate.benefit += weight;
+        }
+      }
+    }
+
+    std::vector<Candidate> profitable;
+    for (auto& [_, candidate] : candidates) {
+      // A single address use in one loop is usually cheaper than extending a live range.
+      // Nested-loop uses have exponentially larger estimated savings.
+      if (candidate.benefit >= 64) {
+        profitable.push_back(std::move(candidate));
+      }
+    }
+    std::sort(profitable.begin(), profitable.end(), [](const Candidate& lhs, const Candidate& rhs) {
+      return lhs.benefit > rhs.benefit;
+    });
+    if (profitable.size() > 3) {
+      profitable.resize(3);
+    }
+
+    for (const auto& candidate : profitable) {
+      const MachineOperand promoted = MachineOperand::virtualRegister(
+          "%global.address." + std::to_string(nextTemporary++), candidate.address.type);
+      insertBeforeTerminator(
+          function.blocks[loop->preheader],
+          MachineInstruction::copy(promoted, candidate.address), adapter);
+
+      for (const auto blockIndex : loop->blocks) {
+        for (auto& instruction : function.blocks[blockIndex].instructions) {
+          for (auto& operand : instruction.operands) {
+            if (operand.kind == MachineOperandKind::GlobalAddress &&
+                operand.text == candidate.address.text) {
+              operand = promoted;
+            }
+          }
+          for (auto& incoming : instruction.phiInputs) {
+            if (incoming.value.kind == MachineOperandKind::GlobalAddress &&
+                incoming.value.text == candidate.address.text) {
+              incoming.value = promoted;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 void AddressReassociation::run(
@@ -389,6 +498,7 @@ void AddressReassociation::run(
       insertBeforeTerminator(function.blocks[transformation.preheader],
                              std::move(transformation.preheaderInstruction), adapter);
     }
+    promoteNestedGlobalAddresses(function, loops, adapter, nextTemporary);
   }
 }
 
