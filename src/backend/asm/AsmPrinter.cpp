@@ -915,6 +915,36 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const bool isDivision = opcode == "div" || opcode == "sdiv";
     const bool isRemainder = opcode == "mod" || opcode == "srem";
 
+    if (opcode == "add") {
+      const MachineOperand* immediate = nullptr;
+      const MachineOperand* augend = nullptr;
+      if (rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+          fitsSigned12(rhsOperand.intValue)) {
+        immediate = &rhsOperand;
+        augend = &lhsOperand;
+      } else if (lhsOperand.kind == MachineOperandKind::ImmediateInt &&
+                 fitsSigned12(lhsOperand.intValue)) {
+        immediate = &lhsOperand;
+        augend = &rhsOperand;
+      }
+      if (immediate != nullptr) {
+        const std::string source = integerOperandRegister(os, function, *augend, "t0");
+        os << "  " << (wordResult ? "addiw " : "addi ") << result << ", " << source
+           << ", " << immediate->intValue << '\n';
+        commitResult(os, function, instruction.result, result);
+        return;
+      }
+    }
+
+    if (opcode == "sub" && rhsOperand.kind == MachineOperandKind::ImmediateInt &&
+        rhsOperand.intValue >= -2047 && rhsOperand.intValue <= 2048) {
+      const std::string source = integerOperandRegister(os, function, lhsOperand, "t0");
+      os << "  " << (wordResult ? "addiw " : "addi ") << result << ", " << source
+         << ", " << -rhsOperand.intValue << '\n';
+      commitResult(os, function, instruction.result, result);
+      return;
+    }
+
     if (opcode == "mul") {
       const MachineOperand* constant = nullptr;
       const MachineOperand* multiplicand = nullptr;
