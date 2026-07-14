@@ -27,8 +27,8 @@ common_flags=(
 
 riscv64-linux-gnu-gcc "${common_flags[@]}" -c \
   "$script_dir/start.S" -o "$work_dir/start.o"
-riscv64-linux-gnu-gcc "${common_flags[@]}" -c \
-  "$script_dir/runtime.c" -o "$work_dir/runtime.o"
+riscv64-linux-gnu-gcc "${common_flags[@]}" -x c -c \
+  "$script_dir/runtime.c.inc" -o "$work_dir/runtime.o"
 riscv64-linux-gnu-gcc \
   -nostdlib -nostartfiles -static \
   -march=rv64gc -mabi=lp64d -mcmodel=medany \
