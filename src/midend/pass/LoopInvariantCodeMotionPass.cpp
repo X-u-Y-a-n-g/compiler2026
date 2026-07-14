@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/midend/analysis/FunctionEffectAnalysis.h"
 #include "IRPassUtils.h"
 
 namespace compiler::midend::pass {
@@ -17,6 +18,8 @@ namespace {
 
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
+using compiler::ir::core::Module;
+using compiler::midend::analysis::FunctionEffectAnalysis;
 
 struct BlockInfo {
   std::string name;
@@ -30,8 +33,71 @@ struct LoopInfo {
   std::unordered_set<std::size_t> blocks;
 };
 
+struct CalleeSummary {
+  std::string returnType;
+  std::size_t instructionCount = 0;
+  bool recursive = false;
+};
+
 bool isValueReference(const std::string& operand) {
   return !operand.empty() && operand.front() == '%';
+}
+
+std::string calledFunctionName(const Instruction& instruction) {
+  if (instruction.opcode() != "call" || instruction.operands().empty()) {
+    return {};
+  }
+  const auto& callee = instruction.operands().front();
+  if (callee.size() < 2 || callee.front() != '@') {
+    return {};
+  }
+  return callee.substr(1);
+}
+
+std::unordered_map<std::string, CalleeSummary> summarizeCallees(const Module& module) {
+  std::unordered_map<std::string, std::vector<std::string>> callGraph;
+  std::unordered_map<std::string, CalleeSummary> summaries;
+  for (const auto& function : module.functions()) {
+    auto& summary = summaries[function.name()];
+    summary.returnType = function.returnType();
+    auto& callees = callGraph[function.name()];
+    for (const auto& block : function.blocks()) {
+      summary.instructionCount += block.instructions().size();
+      for (const auto& instruction : block.instructions()) {
+        const auto callee = calledFunctionName(instruction);
+        if (!callee.empty()) {
+          callees.push_back(callee);
+        }
+      }
+    }
+  }
+
+  for (auto& [functionName, summary] : summaries) {
+    std::deque<std::string> worklist;
+    std::unordered_set<std::string> visited;
+    for (const auto& callee : callGraph[functionName]) {
+      worklist.push_back(callee);
+    }
+    while (!worklist.empty()) {
+      auto current = std::move(worklist.front());
+      worklist.pop_front();
+      if (current == functionName) {
+        summary.recursive = true;
+        break;
+      }
+      if (!visited.insert(current).second) {
+        continue;
+      }
+      const auto nested = callGraph.find(current);
+      if (nested == callGraph.end()) {
+        continue;
+      }
+      for (const auto& callee : nested->second) {
+        worklist.push_back(callee);
+      }
+    }
+  }
+  return summaries;
 }
 
 std::vector<BlockInfo> buildCFG(const Function& function) {
@@ -307,6 +373,296 @@ bool operandsAreLoopInvariant(
   return true;
 }
 
+std::unordered_set<std::string> collectValueNames(const Function& function) {
+  std::unordered_set<std::string> names;
+  for (const auto& parameter : function.parameters()) {
+    names.insert(parameter.name);
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) {
+        names.insert(instruction.result());
+      }
+    }
+  }
+  return names;
+}
+
+std::unordered_set<std::string> collectBlockNames(const Function& function) {
+  std::unordered_set<std::string> names;
+  for (const auto& block : function.blocks()) {
+    names.insert(block.name());
+  }
+  return names;
+}
+
+std::string freshName(std::unordered_set<std::string>& names,
+                      const std::string& prefix, const std::string& separator) {
+  std::string candidate = prefix;
+  std::size_t suffix = 0;
+  while (!names.insert(candidate).second) {
+    candidate = prefix + separator + std::to_string(++suffix);
+  }
+  return candidate;
+}
+
+void rewritePhiPredecessor(Function& function, const std::string& oldPredecessor,
+                           const std::string& newPredecessor) {
+  for (auto& block : function.blocks()) {
+    for (auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "phi") {
+        continue;
+      }
+      auto operands = instruction.operands();
+      bool changed = false;
+      for (std::size_t index = 2; index < operands.size(); index += 2) {
+        if (operands[index] == oldPredecessor) {
+          operands[index] = newPredecessor;
+          changed = true;
+        }
+      }
+      if (changed) {
+        instruction = Instruction{"phi", std::move(operands), instruction.result()};
+      }
+    }
+  }
+}
+
+bool isProfitableInvariantCall(
+    const Instruction& instruction,
+    const FunctionEffectAnalysis& functionEffects,
+    const std::unordered_map<std::string, CalleeSummary>& summaries,
+    std::string& returnType) {
+  if (instruction.opcode() != "call" || !instruction.hasResult()) {
+    return false;
+  }
+  const auto callee = calledFunctionName(instruction);
+  if (callee.empty() || !functionEffects.isReadNone(callee)) {
+    return false;
+  }
+  const auto summary = summaries.find(callee);
+  if (summary == summaries.end() || summary->second.returnType == "void") {
+    return false;
+  }
+
+  constexpr std::size_t kMinimumInstructionCount = 24;
+  if (!summary->second.recursive &&
+      summary->second.instructionCount < kMinimumInstructionCount) {
+    return false;
+  }
+  returnType = summary->second.returnType;
+  return true;
+}
+
+struct ValueDefinition {
+  std::size_t block = 0;
+  Instruction instruction{""};
+};
+
+bool isSpeculatableInvariantDependency(const Instruction& instruction) {
+  if (!instruction.hasResult() || !detail::isSideEffectFree(instruction)) {
+    return false;
+  }
+  const auto& opcode = instruction.opcode();
+  return opcode != "alloca" && opcode != "load" && opcode != "phi" &&
+         opcode != "sdiv" && opcode != "udiv" && opcode != "srem" &&
+         opcode != "urem";
+}
+
+bool materializeInvariantValue(
+    const std::string& value, const LoopInfo& loop,
+    const std::unordered_map<std::string, ValueDefinition>& definitions,
+    std::unordered_set<std::string>& visiting,
+    std::unordered_map<std::string, std::string>& replacements,
+    std::vector<Instruction>& materializations,
+    std::unordered_set<std::string>& valueNames) {
+  if (!isValueReference(value)) {
+    return true;
+  }
+  const auto definition = definitions.find(value);
+  if (definition == definitions.end() ||
+      loop.blocks.find(definition->second.block) == loop.blocks.end()) {
+    return true;
+  }
+  if (replacements.find(value) != replacements.end()) {
+    return true;
+  }
+  if (!isSpeculatableInvariantDependency(definition->second.instruction) ||
+      !visiting.insert(value).second) {
+    return false;
+  }
+
+  auto operands = definition->second.instruction.operands();
+  for (auto& operand : operands) {
+    if (!materializeInvariantValue(operand, loop, definitions, visiting,
+                                   replacements, materializations, valueNames)) {
+      visiting.erase(value);
+      return false;
+    }
+    if (const auto replacement = replacements.find(operand);
+        replacement != replacements.end()) {
+      operand = replacement->second;
+    }
+  }
+
+  const auto clonedResult =
+      freshName(valueNames, "%licm.call.cache.invariant", ".");
+  materializations.emplace_back(definition->second.instruction.opcode(),
+                                std::move(operands), clonedResult);
+  replacements.emplace(value, clonedResult);
+  visiting.erase(value);
+  return true;
+}
+
+bool collectInvariantMaterializations(
+    const Instruction& call, const LoopInfo& loop,
+    const std::unordered_map<std::string, ValueDefinition>& definitions,
+    std::unordered_map<std::string, std::string>& replacements,
+    std::vector<Instruction>& materializations,
+    std::unordered_set<std::string>& valueNames) {
+  std::unordered_set<std::string> visiting;
+  for (std::size_t index = 1; index < call.operands().size(); ++index) {
+    if (!materializeInvariantValue(call.operands()[index], loop, definitions,
+                                   visiting, replacements, materializations,
+                                   valueNames)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool cacheOneInvariantCall(
+    Function& function, const FunctionEffectAnalysis& functionEffects,
+    const std::unordered_map<std::string, CalleeSummary>& summaries) {
+  const auto cfg = buildCFG(function);
+  if (cfg.empty()) {
+    return false;
+  }
+  const auto reachable = computeReachable(cfg);
+  const auto idom = computeImmediateDominators(cfg, reachable);
+  const auto loops = findLoops(cfg, idom, reachable);
+  std::unordered_map<std::string, ValueDefinition> definitions;
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    for (const auto& instruction : function.blocks()[block].instructions()) {
+      if (instruction.hasResult()) {
+        definitions.emplace(instruction.result(),
+                            ValueDefinition{block, instruction});
+      }
+    }
+  }
+
+  for (const auto& loop : loops) {
+    for (const auto blockIndex : loop.blocks) {
+      if (blockIndex == loop.header ||
+          function.blocks()[blockIndex].name().find("licm.call.cache.") == 0) {
+        continue;
+      }
+      const auto& instructions = function.blocks()[blockIndex].instructions();
+      for (std::size_t instructionIndex = 0;
+           instructionIndex < instructions.size(); ++instructionIndex) {
+        const auto& instruction = instructions[instructionIndex];
+        std::string returnType;
+        if (!isProfitableInvariantCall(instruction, functionEffects, summaries,
+                                       returnType)) {
+          continue;
+        }
+
+        auto valueNames = collectValueNames(function);
+        std::unordered_map<std::string, std::string> invariantReplacements;
+        std::vector<Instruction> invariantMaterializations;
+        if (!collectInvariantMaterializations(
+                instruction, loop, definitions, invariantReplacements,
+                invariantMaterializations, valueNames)) {
+          continue;
+        }
+        auto blockNames = collectBlockNames(function);
+        const auto flagSlot = freshName(valueNames, "%licm.call.cache.flag", ".");
+        const auto valueSlot = freshName(valueNames, "%licm.call.cache.value", ".");
+        const auto loadedFlag = freshName(valueNames, "%licm.call.cache.loaded", ".");
+        const auto hasValue = freshName(valueNames, "%licm.call.cache.valid", ".");
+        const auto computedValue =
+            freshName(valueNames, "%licm.call.cache.computed", ".");
+        const auto checkName =
+            freshName(blockNames, "licm.call.cache.check", ".");
+        const auto computeName =
+            freshName(blockNames, "licm.call.cache.compute", ".");
+        const auto reuseName =
+            freshName(blockNames, "licm.call.cache.reuse", ".");
+        const auto continueName =
+            freshName(blockNames, "licm.call.cache.continue", ".");
+
+        auto& entryInstructions = function.blocks().front().instructions();
+        entryInstructions.insert(
+            entryInstructions.begin(),
+            {Instruction{"alloca", {"int"}, flagSlot},
+             Instruction{"alloca", {returnType}, valueSlot}});
+
+        auto& preheaderInstructions =
+            function.blocks()[loop.preheader].instructions();
+        auto preheaderInsert = preheaderInstructions.end();
+        if (!preheaderInstructions.empty() &&
+            preheaderInstructions.back().isTerminator()) {
+          preheaderInsert = preheaderInstructions.end() - 1;
+        }
+        preheaderInstructions.insert(preheaderInsert,
+                                     Instruction{"store", {"int", "0", flagSlot}});
+
+        const std::string originalBlockName = function.blocks()[blockIndex].name();
+        const std::string originalResult = instruction.result();
+        auto cachedCallOperands = instruction.operands();
+        for (auto& operand : cachedCallOperands) {
+          if (const auto replacement = invariantReplacements.find(operand);
+              replacement != invariantReplacements.end()) {
+            operand = replacement->second;
+          }
+        }
+        Instruction cachedCall{instruction.opcode(), std::move(cachedCallOperands),
+                               computedValue};
+        std::vector<Instruction> prefix(instructions.begin(),
+                                        instructions.begin() + instructionIndex);
+        std::vector<Instruction> suffix(instructions.begin() + instructionIndex + 1,
+                                        instructions.end());
+        prefix.emplace_back("br", std::vector<std::string>{checkName});
+        function.blocks()[blockIndex].instructions() = std::move(prefix);
+
+        compiler::ir::core::BasicBlock checkBlock{checkName};
+        checkBlock.addInstruction(Instruction{"load", {"int", flagSlot}, loadedFlag});
+        checkBlock.addInstruction(Instruction{"icmp.ne", {loadedFlag, "0"}, hasValue});
+        checkBlock.addInstruction(
+            Instruction{"br", {hasValue, reuseName, computeName}});
+
+        compiler::ir::core::BasicBlock computeBlock{computeName};
+        for (auto& materialization : invariantMaterializations) {
+          computeBlock.addInstruction(std::move(materialization));
+        }
+        computeBlock.addInstruction(std::move(cachedCall));
+        computeBlock.addInstruction(
+            Instruction{"store", {returnType, computedValue, valueSlot}});
+        computeBlock.addInstruction(Instruction{"store", {"int", "1", flagSlot}});
+        computeBlock.addInstruction(Instruction{"br", {continueName}});
+
+        compiler::ir::core::BasicBlock reuseBlock{reuseName};
+        reuseBlock.addInstruction(Instruction{"br", {continueName}});
+
+        compiler::ir::core::BasicBlock continueBlock{continueName};
+        continueBlock.addInstruction(
+            Instruction{"load", {returnType, valueSlot}, originalResult});
+        for (auto& remaining : suffix) {
+          continueBlock.addInstruction(std::move(remaining));
+        }
+
+        rewritePhiPredecessor(function, originalBlockName, continueName);
+        function.addBlock(std::move(checkBlock));
+        function.addBlock(std::move(computeBlock));
+        function.addBlock(std::move(reuseBlock));
+        function.addBlock(std::move(continueBlock));
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool hoistFromLoop(Function& function, const LoopInfo& loop,
                    const std::unordered_map<std::string, std::size_t>& definitions) {
   std::vector<std::pair<std::size_t, Instruction>> hoisted;
@@ -394,8 +750,12 @@ void runLicm(Function& function) {
 }  // namespace
 
 void LoopInvariantCodeMotionPass::run(compiler::ir::core::Module& module) {
+  const FunctionEffectAnalysis functionEffects(module);
+  const auto calleeSummaries = summarizeCallees(module);
   for (auto& function : module.functions()) {
     runLicm(function);
+    while (cacheOneInvariantCall(function, functionEffects, calleeSummaries)) {
+    }
   }
 }
 

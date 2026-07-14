@@ -393,6 +393,21 @@ void addIncomingToSuccessorPhis(Function& function, std::size_t blockIndex, Rena
       }
       const auto slotIt = state.placement.resultToSlot.find(instruction.result());
       if (slotIt == state.placement.resultToSlot.end()) {
+        auto operands = instruction.operands();
+        bool changed = false;
+        for (std::size_t index = 2; index < operands.size(); index += 2) {
+          if (operands[index] != state.cfg.names[blockIndex]) {
+            continue;
+          }
+          const auto resolved = detail::resolveAlias(operands[index - 1], state.aliases);
+          if (resolved != operands[index - 1]) {
+            operands[index - 1] = resolved;
+            changed = true;
+          }
+        }
+        if (changed) {
+          instruction = Instruction{"phi", std::move(operands), instruction.result()};
+        }
         continue;
       }
       const std::string value = currentValueForSlot(slotIt->second, state);
