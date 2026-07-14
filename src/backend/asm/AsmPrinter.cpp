@@ -1155,10 +1155,57 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 }
 
 void emitFunction(std::ostringstream& os, const MachineModule& module, const MachineFunction& function) {
+  std::unordered_map<std::string, std::string> redirects;
+  for (std::size_t blockIndex = 1; blockIndex < function.blocks.size(); ++blockIndex) {
+    const auto& block = function.blocks[blockIndex];
+    if (block.instructions.empty()) {
+      continue;
+    }
+    bool hasOnlyNoOpCopies = true;
+    for (std::size_t index = 0; index + 1 < block.instructions.size(); ++index) {
+      const auto& copy = block.instructions[index];
+      if (copy.opcode != "copy" || !copy.hasResult || copy.operands.size() != 1 ||
+          copy.result.kind != MachineOperandKind::PhysicalRegister ||
+          copy.operands.front().kind != MachineOperandKind::PhysicalRegister ||
+          copy.result.text != copy.operands.front().text) {
+        hasOnlyNoOpCopies = false;
+        break;
+      }
+    }
+    if (!hasOnlyNoOpCopies) {
+      continue;
+    }
+    const auto& instruction = block.instructions.back();
+    if (instruction.opcode == "br" && instruction.operands.size() == 1 &&
+        instruction.operands.front().kind == MachineOperandKind::Label &&
+        instruction.operands.front().text != block.name) {
+      redirects.emplace(block.name, instruction.operands.front().text);
+    }
+  }
+
+  const auto resolveBlockName = [&](const std::string& initial) {
+    std::string current = initial;
+    std::unordered_set<std::string> seen;
+    while (seen.insert(current).second) {
+      const auto redirect = redirects.find(current);
+      if (redirect == redirects.end()) {
+        break;
+      }
+      current = redirect->second;
+    }
+    return current;
+  };
+
   std::unordered_map<std::string, std::string> labels;
   std::unordered_map<std::string, std::size_t> blockIndices;
   for (const auto& block : function.blocks) {
-    labels.emplace(block.name, blockLabel(function, block));
+    const auto resolved = resolveBlockName(block.name);
+    if (resolved == block.name) {
+      labels.emplace(block.name, blockLabel(function, block));
+    } else {
+      labels.emplace(block.name, ".L" + sanitizeName(function.name) + "_" +
+                                     sanitizeName(resolved));
+    }
     blockIndices.emplace(block.name, blockIndices.size());
   }
   std::unordered_set<std::string> loopHeaders;
@@ -1167,9 +1214,10 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
       if (operand.kind != MachineOperandKind::Label) {
         return;
       }
-      const auto target = blockIndices.find(operand.text);
+      const auto resolved = resolveBlockName(operand.text);
+      const auto target = blockIndices.find(resolved);
       if (target != blockIndices.end() && target->second <= blockIndex) {
-        loopHeaders.insert(operand.text);
+        loopHeaders.insert(resolved);
       }
     };
     for (const auto& instruction : function.blocks[blockIndex].instructions) {
@@ -1197,13 +1245,19 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
 
   for (std::size_t blockIndex = 0; blockIndex < function.blocks.size(); ++blockIndex) {
     const auto& block = function.blocks[blockIndex];
+    if (resolveBlockName(block.name) != block.name) {
+      continue;
+    }
     if (loopHeaders.find(block.name) != loopHeaders.end()) {
       os << ".p2align 4\n";
     }
     os << labels.at(block.name) << ":\n";
     const std::string* fallthroughLabel = nullptr;
-    if (blockIndex + 1 < function.blocks.size()) {
-      fallthroughLabel = &labels.at(function.blocks[blockIndex + 1].name);
+    for (std::size_t next = blockIndex + 1; next < function.blocks.size(); ++next) {
+      if (resolveBlockName(function.blocks[next].name) == function.blocks[next].name) {
+        fallthroughLabel = &labels.at(function.blocks[next].name);
+        break;
+      }
     }
     for (const auto& instruction : block.instructions) {
       emitInstruction(os, module, function, instruction, retLabel, labels,
