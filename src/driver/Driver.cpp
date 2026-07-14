@@ -202,6 +202,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RepeatedModularAddEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RepeatedAccumulationEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }
