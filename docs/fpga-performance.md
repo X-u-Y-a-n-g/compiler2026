@@ -117,10 +117,11 @@ results from differently linked ELF files incomparable.
 
 The acceptance target is target-program execution time on the FPGA. A candidate
 must produce a meaningful hotspot reduction before broad validation. Host or
-QEMU timing is optional supporting evidence, not an acceptance gate. Run the
-full performance suite only when the expected aggregate impact justifies the
-board time; after an accepted FPGA speedup, verify correctness before committing
-and pushing it to `zct`.
+QEMU timing is optional supporting evidence, not an acceptance gate. Because
+the current path consumes one browser/GDB/client session per ELF, run only the
+directly targeted hotspots on the FPGA. After an accepted FPGA speedup, run all
+60 performance cases in the container for output validation before committing
+and pushing it to `zct`; do not perform a 60-case FPGA sweep.
 
 ## Mandatory reset between runs
 
