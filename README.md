@@ -310,6 +310,8 @@ python3 scripts/eval.py correctness --keep-artifacts
 
 官方 BOOM FPGA 的开发板申请、macOS 端口转发、容器内裸机 ELF 构建、GDB 下载运行、周期读取和每轮重置步骤见 [docs/fpga-performance.md](docs/fpga-performance.md)。可复用的裸机运行时与命令入口位于 `scripts/fpga/`。
 
+2026-07-14 的 60 个性能测试点、榜上最佳时间和差距快照见 [docs/performance-leaderboard-snapshot.md](docs/performance-leaderboard-snapshot.md)。该表只用于选择通用编译器热点，所有优化仍须遵守 `AGENTS.md` 的比赛合规门禁。
+
 ## 当前限制
 
 - 仅支持单输入文件。
