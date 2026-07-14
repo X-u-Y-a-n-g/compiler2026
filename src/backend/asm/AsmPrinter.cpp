@@ -908,13 +908,48 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" ||
       opcode == "xor" || opcode == "shl" || opcode == "ashr" || opcode == "lshr") {
-    const std::string lhs =
-        integerOperandRegister(os, function, instruction.operands[0], "t0");
+    const auto& lhsOperand = instruction.operands[0];
+    const auto& rhsOperand = instruction.operands[1];
     const std::string result = resultRegister(instruction.result, "t2");
     const bool wordResult = instruction.result.type.isInt32();
     const bool isDivision = opcode == "div" || opcode == "sdiv";
     const bool isRemainder = opcode == "mod" || opcode == "srem";
-    const auto& rhsOperand = instruction.operands[1];
+
+    if (opcode == "mul") {
+      const MachineOperand* constant = nullptr;
+      const MachineOperand* multiplicand = nullptr;
+      if (rhsOperand.kind == MachineOperandKind::ImmediateInt) {
+        constant = &rhsOperand;
+        multiplicand = &lhsOperand;
+      } else if (lhsOperand.kind == MachineOperandKind::ImmediateInt) {
+        constant = &lhsOperand;
+        multiplicand = &rhsOperand;
+      }
+
+      std::uint64_t magnitude = 0;
+      if (constant != nullptr && powerOfTwoMagnitude(constant->intValue, magnitude)) {
+        const unsigned shift = log2PowerOfTwoMagnitude(magnitude);
+        const unsigned width = wordResult ? 32U : 64U;
+        if (shift < width) {
+          const std::string source = integerOperandRegister(os, function, *multiplicand, "t0");
+          if (shift == 0) {
+            if (result != source) {
+              os << "  mv " << result << ", " << source << '\n';
+            }
+          } else {
+            os << "  " << (wordResult ? "slliw " : "slli ") << result << ", " << source
+               << ", " << shift << '\n';
+          }
+          if (constant->intValue < 0) {
+            os << "  " << (wordResult ? "negw " : "neg ") << result << ", " << result << '\n';
+          }
+          commitResult(os, function, instruction.result, result);
+          return;
+        }
+      }
+    }
+
+    const std::string lhs = integerOperandRegister(os, function, lhsOperand, "t0");
     if ((opcode == "and" || opcode == "or" || opcode == "xor") &&
         rhsOperand.kind == MachineOperandKind::ImmediateInt &&
         rhsOperand.intValue >= 0 && fitsSigned12(rhsOperand.intValue)) {
