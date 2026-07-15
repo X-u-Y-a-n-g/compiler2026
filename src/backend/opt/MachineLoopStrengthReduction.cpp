@@ -483,6 +483,99 @@ std::size_t insertionPoint(const MachineBlock& block) {
   return index;
 }
 
+bool isStrictSubset(const std::unordered_set<std::size_t>& lhs,
+                    const std::unordered_set<std::size_t>& rhs) {
+  if (lhs.size() >= rhs.size()) return false;
+  return std::all_of(lhs.begin(), lhs.end(), [&](const auto block) {
+    return rhs.find(block) != rhs.end();
+  });
+}
+
+void hoistInnermostBranchConstants(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  const bool functionHasCall = std::any_of(
+      function.blocks.begin(), function.blocks.end(), [](const auto& block) {
+        return std::any_of(block.instructions.begin(), block.instructions.end(),
+                           [](const auto& instruction) {
+                             return instruction.opcode == "call";
+                           });
+      });
+  if (!functionHasCall) return;
+
+  const auto cfg = CFGBuilder{}.build(function, adapter);
+  const auto reachable = computeReachable(cfg);
+  const auto dominators = computeDominators(cfg, reachable);
+  const auto loops = findLoops(cfg, reachable, dominators);
+  auto names = collectVirtualNames(function);
+
+  for (const auto& loop : loops) {
+    const bool containsNestedLoop = std::any_of(
+        loops.begin(), loops.end(), [&](const auto& candidate) {
+          return isStrictSubset(candidate.blocks, loop.blocks);
+        });
+    if (containsNestedLoop) continue;
+
+    bool hasCall = false;
+    std::unordered_map<long long, std::size_t> frequencies;
+    std::unordered_map<long long, compiler::backend::mir::ValueType> types;
+    for (const auto blockIndex : loop.blocks) {
+      for (const auto& instruction : function.blocks[blockIndex].instructions) {
+        if (instruction.opcode == "call") hasCall = true;
+        const bool isCompare = instruction.opcode.rfind("icmp.", 0) == 0 ||
+                               instruction.opcode.rfind("br.icmp.", 0) == 0;
+        if (!isCompare ||
+            instruction.operands.size() < 2) {
+          continue;
+        }
+        for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
+          const auto& operand = instruction.operands[operandIndex];
+          if (operand.kind != MachineOperandKind::ImmediateInt ||
+              !operand.type.isInt32() || operand.intValue == 0) {
+            continue;
+          }
+          ++frequencies[operand.intValue];
+          types.emplace(operand.intValue, operand.type);
+        }
+      }
+    }
+    if (hasCall || frequencies.empty()) continue;
+
+    const auto best = std::max_element(
+        frequencies.begin(), frequencies.end(), [](const auto& lhs, const auto& rhs) {
+          if (lhs.second != rhs.second) return lhs.second < rhs.second;
+          return lhs.first < rhs.first;
+        });
+    const auto constant = freshVirtual(names, "%loop.branch.constant", types.at(best->first));
+    auto& preheader = function.blocks[loop.preheader];
+    const auto position = insertionPoint(preheader);
+    preheader.instructions.insert(
+        preheader.instructions.begin() + position,
+        MachineInstruction::target(
+            "copy", constant,
+            {MachineOperand::immediateInt(best->first, types.at(best->first))}));
+
+    for (const auto blockIndex : loop.blocks) {
+      for (auto& instruction : function.blocks[blockIndex].instructions) {
+        const bool isCompare = instruction.opcode.rfind("icmp.", 0) == 0 ||
+                               instruction.opcode.rfind("br.icmp.", 0) == 0;
+        if (!isCompare ||
+            instruction.operands.size() < 2) {
+          continue;
+        }
+        for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
+          auto& operand = instruction.operands[operandIndex];
+          if (operand.kind == MachineOperandKind::ImmediateInt &&
+              operand.type.isInt32() &&
+              operand.intValue == best->first) {
+            operand = constant;
+          }
+        }
+      }
+    }
+  }
+}
+
 bool transform(MachineFunction& function, const Plan& plan) {
   auto names = collectVirtualNames(function);
   std::vector<MachineInstruction> preheaderInitializers;
@@ -599,6 +692,7 @@ void MachineLoopStrengthReduction::run(
         break;
       }
     }
+    hoistInnermostBranchConstants(function, adapter);
   }
 }
 
