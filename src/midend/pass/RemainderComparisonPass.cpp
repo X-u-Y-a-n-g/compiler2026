@@ -87,9 +87,27 @@ void simplifyRemainderComparisons(Function& function) {
               detail::parseIntegerLiteral(remainder.operands()[1], divisor) &&
               isPositivePowerOfTwo(divisor)) {
             const std::string maskResult = nextMaskName(names, counter);
+            std::string valueToMask = remainder.operands()[0];
+            if (divisor == 2) {
+              const auto dividend = definitions.find(remainder.operands()[0]);
+              if (dividend != definitions.end() &&
+                  dividend->second.opcode() == "mul" &&
+                  dividend->second.operands().size() == 2) {
+                // Multiplication modulo two is multiplication in GF(2), i.e.
+                // the AND of the operands' low bits.  Retain the final mask
+                // so the replacement has exactly the original 0/1 value for
+                // signed as well as unsigned two's-complement operands.
+                valueToMask = nextMaskName(names, counter);
+                rewritten.emplace_back(
+                    "and",
+                    std::vector<std::string>{dividend->second.operands()[0],
+                                             dividend->second.operands()[1]},
+                    valueToMask);
+              }
+            }
             rewritten.emplace_back(
                 "and",
-                std::vector<std::string>{remainder.operands()[0],
+                std::vector<std::string>{valueToMask,
                                          std::to_string(divisor - 1)},
                 maskResult);
             operands[remainderOperand] = maskResult;
