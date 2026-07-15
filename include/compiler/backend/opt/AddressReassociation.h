@@ -6,6 +6,7 @@ namespace compiler::backend::opt {
 
 class AddressReassociation {
  public:
+  void runReassociation(compiler::backend::mir::MachineModule& module) const;
   void run(compiler::backend::mir::MachineModule& module) const;
 };
 

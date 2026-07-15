@@ -7,6 +7,7 @@
 #include "../../../include/compiler/backend/opt/AddressReassociation.h"
 #include "../../../include/compiler/backend/opt/CompareBranchFusion.h"
 #include "../../../include/compiler/backend/opt/MachineDeadCodeElimination.h"
+#include "../../../include/compiler/backend/opt/MachineLoopStrengthReduction.h"
 #include "../../../include/compiler/backend/opt/PhiElimination.h"
 #include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
 #include "../../../include/compiler/backend/regalloc/RegisterAllocator.h"
@@ -21,9 +22,13 @@ class Riscv64Backend final : public BackendTarget {
  public:
   [[nodiscard]] std::string name() const override { return "riscv64"; }
 
-  [[nodiscard]] std::string generateAssembly(const compiler::ir::core::Module& module) const override {
+  [[nodiscard]] std::string generateAssembly(
+      const compiler::ir::core::Module& module) const override {
     const auto target = TargetInfo::fromName("riscv64");
     auto machineModule = loweringFor(target).lowerModule(module, target);
+    compiler::backend::opt::AddressReassociation{}.runReassociation(
+        machineModule);
+    compiler::backend::opt::MachineLoopStrengthReduction{}.run(machineModule);
     compiler::backend::opt::PhiElimination{}.run(machineModule);
     compiler::backend::opt::CompareBranchFusion{}.run(machineModule);
     compiler::backend::opt::StackObjectPromotion{}.run(machineModule);
@@ -43,7 +48,8 @@ const TargetRegInfo& regInfoFor(const TargetInfo& target) {
   if (target.name() == "riscv64") {
     return riscv64;
   }
-  throw std::runtime_error("target reg info not implemented for " + target.name());
+  throw std::runtime_error("target reg info not implemented for " +
+                           target.name());
 }
 
 const TargetInstrAdapter& instrAdapterFor(const TargetInfo& target) {
@@ -51,7 +57,8 @@ const TargetInstrAdapter& instrAdapterFor(const TargetInfo& target) {
   if (target.name() == "riscv64") {
     return riscv64;
   }
-  throw std::runtime_error("target instr adapter not implemented for " + target.name());
+  throw std::runtime_error("target instr adapter not implemented for " +
+                           target.name());
 }
 
 const TargetLowering& loweringFor(const TargetInfo& target) {
@@ -59,7 +66,8 @@ const TargetLowering& loweringFor(const TargetInfo& target) {
   if (target.name() == "riscv64") {
     return riscv64;
   }
-  throw std::runtime_error("target lowering not implemented for " + target.name());
+  throw std::runtime_error("target lowering not implemented for " +
+                           target.name());
 }
 
 const BackendTarget& backendFor(const TargetInfo& target) {
@@ -67,7 +75,8 @@ const BackendTarget& backendFor(const TargetInfo& target) {
   if (target.name() == "riscv64") {
     return riscv64;
   }
-  throw std::runtime_error("target backend not implemented for " + target.name());
+  throw std::runtime_error("target backend not implemented for " +
+                           target.name());
 }
 
 }  // namespace compiler::backend::target

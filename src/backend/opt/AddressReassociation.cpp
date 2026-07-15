@@ -183,9 +183,10 @@ std::vector<LoopInfo> findLoops(
       }
     }
   }
-  std::sort(loops.begin(), loops.end(), [](const LoopInfo& lhs, const LoopInfo& rhs) {
-    return lhs.blocks.size() < rhs.blocks.size();
-  });
+  std::sort(loops.begin(), loops.end(),
+            [](const LoopInfo& lhs, const LoopInfo& rhs) {
+              return lhs.blocks.size() < rhs.blocks.size();
+            });
   return loops;
 }
 
@@ -228,8 +229,8 @@ void insertBeforeTerminator(
   auto position = block.instructions.end();
   if (!block.instructions.empty()) {
     const auto& last = block.instructions.back();
-    if (adapter.isConditionalBranch(last) || adapter.isUnconditionalBranch(last) ||
-        adapter.isReturn(last)) {
+    if (adapter.isConditionalBranch(last) ||
+        adapter.isUnconditionalBranch(last) || adapter.isReturn(last)) {
       position = block.instructions.end() - 1;
     }
   }
@@ -264,9 +265,10 @@ void promoteNestedGlobalAddresses(
   for (const auto& loop : loops) {
     outerFirst.push_back(&loop);
   }
-  std::sort(outerFirst.begin(), outerFirst.end(), [](const LoopInfo* lhs, const LoopInfo* rhs) {
-    return lhs->blocks.size() > rhs->blocks.size();
-  });
+  std::sort(outerFirst.begin(), outerFirst.end(),
+            [](const LoopInfo* lhs, const LoopInfo* rhs) {
+              return lhs->blocks.size() > rhs->blocks.size();
+            });
 
   struct Candidate {
     MachineOperand address;
@@ -304,22 +306,25 @@ void promoteNestedGlobalAddresses(
 
     std::vector<Candidate> profitable;
     for (auto& [_, candidate] : candidates) {
-      // A single address use in one loop is usually cheaper than extending a live range.
-      // Nested-loop uses have exponentially larger estimated savings.
+      // A single address use in one loop is usually cheaper than extending a
+      // live range. Nested-loop uses have exponentially larger estimated
+      // savings.
       if (candidate.benefit >= 64) {
         profitable.push_back(std::move(candidate));
       }
     }
-    std::sort(profitable.begin(), profitable.end(), [](const Candidate& lhs, const Candidate& rhs) {
-      return lhs.benefit > rhs.benefit;
-    });
+    std::sort(profitable.begin(), profitable.end(),
+              [](const Candidate& lhs, const Candidate& rhs) {
+                return lhs.benefit > rhs.benefit;
+              });
     if (profitable.size() > 3) {
       profitable.resize(3);
     }
 
     for (const auto& candidate : profitable) {
       const MachineOperand promoted = MachineOperand::virtualRegister(
-          "%global.address." + std::to_string(nextTemporary++), candidate.address.type);
+          "%global.address." + std::to_string(nextTemporary++),
+          candidate.address.type);
       insertBeforeTerminator(
           function.blocks[loop->preheader],
           MachineInstruction::copy(promoted, candidate.address), adapter);
@@ -346,13 +351,27 @@ void promoteNestedGlobalAddresses(
 
 }  // namespace
 
-void AddressReassociation::run(
-    compiler::backend::mir::MachineModule& module) const {
-  const auto& adapter = compiler::backend::target::instrAdapterFor(module.target);
+namespace {
+
+constexpr std::size_t kMaxEarlyAnalysisInstructions = 4096;
+
+void runAddressReassociation(compiler::backend::mir::MachineModule& module,
+                             bool promoteGlobalAddresses) {
+  const auto& adapter =
+      compiler::backend::target::instrAdapterFor(module.target);
   std::size_t nextTemporary = 0;
   for (auto& function : module.functions) {
     if (function.blocks.size() > 128) {
       continue;
+    }
+    if (!promoteGlobalAddresses) {
+      std::size_t instructionCount = 0;
+      for (const auto& block : function.blocks) {
+        instructionCount += block.instructions.size();
+      }
+      if (instructionCount > kMaxEarlyAnalysisInstructions) {
+        continue;
+      }
     }
     const auto cfg = CFGBuilder{}.build(function, adapter);
     const auto reachable = computeReachable(cfg);
@@ -368,7 +387,8 @@ void AddressReassociation::run(
     std::vector<MachineOperand> defs;
     for (std::size_t block = 0; block < function.blocks.size(); ++block) {
       for (std::size_t instruction = 0;
-           instruction < function.blocks[block].instructions.size(); ++instruction) {
+           instruction < function.blocks[block].instructions.size();
+           ++instruction) {
         const auto& current = function.blocks[block].instructions[instruction];
         adapter.enumerateDefs(current, defs);
         for (const auto& operand : defs) {
@@ -408,8 +428,7 @@ void AddressReassociation::run(
         for (std::size_t secondIndex = 0;
              secondIndex < block.instructions.size(); ++secondIndex) {
           const auto& second = block.instructions[secondIndex];
-          if (!isGep(second) ||
-              !isVirtualRegister(second.operands[0])) {
+          if (!isGep(second) || !isVirtualRegister(second.operands[0])) {
             continue;
           }
           const auto firstLocation =
@@ -421,8 +440,9 @@ void AddressReassociation::run(
                   claimedIntermediate.end()) {
             continue;
           }
-          const auto& first = function.blocks[firstLocation->second.block]
-                                  .instructions[firstLocation->second.instruction];
+          const auto& first =
+              function.blocks[firstLocation->second.block]
+                  .instructions[firstLocation->second.instruction];
           if (!isGep(first) ||
               first.operands[0].kind != MachineOperandKind::GlobalAddress ||
               first.operands[2].kind != MachineOperandKind::ImmediateInt ||
@@ -432,7 +452,8 @@ void AddressReassociation::run(
             continue;
           }
 
-          const MachineOperand rowIndex = resolveAlias(first.operands[1], aliases);
+          const MachineOperand rowIndex =
+              resolveAlias(first.operands[1], aliases);
           const MachineOperand columnIndex =
               resolveAlias(second.operands[1], aliases);
           if (!hasDefinitionInside(rowIndex, loop, definitionBlocks) ||
@@ -447,15 +468,14 @@ void AddressReassociation::run(
           MachineInstruction preheaderInstruction = MachineInstruction::target(
               "gep", columnBase,
               {first.operands[0], columnIndex, second.operands[2]});
-          transformations.push_back(
-              {firstLocation->second,
-               {blockIndex, secondIndex},
-               loop.preheader,
-               loop.header,
-               columnBase,
-               rowIndex,
-               first.operands[2],
-               std::move(preheaderInstruction)});
+          transformations.push_back({firstLocation->second,
+                                     {blockIndex, secondIndex},
+                                     loop.preheader,
+                                     loop.header,
+                                     columnBase,
+                                     rowIndex,
+                                     first.operands[2],
+                                     std::move(preheaderInstruction)});
           claimedIntermediate.insert(first.result.text);
         }
       }
@@ -466,10 +486,11 @@ void AddressReassociation::run(
       ++transformationsPerLoop[transformation.loopHeader];
     }
     transformations.erase(
-        std::remove_if(transformations.begin(), transformations.end(),
-                       [&](const auto& transformation) {
-                         return transformationsPerLoop[transformation.loopHeader] < 2;
-                       }),
+        std::remove_if(
+            transformations.begin(), transformations.end(),
+            [&](const auto& transformation) {
+              return transformationsPerLoop[transformation.loopHeader] < 2;
+            }),
         transformations.end());
 
     std::vector<std::vector<unsigned char>> remove(function.blocks.size());
@@ -487,19 +508,36 @@ void AddressReassociation::run(
       std::vector<MachineInstruction> kept;
       kept.reserve(function.blocks[block].instructions.size());
       for (std::size_t instruction = 0;
-           instruction < function.blocks[block].instructions.size(); ++instruction) {
+           instruction < function.blocks[block].instructions.size();
+           ++instruction) {
         if (remove[block][instruction] == 0) {
-          kept.push_back(std::move(function.blocks[block].instructions[instruction]));
+          kept.push_back(
+              std::move(function.blocks[block].instructions[instruction]));
         }
       }
       function.blocks[block].instructions = std::move(kept);
     }
     for (auto& transformation : transformations) {
       insertBeforeTerminator(function.blocks[transformation.preheader],
-                             std::move(transformation.preheaderInstruction), adapter);
+                             std::move(transformation.preheaderInstruction),
+                             adapter);
     }
-    promoteNestedGlobalAddresses(function, loops, adapter, nextTemporary);
+    if (promoteGlobalAddresses) {
+      promoteNestedGlobalAddresses(function, loops, adapter, nextTemporary);
+    }
   }
+}
+
+}  // namespace
+
+void AddressReassociation::runReassociation(
+    compiler::backend::mir::MachineModule& module) const {
+  runAddressReassociation(module, false);
+}
+
+void AddressReassociation::run(
+    compiler::backend::mir::MachineModule& module) const {
+  runAddressReassociation(module, true);
 }
 
 }  // namespace compiler::backend::opt
