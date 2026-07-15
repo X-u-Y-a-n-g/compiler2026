@@ -43,6 +43,7 @@ add_library(compiler_lib
   src/backend/opt/AddressReassociation.cpp
   src/backend/opt/CompareBranchFusion.cpp
   src/backend/opt/MachineDeadCodeElimination.cpp
+  src/backend/opt/MachineLoopBlockPlacement.cpp
   src/backend/opt/MachineLoopStrengthReduction.cpp
   src/backend/opt/PhiElimination.cpp
   src/backend/opt/StackObjectPromotion.cpp

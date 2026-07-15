@@ -30,7 +30,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 - 前端：词法、语法、AST、语义分析、类型检查已打通。
 - IR：支持控制流、数组、函数调用、整型/浮点运算、类型转换和全局对象。
 - `-O1`：运行 Mem2Reg、通用小函数内联、直接尾递归消除、全局标量局部化、过程间副作用分析、计数仿射/模递推闭式化简、公共子表达式消除、循环不变量外提、带依赖证明的标量归约循环展开合并、二次幂余数比较简化、冗余 load/store 消除、死代码删除和空基本块清理。
-- 后端：支持 RISC-V 64 指令选择、Phi 消除、栈对象提升、二维地址重关联、机器级循环地址归纳变量强度削弱、嵌套循环全局地址物化提升、图着色寄存器分配、机器级死代码消除、栈帧与汇编输出。
+- 后端：支持 RISC-V 64 指令选择、Phi 消除、栈对象提升、二维地址重关联、机器级循环地址归纳变量强度削弱、嵌套循环全局地址物化提升、自然循环旋转与收益约束的基本块布局、图着色寄存器分配、机器级死代码消除、栈帧与汇编输出。
 - 计时函数：`starttime()` / `stoptime()` 会被降级为带源码行号的 `_sysy_starttime(int)` / `_sysy_stoptime(int)` 调用。
 
 ## 编译优化合规声明
@@ -43,7 +43,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 ## 人工智能辅助与技术参考披露
 
 - 开发过程中使用 OpenAI Codex 辅助进行源码审查、优化方案分析、C++ 实现与重构、测试脚本和项目文档编写。参赛队员负责确定需求、审查和修改生成代码、处理集成冲突、运行正确性/性能测试，并决定最终保留或撤销的实现。
-- 优化思路曾参考 2020 年 USTC [FlammingMyCompiler](https://github.com/mlzeng/CSC2020-USTC-FlammingMyCompiler) 与 2021 年 [MahoShojo](https://github.com/wildoranges/MahoShojo) 等公开获奖项目，以及公开的经典编译原理和 RISC-V ABI/ISA 资料；本仓库未直接复制 GCC、LLVM 或上述项目源码。借鉴的具体技术包括数据流优化、循环优化、指令选择和图着色寄存器分配，其实现均结合本项目 IR 与后端独立完成。
+- 优化思路曾参考 2020 年 USTC [FlammingMyCompiler](https://github.com/mlzeng/CSC2020-USTC-FlammingMyCompiler)、2021 年 [MahoShojo](https://github.com/wildoranges/MahoShojo) 和 2025 年剑桥大学[不队](https://gitlab.eduxiji.net/educg-group-36290-2935672/T202500000205464-2455)等公开项目，以及公开的经典编译原理和 RISC-V ABI/ISA 资料；本仓库未直接复制 GCC、LLVM 或上述项目源码。借鉴的是结构化循环优化、循环旋转、数据流优化、指令选择和图着色寄存器分配等通用思想，具体分析、数据结构、合法性条件和成本模型均结合本项目 IR 与后端独立实现。
 
 ## 验证记录
 
@@ -51,7 +51,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 
 - Ubuntu 24.04/amd64 比赛容器内 Release 构建成功。
 - `correctness` 通道最近一次完整回归为 140/140 AC。
-- 当前 `zct` 的 `performance` 通道为 60/60 AC，2026-07-14 同容器逐用例内部计时总和从 `7.357633s` 降至 `7.129345s`，约降低 `3.10%`。本地 QEMU 计时只用于版本间回归，不代表官方 BOOM 评测机时间。
+- 当前 `wz` 的 `performance` 通道为 60/60 AC；本地 QEMU 计时只用于版本间回归，不代表官方 BOOM 评测机时间。自然循环旋转已在官方 BOOM 上将 `huffman-01` 从 `545,585,127` 降至 `403,685,578` cycles，周期下降 `26.01%`。
 - 当前性能分析入口可记录计时区间动态指令、最热基本块及 RISC-V `generic-ooo` 近似调度结果；这些分析运行不参与计时。
 
 ## 项目结构

@@ -7,6 +7,7 @@
 #include "../../../include/compiler/backend/opt/AddressReassociation.h"
 #include "../../../include/compiler/backend/opt/CompareBranchFusion.h"
 #include "../../../include/compiler/backend/opt/MachineDeadCodeElimination.h"
+#include "../../../include/compiler/backend/opt/MachineLoopBlockPlacement.h"
 #include "../../../include/compiler/backend/opt/MachineLoopStrengthReduction.h"
 #include "../../../include/compiler/backend/opt/PhiElimination.h"
 #include "../../../include/compiler/backend/opt/StackObjectPromotion.h"
@@ -37,6 +38,7 @@ class Riscv64Backend final : public BackendTarget {
     compiler::backend::opt::MachineDeadCodeElimination{}.run(machineModule);
     compiler::backend::frame::FrameLowering{}.lower(machineModule);
     compiler::backend::stack::StackLowering{}.lower(machineModule);
+    compiler::backend::opt::MachineLoopBlockPlacement{}.run(machineModule);
     return compiler::backend::asmcode::AsmPrinter{}.print(machineModule);
   }
 };
