@@ -27,6 +27,7 @@
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
+#include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
@@ -179,6 +180,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::DivRemPairStrengthReductionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::RemainderComparisonPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());

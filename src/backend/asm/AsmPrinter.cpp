@@ -979,6 +979,28 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
       }
     }
 
+    if ((opcode == "shl" || opcode == "ashr" || opcode == "lshr") &&
+        rhsOperand.kind == MachineOperandKind::ImmediateInt) {
+      const unsigned width = wordResult ? 32U : 64U;
+      if (rhsOperand.intValue >= 0 &&
+          static_cast<std::uint64_t>(rhsOperand.intValue) < width) {
+        const std::string source =
+            integerOperandRegister(os, function, lhsOperand, "t0");
+        const char* immediateOpcode = nullptr;
+        if (opcode == "shl") {
+          immediateOpcode = wordResult ? "slliw " : "slli ";
+        } else if (opcode == "ashr") {
+          immediateOpcode = wordResult ? "sraiw " : "srai ";
+        } else {
+          immediateOpcode = wordResult ? "srliw " : "srli ";
+        }
+        os << "  " << immediateOpcode << result << ", " << source << ", "
+           << rhsOperand.intValue << '\n';
+        commitResult(os, function, instruction.result, result);
+        return;
+      }
+    }
+
     const std::string lhs = integerOperandRegister(os, function, lhsOperand, "t0");
     if ((opcode == "and" || opcode == "or" || opcode == "xor") &&
         rhsOperand.kind == MachineOperandKind::ImmediateInt &&
