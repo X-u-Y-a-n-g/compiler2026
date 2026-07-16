@@ -14,6 +14,7 @@ namespace {
 using compiler::backend::mir::MachineFunction;
 using compiler::backend::mir::MachineInstruction;
 using compiler::backend::mir::MachineOperand;
+using compiler::backend::mir::MachineOperandKind;
 using compiler::backend::mir::ValueType;
 
 std::size_t alignTo(std::size_t value, std::size_t alignment) {
@@ -90,6 +91,65 @@ void collectUsedFloatCalleeSaved(
   function.usedFloatCalleeSavedRegisters = std::move(used);
 }
 
+bool instructionUsesPhysicalRegister(const MachineInstruction& instruction,
+                                     const std::string& reg) {
+  if (instruction.hasResult &&
+      instruction.result.kind == MachineOperandKind::PhysicalRegister &&
+      instruction.result.text == reg) {
+    return true;
+  }
+  for (const auto& operand : instruction.operands) {
+    if (operand.kind == MachineOperandKind::PhysicalRegister && operand.text == reg) {
+      return true;
+    }
+  }
+  for (const auto& incoming : instruction.phiInputs) {
+    if (incoming.value.kind == MachineOperandKind::PhysicalRegister &&
+        incoming.value.text == reg) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool containsDirectRecursiveCall(const MachineFunction& function) {
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instruction.opcode == "call" && !instruction.operands.empty() &&
+          instruction.operands.front().kind == MachineOperandKind::FunctionSymbol &&
+          instruction.operands.front().text == function.name) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool hasDynamicStackAdjustment(const MachineFunction& function) {
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instruction.kind ==
+              compiler::backend::mir::MachineInstructionKind::StackAdjust ||
+          instruction.opcode == "stack.adjust") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool bodyUsesFramePointer(const MachineFunction& function,
+                          const std::string& framePointer) {
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instructionUsesPhysicalRegister(instruction, framePointer)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
@@ -120,6 +180,7 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
         function.usedFloatCalleeSavedRegisters.empty();
     if (canOmitFrame) {
       function.frameSize = 0;
+      function.usesFramePointer = false;
       function.savedRaOffset = 0;
       function.savedFpOffset = 0;
       function.savedIntegerRegisterOffsets.clear();
@@ -129,24 +190,36 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
       continue;
     }
 
+    // A fixed stack pointer is a cheaper frame base for recursively executed
+    // functions: every omitted frame-pointer save/setup/restore is paid at
+    // each recursive invocation. Keep the conventional frame pointer whenever
+    // the body adjusts sp itself or already refers to the target FP register.
+    function.usesFramePointer =
+        !containsDirectRecursiveCall(function) || hasDynamicStackAdjustment(function) ||
+        bodyUsesFramePointer(function, regInfo.framePointerRegister());
+
     function.savedRaOffset = static_cast<int>(module.target.pointerSize());
-    function.savedFpOffset = static_cast<int>(module.target.pointerSize() * 2);
+    function.savedFpOffset =
+        function.usesFramePointer ? static_cast<int>(module.target.pointerSize() * 2) : 0;
+
+    const std::size_t fixedSaveCount = function.usesFramePointer ? 2 : 1;
 
     function.savedIntegerRegisterOffsets.clear();
     function.savedIntegerRegisterOffsets.reserve(function.usedIntegerCalleeSavedRegisters.size());
     for (std::size_t i = 0; i < function.usedIntegerCalleeSavedRegisters.size(); ++i) {
       function.savedIntegerRegisterOffsets.push_back(
-          static_cast<int>(module.target.pointerSize() * (3 + i)));
+          static_cast<int>(module.target.pointerSize() * (fixedSaveCount + 1 + i)));
     }
 
     function.savedFloatRegisterOffsets.clear();
     const std::size_t floatSaveBase =
-        module.target.pointerSize() * (3 + function.usedIntegerCalleeSavedRegisters.size());
+        module.target.pointerSize() *
+        (fixedSaveCount + 1 + function.usedIntegerCalleeSavedRegisters.size());
     for (std::size_t i = 0; i < function.usedFloatCalleeSavedRegisters.size(); ++i) {
       function.savedFloatRegisterOffsets.push_back(static_cast<int>(floatSaveBase + 8 * i));
     }
 
-    const std::size_t saveArea = module.target.pointerSize() * 2 +
+    const std::size_t saveArea = module.target.pointerSize() * fixedSaveCount +
                                  module.target.pointerSize() *
                                      function.usedIntegerCalleeSavedRegisters.size() +
                                  8 * function.usedFloatCalleeSavedRegisters.size();
@@ -170,9 +243,12 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
     function.prologueInstructions.push_back(
         makeStackSave(regInfo.returnAddressRegister(), ValueType::int64Type(),
                       static_cast<long long>(function.frameSize - module.target.pointerSize())));
-    function.prologueInstructions.push_back(
-        makeStackSave(regInfo.framePointerRegister(), ValueType::int64Type(),
-                      static_cast<long long>(function.frameSize - module.target.pointerSize() * 2)));
+    if (function.usesFramePointer) {
+      function.prologueInstructions.push_back(
+          makeStackSave(regInfo.framePointerRegister(), ValueType::int64Type(),
+                        static_cast<long long>(function.frameSize -
+                                               module.target.pointerSize() * 2)));
+    }
     for (std::size_t i = 0; i < function.usedIntegerCalleeSavedRegisters.size(); ++i) {
       function.prologueInstructions.push_back(
           makeStackSave(function.usedIntegerCalleeSavedRegisters[i], ValueType::int64Type(),
@@ -186,12 +262,14 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
                                                function.savedFloatRegisterOffsets[i])));
     }
 
-    MachineInstruction setFramePointer;
-    setFramePointer.kind = compiler::backend::mir::MachineInstructionKind::StackSetFramePointer;
-    setFramePointer.opcode = "stack.set_fp";
-    setFramePointer.operands.push_back(
-        MachineOperand::immediateInt(static_cast<long long>(function.frameSize), ValueType::int64Type()));
-    function.prologueInstructions.push_back(std::move(setFramePointer));
+    if (function.usesFramePointer) {
+      MachineInstruction setFramePointer;
+      setFramePointer.kind = compiler::backend::mir::MachineInstructionKind::StackSetFramePointer;
+      setFramePointer.opcode = "stack.set_fp";
+      setFramePointer.operands.push_back(MachineOperand::immediateInt(
+          static_cast<long long>(function.frameSize), ValueType::int64Type()));
+      function.prologueInstructions.push_back(std::move(setFramePointer));
+    }
 
     std::size_t intRegs = 0;
     std::size_t floatRegs = 0;
@@ -249,9 +327,11 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
     function.epilogueInstructions.push_back(
         makeStackRestore(regInfo.returnAddressRegister(), ValueType::int64Type(),
                          -function.savedRaOffset));
-    function.epilogueInstructions.push_back(
-        makeStackRestore(regInfo.framePointerRegister(), ValueType::int64Type(),
-                         -function.savedFpOffset));
+    if (function.usesFramePointer) {
+      function.epilogueInstructions.push_back(
+          makeStackRestore(regInfo.framePointerRegister(), ValueType::int64Type(),
+                           -function.savedFpOffset));
+    }
     function.epilogueInstructions.push_back(
         makeStackAdjust(static_cast<long long>(function.frameSize)));
   }

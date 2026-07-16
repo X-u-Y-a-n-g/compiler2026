@@ -464,6 +464,7 @@ struct MachineFunction {
   std::vector<int> savedFloatRegisterOffsets;
   std::size_t frameSize = 0;
   std::size_t outgoingArgSize = 0;
+  bool usesFramePointer = true;
   int savedRaOffset = 0;
   int savedFpOffset = 0;
 };

@@ -185,19 +185,33 @@ const compiler::backend::mir::StackObject& stackObject(const MachineFunction& fu
   return function.stackObjects.at(static_cast<std::size_t>(index));
 }
 
+const char* frameBaseRegister(const MachineFunction& function) {
+  return function.usesFramePointer ? "s0" : "sp";
+}
+
+long long frameBaseOffset(const MachineFunction& function, long long cfaOffset) {
+  return function.usesFramePointer
+             ? cfaOffset
+             : static_cast<long long>(function.frameSize) + cfaOffset;
+}
+
 void emitStackObjectAddress(std::ostringstream& os, const MachineFunction& function, int index,
                             const std::string& dst) {
-  emitAddImmediate(os, dst, "s0", -stackObject(function, index).offset, kImmScratch);
+  emitAddImmediate(os, dst, frameBaseRegister(function),
+                   frameBaseOffset(function, -stackObject(function, index).offset),
+                   kImmScratch);
 }
 
 void emitLoadStackSlot(std::ostringstream& os, const MachineFunction& function, int index,
                        const std::string& dst, const ValueType& type) {
-  emitLoadBaseOffset(os, loadMnemonic(type), dst, "s0", -stackObject(function, index).offset);
+  emitLoadBaseOffset(os, loadMnemonic(type), dst, frameBaseRegister(function),
+                     frameBaseOffset(function, -stackObject(function, index).offset));
 }
 
 void emitStoreStackSlot(std::ostringstream& os, const MachineFunction& function, int index,
                         const std::string& src, const ValueType& type) {
-  emitStoreBaseOffset(os, storeMnemonic(type), src, "s0", -stackObject(function, index).offset);
+  emitStoreBaseOffset(os, storeMnemonic(type), src, frameBaseRegister(function),
+                      frameBaseOffset(function, -stackObject(function, index).offset));
 }
 
 void emitMaterializeAddress(std::ostringstream& os, const MachineFunction& function,
@@ -422,8 +436,9 @@ void emitStoreResult(std::ostringstream& os, const MachineFunction& function,
     return;
   }
   if (result.kind == MachineOperandKind::FrameIndex) {
-    emitStoreBaseOffset(os, storeMnemonic(result.type), src, "s0",
-                        -stackObject(function, result.index).offset);
+    emitStoreBaseOffset(
+        os, storeMnemonic(result.type), src, frameBaseRegister(function),
+        frameBaseOffset(function, -stackObject(function, result.index).offset));
   }
 }
 
@@ -606,7 +621,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
 
   if (opcode == "stack.restore") {
     const auto offset = instruction.operands[0].intValue;
-    emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), instruction.result.text, "s0", offset);
+    emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), instruction.result.text,
+                       frameBaseRegister(function), frameBaseOffset(function, offset));
     return;
   }
 
@@ -614,11 +630,13 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     const auto offset = instruction.operands[0].intValue;
     if (instruction.result.type.isFloat()) {
       const std::string result = resultRegister(instruction.result, "ft0");
-      emitLoadBaseOffset(os, "flw", result, "s0", offset);
+      emitLoadBaseOffset(os, "flw", result, frameBaseRegister(function),
+                         frameBaseOffset(function, offset));
       commitResult(os, function, instruction.result, result);
     } else {
       const std::string result = resultRegister(instruction.result, "t0");
-      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), result, "s0", offset);
+      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), result,
+                         frameBaseRegister(function), frameBaseOffset(function, offset));
       commitResult(os, function, instruction.result, result);
     }
     return;
@@ -627,8 +645,10 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
   if (opcode == "spill.reload" || opcode == "frame.load") {
     const auto& frame = instruction.operands[0];
     if (frame.kind == MachineOperandKind::FrameIndex) {
-      emitLoadBaseOffset(os, loadMnemonic(instruction.result.type), instruction.result.text, "s0",
-                         -stackObject(function, frame.index).offset);
+      emitLoadBaseOffset(
+          os, loadMnemonic(instruction.result.type), instruction.result.text,
+          frameBaseRegister(function),
+          frameBaseOffset(function, -stackObject(function, frame.index).offset));
     } else {
       emitLoadStackSlot(os, function, frame.index, instruction.result.text, instruction.result.type);
     }
@@ -641,16 +661,18 @@ void emitInstruction(std::ostringstream& os, const MachineModule& module, const 
     if (source.type.isFloat()) {
       const std::string sourceReg = floatOperandRegister(os, function, source, "ft0");
       if (frame.kind == MachineOperandKind::FrameIndex) {
-        emitStoreBaseOffset(os, storeMnemonic(source.type), sourceReg, "s0",
-                            -stackObject(function, frame.index).offset);
+        emitStoreBaseOffset(
+            os, storeMnemonic(source.type), sourceReg, frameBaseRegister(function),
+            frameBaseOffset(function, -stackObject(function, frame.index).offset));
       } else {
         emitStoreStackSlot(os, function, frame.index, sourceReg, source.type);
       }
     } else {
       const std::string sourceReg = integerOperandRegister(os, function, source, "t0");
       if (frame.kind == MachineOperandKind::FrameIndex) {
-        emitStoreBaseOffset(os, storeMnemonic(source.type), sourceReg, "s0",
-                            -stackObject(function, frame.index).offset);
+        emitStoreBaseOffset(
+            os, storeMnemonic(source.type), sourceReg, frameBaseRegister(function),
+            frameBaseOffset(function, -stackObject(function, frame.index).offset));
       } else {
         emitStoreStackSlot(os, function, frame.index, sourceReg, source.type);
       }
