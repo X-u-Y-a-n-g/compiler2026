@@ -33,6 +33,7 @@
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
+#include "../../include/compiler/midend/pass/MonotonicContinueEliminationPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
@@ -197,6 +198,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }

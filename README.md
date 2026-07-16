@@ -51,7 +51,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 
 - Ubuntu 24.04/amd64 比赛容器内 Release 构建成功。
 - `correctness` 通道最近一次完整回归为 140/140 AC。
-- 当前 `zct` 的 `performance` 通道为 60/60 AC；本地 QEMU 计时只用于版本间回归，不代表官方 BOOM 评测机时间。最新的除余配对强度削弱在官方 BOOM 上将 `huffman-01` 从 `642,709,678` 降至 `494,988,287` cycles，周期下降 `22.98%`。
+- 当前 `zct` 的 `performance` 通道为 60/60 AC；本地 QEMU 计时只用于版本间回归，不代表官方 BOOM 评测机时间。最新的单调 continue 后缀提前退出在官方 BOOM 上将 `transpose2` 从 `913,978,753` 降至 `633,782,628` cycles，周期下降 `30.66%`。
 - 当前性能分析入口可记录计时区间动态指令、最热基本块及 RISC-V `generic-ooo` 近似调度结果；这些分析运行不参与计时。
 
 ## 项目结构
@@ -284,6 +284,8 @@ python3 scripts/eval.py performance \
 当前 `AffineModularRecurrencePass` 会识别无副作用的零基单位计数循环，将 `state += loop_invariant_step` 以及带可证明安全保护的 `(state + step) % modulus` 递推改写为闭式计算。步长和模数可以是常量或任意循环不变量；动态带模路径会检查初值、次数、步长、模数和 i32 溢出条件，不满足时执行原循环。该 pass 可处理同一函数中的多个独立匹配，不读取符号名、数组尺寸或用例常数。官方 BOOM FPGA 上，`conv2d-1` 从 `5,514,638,911` 降到 `317,856,034` 周期，即 `110.2928s→6.3571s`、提速 `17.35x`；同一最终汇编下 `conv2d-2` 为 `86,417,335` 周期（`1.7283s`），`conv2d-3` 为 `30,274,169` 周期（`0.6055s`）。
 
 当前 `DivRemPairStrengthReductionPass` 在同一基本块中复用已经计算的有符号二次幂余数。若先有 `r = x % ±2^k`、后有 `q = x / ±2^k`，则依据截断向零恒等式 `x = q*d + r`，用 `x-r` 和算术右移恢复商；负除数再取负。后端为合法常量移位直接生成 `slli/srli/srai` 及 word 版。该优化只使用 SSA 数据流、整数语义和 RISC-V ISA，不识别名称、固定尺寸或测试特征。60 项性能汇编仅 CRC 与 Huffman 各三项变化；官方 BOOM 上 `huffman-01` 从 `642,709,678` 降至 `494,988,287` cycles，下降 `22.98%`，输出、返回值和完成标记保持一致。
+
+当前 `MonotonicContinueEliminationPass` 会识别从 0 开始、按 1 递增的规范 i32 循环。当循环在某个循环不变量阈值之后只执行无副作用的归纳变量自增与 `continue`，且归纳变量退出后不再使用时，第一次进入该单调后缀即可直接退出循环。该变换要求退出块无 Phi，并对有副作用 continue、非单位步长和退出值用途保守回退；不读取函数名、数组尺寸、阈值常数或测试结构。60 项汇编仅 `transpose0/1/2` 变化；官方 BOOM 上 `transpose2` 从 `913,978,753` 降至 `633,782,628` cycles，下降 `30.66%`，输出、返回值和完成标记保持一致。
 
 ### 超时和产物选项
 
