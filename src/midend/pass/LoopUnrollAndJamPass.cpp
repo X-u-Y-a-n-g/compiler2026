@@ -18,7 +18,14 @@ using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
 
-constexpr int kJamFactor = 4;
+// Ten independent accumulators fit the RV64 integer register budget for the
+// supported loop shape; twelve lanes introduced a hot-loop stack reload.
+constexpr int kJamFactor = 10;
+
+bool isGepOpcode(const std::string& opcode) {
+  return opcode == "getelementptr" || opcode == "getelementptr.linear" ||
+         opcode == "gep" || opcode == "gep.linear";
+}
 
 struct CFG {
   std::unordered_map<std::string, std::size_t> index;
@@ -113,11 +120,13 @@ BasicBlock* findBlock(Function& function, const std::string& name) {
 
 bool isLoadFrom(const Instruction& instruction, const std::string& slot) {
   return instruction.opcode() == "load" && instruction.hasResult() &&
-         instruction.operands().size() == 2 && instruction.operands()[1] == slot;
+         instruction.operands().size() == 2 &&
+         instruction.operands()[1] == slot;
 }
 
 bool isStoreTo(const Instruction& instruction, const std::string& slot) {
-  return instruction.opcode() == "store" && instruction.operands().size() == 3 &&
+  return instruction.opcode() == "store" &&
+         instruction.operands().size() == 3 &&
          instruction.operands()[2] == slot;
 }
 
@@ -255,9 +264,9 @@ std::optional<std::string> allocaType(const std::string& slot,
   return definition->second->operands()[0];
 }
 
-std::optional<PointerPath> pointerPath(const std::string& value,
-                                       const DefinitionMap& definitions,
-                                       std::unordered_set<std::string>& visiting) {
+std::optional<PointerPath> pointerPath(
+    const std::string& value, const DefinitionMap& definitions,
+    std::unordered_set<std::string>& visiting) {
   if (!value.empty() && value.front() == '@') {
     return PointerPath{value, {}};
   }
@@ -270,9 +279,7 @@ std::optional<PointerPath> pointerPath(const std::string& value,
   }
   const auto& instruction = *definition->second;
   const auto& opcode = instruction.opcode();
-  if ((opcode != "getelementptr" && opcode != "getelementptr.linear" &&
-       opcode != "gep" && opcode != "gep.linear") ||
-      instruction.operands().size() != 2) {
+  if (!isGepOpcode(opcode) || instruction.operands().size() != 2) {
     return std::nullopt;
   }
   auto path = pointerPath(instruction.operands()[0], definitions, visiting);
@@ -292,7 +299,8 @@ std::optional<PointerPath> pointerPath(const std::string& value,
 bool isValueLoadedFromSlot(const std::string& value, const std::string& slot,
                            const DefinitionMap& definitions) {
   const auto definition = definitions.find(value);
-  return definition != definitions.end() && isLoadFrom(*definition->second, slot);
+  return definition != definitions.end() &&
+         isLoadFrom(*definition->second, slot);
 }
 
 bool hasUnsupportedControlOrCall(const BasicBlock& block) {
@@ -320,8 +328,7 @@ std::optional<std::string> reductionLoadResult(const BasicBlock& block,
   return result;
 }
 
-bool reductionIsUpdated(const BasicBlock& innerBody,
-                        const std::string& slot,
+bool reductionIsUpdated(const BasicBlock& innerBody, const std::string& slot,
                         const DefinitionMap& definitions) {
   const auto loaded = reductionLoadResult(innerBody, slot);
   if (!loaded.has_value()) {
@@ -351,7 +358,8 @@ std::optional<std::string> destinationAddress(
       continue;
     }
     const auto& address = instruction.operands()[2];
-    if (address == outerSlot || scalarSlots.find(address) != scalarSlots.end()) {
+    if (address == outerSlot ||
+        scalarSlots.find(address) != scalarSlots.end()) {
       continue;
     }
     if (!valueDependsOn(instruction.operands()[1], *loaded, definitions) ||
@@ -493,14 +501,16 @@ std::optional<Candidate> findCandidate(const Function& function) {
 
     std::vector<std::pair<std::string, std::string>> reductions;
     for (const auto& instruction : outerBody->instructions()) {
-      if (instruction.opcode() != "store" || instruction.operands().size() != 3 ||
+      if (instruction.opcode() != "store" ||
+          instruction.operands().size() != 3 ||
           instruction.operands()[2] == innerCondition->slot ||
           scalarSlots.find(instruction.operands()[2]) == scalarSlots.end()) {
         continue;
       }
       long long identity = 0;
       if (!detail::parseIntegerLiteral(instruction.operands()[1], identity) ||
-          !reductionIsUpdated(*innerBody, instruction.operands()[2], definitions)) {
+          !reductionIsUpdated(*innerBody, instruction.operands()[2],
+                              definitions)) {
         continue;
       }
       reductions.emplace_back(instruction.operands()[2],
@@ -511,9 +521,9 @@ std::optional<Candidate> findCandidate(const Function& function) {
     }
     const auto reductionType = allocaType(reductions[0].first, definitions);
     const auto outerType = allocaType(outerCondition->slot, definitions);
-    const auto destination = destinationAddress(
-        *innerExit, outerCondition->slot, reductions[0].first, scalarSlots,
-        definitions);
+    const auto destination =
+        destinationAddress(*innerExit, outerCondition->slot,
+                           reductions[0].first, scalarSlots, definitions);
     if (!reductionType.has_value() || !outerType.has_value() ||
         *reductionType != *outerType || !destination.has_value() ||
         !memoryDependencesPermitJamming(*innerBody, *destination,
@@ -541,12 +551,12 @@ std::optional<Candidate> findCandidate(const Function& function) {
       continue;
     }
 
-    return Candidate{outerHeader.name(), outerBodyName, outerExitName,
-                     innerHeaderName, innerBodyName, innerExitName,
-                     outerCondition->slot, innerCondition->slot,
-                     reductions[0].first,
-                     outerCondition->value, outerCondition->bound,
-                     *reductionType, reductions[0].second};
+    return Candidate{
+        outerHeader.name(),    outerBodyName,         outerExitName,
+        innerHeaderName,       innerBodyName,         innerExitName,
+        outerCondition->slot,  innerCondition->slot,  reductions[0].first,
+        outerCondition->value, outerCondition->bound, *reductionType,
+        reductions[0].second};
   }
   return std::nullopt;
 }
@@ -587,8 +597,7 @@ std::string freshName(std::unordered_set<std::string>& names,
 std::vector<BasicBlock> cloneTailBlocks(
     const Function& function, const Candidate& candidate,
     std::unordered_set<std::string>& valueNames,
-    std::unordered_set<std::string>& blockNames,
-    std::string& tailHeader) {
+    std::unordered_set<std::string>& blockNames, std::string& tailHeader) {
   const std::vector<std::string> originals{
       candidate.outerHeader, candidate.outerBody, candidate.innerHeader,
       candidate.innerBody, candidate.innerExit};
@@ -620,13 +629,15 @@ std::vector<BasicBlock> cloneTailBlocks(
     for (const auto& instruction : original->instructions()) {
       auto operands = instruction.operands();
       for (auto& operand : operands) {
-        if (const auto value = valueMap.find(operand); value != valueMap.end()) {
+        if (const auto value = valueMap.find(operand);
+            value != valueMap.end()) {
           operand = value->second;
         }
       }
       if (instruction.opcode() == "br") {
         const std::size_t firstTarget = operands.size() == 1 ? 0 : 1;
-        for (std::size_t index = firstTarget; index < operands.size(); ++index) {
+        for (std::size_t index = firstTarget; index < operands.size();
+             ++index) {
           if (const auto target = blockMap.find(operands[index]);
               target != blockMap.end()) {
             operands[index] = target->second;
@@ -648,7 +659,23 @@ std::vector<Instruction> cloneLane(
     const std::vector<Instruction>& original, int lane,
     const Candidate& candidate, const std::string& laneValue,
     const std::string& laneReductionSlot, bool keepInnerUpdate,
-    std::unordered_set<std::string>& valueNames) {
+    std::unordered_set<std::string>& valueNames,
+    std::unordered_map<std::string, std::string>& laneZeroAddresses) {
+  std::unordered_set<std::string> directMemoryAddresses;
+  std::unordered_set<std::string> gepBases;
+  for (const auto& instruction : original) {
+    if (instruction.opcode() == "load" && instruction.operands().size() == 2) {
+      directMemoryAddresses.insert(instruction.operands()[1]);
+    } else if (instruction.opcode() == "store" &&
+               instruction.operands().size() == 3) {
+      directMemoryAddresses.insert(instruction.operands()[2]);
+    }
+    if (isGepOpcode(instruction.opcode()) &&
+        instruction.operands().size() == 2) {
+      gepBases.insert(instruction.operands()[0]);
+    }
+  }
+
   std::unordered_map<std::string, std::string> replacements;
   std::vector<Instruction> cloned;
   for (const auto& instruction : original) {
@@ -679,7 +706,27 @@ std::vector<Instruction> cloneLane(
       result = freshName(valueNames, "%unrolljam.lane" + std::to_string(lane));
       replacements[instruction.result()] = result;
     }
-    cloned.emplace_back(instruction.opcode(), std::move(operands),
+    std::string opcode = instruction.opcode();
+    // A non-terminal GEP can select an entire array row, whose stride is not a
+    // scalar lane offset. Only share addresses consumed directly by memory and
+    // never used as the base of another GEP.
+    const bool isTerminalScalarAddress =
+        instruction.hasResult() &&
+        directMemoryAddresses.find(instruction.result()) !=
+            directMemoryAddresses.end() &&
+        gepBases.find(instruction.result()) == gepBases.end();
+    if (isGepOpcode(opcode) && isTerminalScalarAddress &&
+        operands.size() == 2 && operands[1] == laneValue) {
+      if (lane == 0) {
+        laneZeroAddresses.emplace(instruction.result(), result);
+      } else if (const auto anchor =
+                     laneZeroAddresses.find(instruction.result());
+                 anchor != laneZeroAddresses.end()) {
+        opcode = "gep.linear";
+        operands = {anchor->second, std::to_string(lane)};
+      }
+    }
+    cloned.emplace_back(std::move(opcode), std::move(operands),
                         std::move(result));
   }
   return cloned;
@@ -689,8 +736,8 @@ bool transform(Function& function, const Candidate& candidate) {
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
   std::string tailHeader;
-  auto tailBlocks = cloneTailBlocks(function, candidate, valueNames, blockNames,
-                                    tailHeader);
+  auto tailBlocks =
+      cloneTailBlocks(function, candidate, valueNames, blockNames, tailHeader);
 
   auto* outerHeader = findBlock(function, candidate.outerHeader);
   auto* outerBody = findBlock(function, candidate.outerBody);
@@ -715,32 +762,38 @@ bool transform(Function& function, const Candidate& candidate) {
         insert, Instruction{"alloca", {candidate.reductionType}, laneSlot});
     ++insert;
     insert = outerBodyInstructions.insert(
-        insert, Instruction{"store", {candidate.reductionType,
-                                       candidate.reductionIdentity, laneSlot}});
+        insert, Instruction{"store",
+                            {candidate.reductionType,
+                             candidate.reductionIdentity, laneSlot}});
     ++insert;
     const auto laneValue = freshName(valueNames, "%unrolljam.index");
     laneValues.push_back(laneValue);
     insert = outerBodyInstructions.insert(
-        insert, Instruction{"add", {candidate.outerValue, std::to_string(lane)},
-                            laneValue});
+        insert,
+        Instruction{
+            "add", {candidate.outerValue, std::to_string(lane)}, laneValue});
     ++insert;
   }
 
   std::vector<Instruction> jammedBody;
+  std::unordered_map<std::string, std::string> bodyLaneZeroAddresses;
   for (int lane = 0; lane < kJamFactor; ++lane) {
-    auto cloned = cloneLane(originalInnerBody, lane, candidate,
-                            laneValues[lane], laneReductionSlots[lane],
-                            lane == kJamFactor - 1, valueNames);
+    auto cloned =
+        cloneLane(originalInnerBody, lane, candidate, laneValues[lane],
+                  laneReductionSlots[lane], lane == kJamFactor - 1, valueNames,
+                  bodyLaneZeroAddresses);
     jammedBody.insert(jammedBody.end(), cloned.begin(), cloned.end());
   }
-  jammedBody.emplace_back("br", std::vector<std::string>{candidate.innerHeader});
+  jammedBody.emplace_back("br",
+                          std::vector<std::string>{candidate.innerHeader});
   innerBody->instructions() = std::move(jammedBody);
 
   std::vector<Instruction> jammedExit;
+  std::unordered_map<std::string, std::string> exitLaneZeroAddresses;
   for (int lane = 0; lane < kJamFactor; ++lane) {
     auto cloned = cloneLane(originalInnerExit, lane, candidate,
                             laneValues[lane], laneReductionSlots[lane], true,
-                            valueNames);
+                            valueNames, exitLaneZeroAddresses);
     jammedExit.insert(jammedExit.end(), cloned.begin(), cloned.end());
   }
   const auto nextOuter = freshName(valueNames, "%unrolljam.next");
@@ -750,26 +803,26 @@ bool transform(Function& function, const Candidate& candidate) {
                           nextOuter);
   jammedExit.emplace_back(
       "store", std::vector<std::string>{candidate.reductionType, nextOuter,
-                                         candidate.outerSlot});
-  jammedExit.emplace_back("br", std::vector<std::string>{candidate.outerHeader});
+                                        candidate.outerSlot});
+  jammedExit.emplace_back("br",
+                          std::vector<std::string>{candidate.outerHeader});
   innerExit->instructions() = std::move(jammedExit);
 
   const auto guardName = freshName(blockNames, "unrolljam.guard");
   const auto remaining = freshName(valueNames, "%unrolljam.remaining");
   const auto enough = freshName(valueNames, "%unrolljam.enough");
   BasicBlock guard{guardName};
-  guard.addInstruction(
-      Instruction{"sub", {candidate.outerBound, candidate.outerValue}, remaining});
-  guard.addInstruction(Instruction{"icmp.sgt", {remaining,
-                                                  std::to_string(kJamFactor - 1)},
-                                   enough});
+  guard.addInstruction(Instruction{
+      "sub", {candidate.outerBound, candidate.outerValue}, remaining});
+  guard.addInstruction(Instruction{
+      "icmp.sgt", {remaining, std::to_string(kJamFactor - 1)}, enough});
   guard.addInstruction(
       Instruction{"br", {enough, candidate.outerBody, tailHeader}});
 
   auto headerTerminator = outerHeader->instructions().back().operands();
   headerTerminator[1] = guardName;
-  outerHeader->instructions().back() = Instruction{
-      "br", std::move(headerTerminator)};
+  outerHeader->instructions().back() =
+      Instruction{"br", std::move(headerTerminator)};
 
   function.addBlock(std::move(guard));
   for (auto& block : tailBlocks) {
