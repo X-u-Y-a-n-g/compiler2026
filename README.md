@@ -1,6 +1,6 @@
 # 2026 编译系统实现赛 SysY 编译器
 
-本项目实现一个面向 2026 全国大学生计算机系统能力大赛编译系统实现赛 RISC-V 赛道的 SysY 编译器。`zct` 分支持续加入经过正确性、性能和比赛合规性审查的通用优化。
+本项目实现一个面向 2026 全国大学生计算机系统能力大赛编译系统实现赛的 SysY 编译器。RISC-V 64 是默认比赛目标，同时提供可选择的 AArch64 后端；`wz` 分支持续加入经过正确性、性能和比赛合规性审查的通用优化。
 
 编译链路：
 
@@ -19,7 +19,7 @@ SysY2022/SysY2026 源文件
 - 编译器实现语言：C++17
 - 构建系统：CMake 3.20+、Ninja
 - 官方构建环境：Ubuntu 24.04、linux/amd64、Clang/Clang++
-- 目标平台：64 位 RISC-V
+- 目标平台：默认 64 位 RISC-V；可选 AArch64（AAPCS64）
 - 汇编要求：兼容 GCC `-mcmodel=medany`
 - 本地运行器：`qemu-riscv64`
 
@@ -30,7 +30,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 - 前端：词法、语法、AST、语义分析、类型检查已打通。
 - IR：支持控制流、数组、函数调用、整型/浮点运算、类型转换和全局对象。
 - `-O1`：运行 Mem2Reg、通用小函数内联、直接尾递归消除、受代码增长预算约束的直接自递归展开、全局标量局部化、过程间副作用分析、计数仿射/模递推闭式化简、公共子表达式消除、循环不变量外提、带依赖证明的标量归约循环展开合并、二次幂余数比较简化、冗余 load/store 消除、死代码删除和空基本块清理。
-- 后端：支持 RISC-V 64 指令选择、Phi 消除、栈对象提升、二维地址重关联、机器级循环地址归纳变量强度削弱、嵌套循环全局地址物化提升、无调用内层循环的 i32 分支常量预头物化、自然循环旋转与收益约束的基本块布局、图着色寄存器分配、机器级死代码消除、固定栈指针递归函数的 frame-pointer 省略、栈帧与汇编输出。
+- 后端：支持并行选择的 RISC-V 64 与 AArch64 目标。两者共享 Phi 消除、栈对象提升、地址重关联、机器级循环地址归纳变量强度削弱、循环布局、图着色寄存器分配和机器级死代码消除；各自拥有独立的寄存器信息、调用约定、栈帧规则与汇编输出。AArch64 后端遵循 AAPCS64，支持整数/浮点传参与返回、栈上传参、callee-saved 保存恢复、全局对象和完整标量指令降级。
 - 计时函数：`starttime()` / `stoptime()` 会被降级为带源码行号的 `_sysy_starttime(int)` / `_sysy_stoptime(int)` 调用。
 
 ## 编译优化合规声明
@@ -146,6 +146,9 @@ docker exec compiler-impl2026-dev bash -lc '
 ```bash
 # 输出 RISC-V 汇编
 /workspace/.docker-build/compiler input.sy -o output.s
+
+# 输出 AArch64 汇编（arm64 是等价别名）
+/workspace/.docker-build/compiler input.sy --target aarch64 -o output-arm64.s
 
 # 查看 Token、AST 或 IR
 /workspace/.docker-build/compiler input.sy --dump-tokens
@@ -327,6 +330,6 @@ python3 scripts/eval.py correctness --keep-artifacts
 - 仅支持单输入文件。
 - 类型检查和语义分析仍有部分语言边界未完整覆盖。
 - IR 尚未形成完整 use-def 链，优化框架仍在演进。
-- 当前只维护完整的 `riscv64` 后端链路。
+- 当前维护完整的 `riscv64` 与 `aarch64` 标量后端链路，暂未实现 RVV/NEON 向量化。
 - 当前比赛链接口径为 `rv64gc`，不包含 RISC-V Vector Extension，因此不能直接生成 RVV 指令；可继续采用标量循环展开、软件流水、访存合并和指令调度。
 - 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较；`generic-ooo` 同样只是乱序流水线近似模型，不模拟官方 BOOM 的缓存和内存系统。

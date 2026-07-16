@@ -189,7 +189,7 @@ PROFILE_COMPARISON_FIELDS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "2026 编译系统实现赛 RISC-V 本地评测：correctness 对应 "
+            "2026 编译系统实现赛本地评测：correctness 对应 "
             "functional+h_functional，performance 对应 performance。"
         )
     )
@@ -215,6 +215,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-timeout", type=int, default=300)
     parser.add_argument("--linker", default="riscv64-linux-gnu-gcc")
     parser.add_argument("--runner", default="qemu-riscv64")
+    parser.add_argument(
+        "--target",
+        choices=("riscv64", "aarch64"),
+        default="riscv64",
+        help="传给编译器的后端目标，默认 riscv64",
+    )
     parser.add_argument(
         "--analysis",
         choices=("none", "dynamic", "full"),
@@ -775,7 +781,9 @@ def evaluate_case(
     assembly = case_dir / f"{source.stem}.s"
     executable = case_dir / source.stem
 
-    compile_command = [str(compiler), "-S", "-o", str(assembly), str(source)]
+    compile_command = [
+        str(compiler), "-S", "--target", args.target, "-o", str(assembly), str(source)
+    ]
     if channel == "performance":
         compile_command.append("-O1")
     compile_result = run_command(compile_command, args.compile_timeout)
@@ -796,11 +804,15 @@ def evaluate_case(
     actual = ""
 
     if compile_status == "OK":
+        target_link_flags = (
+            ["-march=rv64gc", "-mcmodel=medany"]
+            if args.target == "riscv64"
+            else ["-march=armv8-a"]
+        )
         link_command = [
             args.linker,
             "-static",
-            "-march=rv64gc",
-            "-mcmodel=medany",
+            *target_link_flags,
             str(assembly),
             str(runtime_source),
             "-o",

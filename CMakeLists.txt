@@ -42,6 +42,7 @@ add_library(compiler_lib
   src/backend/target/TargetBackend.cpp
   src/backend/target/TargetLoweringSupport.cpp
   src/backend/target/Riscv64Target.cpp
+  src/backend/target/AArch64Target.cpp
   src/backend/isel/InstructionSelector.cpp
   src/backend/opt/AddressReassociation.cpp
   src/backend/opt/CompareBranchFusion.cpp
@@ -54,6 +55,7 @@ add_library(compiler_lib
   src/backend/frame/FrameLowering.cpp
   src/backend/stack/StackLowering.cpp
   src/backend/asm/AsmPrinter.cpp
+  src/backend/asm/AArch64AsmPrinter.cpp
 )
 
 file(GLOB_RECURSE COMPILER_HEADERS CONFIGURE_DEPENDS include/compiler/*.h include/compiler/*.hpp)
