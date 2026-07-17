@@ -30,6 +30,7 @@ add_library(compiler_lib
   src/midend/pass/LoopUnrollAndJamPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/MonotonicContinueEliminationPass.cpp
+  src/midend/pass/MonotonicLoopBoundPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/RedundantLoadEliminationPass.cpp
   src/midend/pass/RedundantStoreEliminationPass.cpp
