@@ -627,6 +627,35 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   }
   if (opcode.rfind("br.icmp.", 0) == 0) {
     const auto& lhsOp = instruction.operands[0]; const auto& rhsOp = instruction.operands[1];
+    const auto predicate = opcode.substr(3);
+    const bool equality = predicate == "icmp.eq" || predicate == "icmp.ne";
+    const MachineOperand* zeroCompared = nullptr;
+    if (equality && rhsOp.kind == MachineOperandKind::ImmediateInt &&
+        rhsOp.intValue == 0) {
+      zeroCompared = &lhsOp;
+    } else if (equality && lhsOp.kind == MachineOperandKind::ImmediateInt &&
+               lhsOp.intValue == 0) {
+      zeroCompared = &rhsOp;
+    }
+    if (zeroCompared != nullptr) {
+      const auto value =
+          integerOperand(os, function, *zeroCompared, kAddrScratch);
+      const auto reg = integerRegister(value, zeroCompared->type);
+      const auto& yes = labels.at(instruction.operands[2].text);
+      const auto& no = labels.at(instruction.operands[3].text);
+      const bool branchOnZero = predicate == "icmp.eq";
+      if (fallthrough != nullptr && *fallthrough == no) {
+        os << "  " << (branchOnZero ? "cbz " : "cbnz ") << reg << ", "
+           << yes << '\n';
+      } else if (fallthrough != nullptr && *fallthrough == yes) {
+        os << "  " << (branchOnZero ? "cbnz " : "cbz ") << reg << ", "
+           << no << '\n';
+      } else {
+        os << "  " << (branchOnZero ? "cbz " : "cbnz ") << reg << ", "
+           << yes << "\n  b " << no << '\n';
+      }
+      return;
+    }
     const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
     const auto lhsRegister = integerRegister(lhs, lhsOp.type);
     if (rhsOp.kind != MachineOperandKind::ImmediateInt ||
@@ -634,7 +663,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
       const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
       os << "  cmp " << lhsRegister << ", " << integerRegister(rhs, lhsOp.type) << '\n';
     }
-    const auto cond = conditionFor(opcode.substr(3));
+    const auto cond = conditionFor(predicate);
     const auto& yes = labels.at(instruction.operands[2].text); const auto& no = labels.at(instruction.operands[3].text);
     if (fallthrough != nullptr && *fallthrough == no) os << "  b." << cond << ' ' << yes << '\n';
     else if (fallthrough != nullptr && *fallthrough == yes) os << "  b." << inverseCondition(cond) << ' ' << no << '\n';
