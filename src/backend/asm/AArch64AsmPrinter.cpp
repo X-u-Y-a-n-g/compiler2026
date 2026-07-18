@@ -600,6 +600,19 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode == "madd" && instruction.operands.size() == 3) {
+    const auto lhs = integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto rhs = integerOperand(os, function, instruction.operands[1], kImmScratch);
+    const auto accumulator =
+        integerOperand(os, function, instruction.operands[2], kHiddenScratch);
+    const auto dst = resultRegister(instruction.result, kImmScratch);
+    const auto type = instruction.result.type;
+    os << "  madd " << integerRegister(dst, type) << ", "
+       << integerRegister(lhs, type) << ", " << integerRegister(rhs, type)
+       << ", " << integerRegister(accumulator, type) << '\n';
+    storeResult(os, function, instruction.result, dst);
+    return;
+  }
   if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" || opcode == "mod" ||
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" || opcode == "xor" ||
       opcode == "shl" || opcode == "ashr" || opcode == "lshr") {

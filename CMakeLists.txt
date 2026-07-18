@@ -47,6 +47,7 @@ add_library(compiler_lib
   src/backend/target/Riscv64Target.cpp
   src/backend/target/AArch64Target.cpp
   src/backend/isel/InstructionSelector.cpp
+  src/backend/opt/AArch64InstructionCombining.cpp
   src/backend/opt/AddressReassociation.cpp
   src/backend/opt/CompareBranchFusion.cpp
   src/backend/opt/MachineDeadCodeElimination.cpp
