@@ -103,20 +103,35 @@ void emitImmediate(std::ostringstream& os, const std::string& reg, std::int64_t 
   const std::uint64_t bits = narrow ? static_cast<std::uint32_t>(value)
                                     : static_cast<std::uint64_t>(value);
   const unsigned pieces = narrow ? 2U : 4U;
-  bool emitted = false;
+  unsigned movzCost = 0;
+  unsigned movnCost = 0;
   for (unsigned index = 0; index < pieces; ++index) {
     const unsigned part = static_cast<unsigned>((bits >> (index * 16U)) & 0xffffU);
-    if (part == 0 && emitted) continue;
-    if (!emitted) {
-      os << "  movz " << dst << ", #" << part;
+    if (part != 0) ++movzCost;
+    if (part != 0xffffU) ++movnCost;
+  }
+  const bool allZero = movzCost == 0;
+  const bool allOnes = movnCost == 0;
+  movzCost = std::max(1U, movzCost);
+  movnCost = std::max(1U, movnCost);
+  const bool useMovn = movnCost < movzCost;
+  bool emitted = false;
+  for (unsigned index = 0; index < pieces; ++index) {
+    const unsigned part =
+        static_cast<unsigned>((bits >> (index * 16U)) & 0xffffU);
+    const bool needsPiece = useMovn ? part != 0xffffU : part != 0;
+    if (!emitted &&
+        (needsPiece || (index == 0 && (useMovn ? allOnes : allZero)))) {
+      os << "  " << (useMovn ? "movn " : "movz ") << dst << ", #"
+         << (useMovn ? ((~part) & 0xffffU) : part);
       if (index != 0) os << ", lsl #" << index * 16U;
       os << '\n';
       emitted = true;
-    } else if (part != 0) {
-      os << "  movk " << dst << ", #" << part << ", lsl #" << index * 16U << '\n';
+    } else if (emitted && needsPiece) {
+      os << "  movk " << dst << ", #" << part << ", lsl #"
+         << index * 16U << '\n';
     }
   }
-  if (!emitted) os << "  movz " << dst << ", #0\n";
 }
 
 void emitStackAdjust(std::ostringstream& os, long long delta) {
