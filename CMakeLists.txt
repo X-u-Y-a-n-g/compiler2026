@@ -18,6 +18,7 @@ add_library(compiler_lib
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/analysis/FunctionEffectAnalysis.cpp
+  src/midend/pass/AffineArrayCopyPropagationPass.cpp
   src/midend/pass/AffineModularRecurrencePass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp

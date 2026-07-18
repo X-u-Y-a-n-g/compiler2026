@@ -1,0 +1,82 @@
+int source[2][3] = {{1, 2, 3}, {4, 5, 6}};
+int transposed[3][2];
+int identical[2][3];
+int partial[2][3];
+int snapshot[2][3];
+
+int main() {
+  int i = 0;
+  int j;
+  int sum = 0;
+
+  while (i < 3) {
+    j = 0;
+    while (j < 2) {
+      transposed[i][j] = source[j][i];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while (i < 3) {
+    j = 0;
+    while (j < 2) {
+      sum = sum + transposed[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      identical[i][j] = source[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      sum = sum + identical[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+
+  i = 0;
+  while (i < 1) {
+    j = 0;
+    while (j < 3) {
+      partial[i][j] = source[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      sum = sum + partial[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      snapshot[i][j] = source[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  source[0][0] = 7;
+  sum = sum + snapshot[0][0];
+
+  putint(sum);
+  return 0;
+}
