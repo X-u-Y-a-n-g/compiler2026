@@ -20,6 +20,7 @@ add_library(compiler_lib
   src/midend/analysis/FunctionEffectAnalysis.cpp
   src/midend/pass/AffineArrayCopyPropagationPass.cpp
   src/midend/pass/AffineModularRecurrencePass.cpp
+  src/midend/pass/ArrayDimensionLayoutPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp

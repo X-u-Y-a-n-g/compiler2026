@@ -25,6 +25,7 @@
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
+#include "../../include/compiler/midend/pass/ArrayDimensionLayoutPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
@@ -183,6 +184,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineArrayCopyPropagationPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::ArrayDimensionLayoutPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());

@@ -15,6 +15,7 @@ class Module {
 
   [[nodiscard]] const std::string& sourceName() const { return sourceName_; }
   [[nodiscard]] const std::vector<GlobalVariable>& globals() const { return globals_; }
+  [[nodiscard]] std::vector<GlobalVariable>& globals() { return globals_; }
   [[nodiscard]] const std::vector<Function>& functions() const { return functions_; }
   [[nodiscard]] std::vector<Function>& functions() { return functions_; }
   [[nodiscard]] const std::vector<std::string>& passLog() const { return passLog_; }
