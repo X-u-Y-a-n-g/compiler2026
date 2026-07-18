@@ -17,6 +17,12 @@ namespace compiler::backend::opt {
 namespace {
 
 constexpr std::size_t kMaxAnalyzedInstructions = 4096;
+constexpr std::size_t kMaxPointerInductionsPerLoop = 4;
+constexpr std::size_t kMinPointerInductionsPerLoop = 2;
+constexpr std::size_t kMaxLegacyPointerInductionsPerLoop = 2;
+constexpr unsigned kMinLegacyEstimatedSaving = 2;
+constexpr unsigned kMinTotalEstimatedSaving = 3;
+constexpr unsigned kMinDominatingEstimatedSaving = 2;
 
 using compiler::backend::common::CFGBuilder;
 using compiler::backend::common::ControlFlowGraph;
@@ -49,6 +55,7 @@ struct Candidate {
   std::size_t instruction = 0;
   MachineInstruction gep;
   unsigned estimatedSaving = 0;
+  bool dominatesEveryLatch = false;
 };
 
 struct Plan {
@@ -394,13 +401,8 @@ std::optional<Plan> findPlan(
       for (const auto block : loop.blocks) {
         bool dominatesEveryLatch = true;
         for (const auto latch : loop.latches) {
-          if (dominators[latch].find(block) == dominators[latch].end()) {
-            dominatesEveryLatch = false;
-            break;
-          }
-        }
-        if (!dominatesEveryLatch) {
-          continue;
+          dominatesEveryLatch &=
+              dominators[latch].find(block) != dominators[latch].end();
         }
         for (std::size_t instruction = 0;
              instruction < function.blocks[block].instructions.size();
@@ -424,24 +426,69 @@ std::optional<Plan> findPlan(
           const auto scale = current.operands[2].intValue;
           const auto oldCost = dynamicGepCost(scale);
           const auto newCost = immediateGepCost(scale);
-          if (oldCost < newCost + 2) {
+          if (oldCost <= newCost) {
             continue;
           }
           candidates.push_back(
-              Candidate{block, instruction, current, oldCost - newCost});
+              Candidate{block, instruction, current, oldCost - newCost,
+                        dominatesEveryLatch});
         }
       }
       if (candidates.empty()) {
         continue;
       }
-      std::sort(candidates.begin(), candidates.end(),
+      auto legacyCandidates = candidates;
+      legacyCandidates.erase(
+          std::remove_if(legacyCandidates.begin(), legacyCandidates.end(),
+                         [](const Candidate& candidate) {
+                           return !candidate.dominatesEveryLatch ||
+                                  candidate.estimatedSaving <
+                                      kMinLegacyEstimatedSaving;
+                         }),
+          legacyCandidates.end());
+      std::sort(legacyCandidates.begin(), legacyCandidates.end(),
                 [](const Candidate& lhs, const Candidate& rhs) {
                   return lhs.estimatedSaving > rhs.estimatedSaving;
                 });
-      if (candidates.size() > 2) {
-        candidates.resize(2);
+      if (legacyCandidates.size() > kMaxLegacyPointerInductionsPerLoop) {
+        legacyCandidates.resize(kMaxLegacyPointerInductionsPerLoop);
       }
-      return Plan{loop, *induction, std::move(candidates)};
+      std::sort(candidates.begin(), candidates.end(),
+                [](const Candidate& lhs, const Candidate& rhs) {
+                  if (lhs.estimatedSaving != rhs.estimatedSaving) {
+                    return lhs.estimatedSaving > rhs.estimatedSaving;
+                  }
+                  if (lhs.dominatesEveryLatch != rhs.dominatesEveryLatch) {
+                    return lhs.dominatesEveryLatch;
+                  }
+                  if (lhs.block != rhs.block) {
+                    return lhs.block < rhs.block;
+                  }
+                  return lhs.instruction < rhs.instruction;
+                });
+      if (candidates.size() > kMaxPointerInductionsPerLoop) {
+        candidates.resize(kMaxPointerInductionsPerLoop);
+      }
+      unsigned totalEstimatedSaving = 0;
+      unsigned dominatingEstimatedSaving = 0;
+      bool hasDominatingHighSavingCandidate = false;
+      for (const auto& candidate : candidates) {
+        totalEstimatedSaving += candidate.estimatedSaving;
+        if (candidate.dominatesEveryLatch) {
+          dominatingEstimatedSaving += candidate.estimatedSaving;
+          hasDominatingHighSavingCandidate |=
+              candidate.estimatedSaving >= kMinLegacyEstimatedSaving;
+        }
+      }
+      if (candidates.size() >= kMinPointerInductionsPerLoop &&
+          totalEstimatedSaving >= kMinTotalEstimatedSaving &&
+          dominatingEstimatedSaving >= kMinDominatingEstimatedSaving &&
+          hasDominatingHighSavingCandidate) {
+        return Plan{loop, *induction, std::move(candidates)};
+      }
+      if (!legacyCandidates.empty()) {
+        return Plan{loop, *induction, std::move(legacyCandidates)};
+      }
     }
   }
   return std::nullopt;
