@@ -21,7 +21,7 @@ the contest rules in `AGENTS.md`:
 - require a general legality analysis and preserve observable SysY semantics;
 - use the table only to select which general compiler weakness to investigate;
 - accept performance changes based on real FPGA target cycles, then verify
-  correctness before committing and pushing to `zct`.
+correctness before committing and pushing to `wz`.
 
 ## Snapshot
 

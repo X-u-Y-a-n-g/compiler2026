@@ -121,7 +121,7 @@ QEMU timing is optional supporting evidence, not an acceptance gate. Because
 the current path consumes one browser/GDB/client session per ELF, run only the
 directly targeted hotspots on the FPGA. After an accepted FPGA speedup, run all
 60 performance cases in the container for output validation before committing
-and pushing it to `zct`; do not perform a 60-case FPGA sweep.
+and pushing it to `wz`; do not perform a 60-case FPGA sweep.
 
 ## Mandatory reset between runs
 

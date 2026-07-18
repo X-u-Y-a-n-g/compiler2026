@@ -31,8 +31,8 @@ These rules are mandatory for every compiler optimization in this repository.
 6. The official 140 correctness cases do not enable the optimization mode. Run
    them only when a change affects the unoptimized path, frontend/semantic
    shared code, or another risk makes that channel relevant.
-7. Accept and push one optimization at a time to `zct`; never push optimization
-   work to `wz`.
+7. Accept and push one optimization at a time to `wz`; never push optimization
+   work to another branch unless the repository owner explicitly requests it.
 8. Document AI-assisted implementation scope and any external technical references.
 
 If a proposed optimization cannot satisfy these rules, do not implement or restore it.

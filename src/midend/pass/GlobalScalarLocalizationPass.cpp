@@ -77,6 +77,88 @@ bool containsCall(const Function& function) {
   return false;
 }
 
+std::unordered_set<std::string> collectCyclicBlockNames(
+    const Function& function) {
+  constexpr std::size_t kMaximumAnalyzedBlocks = 512;
+  const std::size_t blockCount = function.blocks().size();
+  if (blockCount > kMaximumAnalyzedBlocks) {
+    return {};
+  }
+  std::unordered_map<std::string, std::size_t> blockIndex;
+  for (std::size_t index = 0; index < blockCount; ++index) {
+    blockIndex.emplace(function.blocks()[index].name(), index);
+  }
+
+  std::vector<std::vector<bool>> reachable(
+      blockCount, std::vector<bool>(blockCount, false));
+  std::vector<bool> hasSelfEdge(blockCount, false);
+  for (std::size_t index = 0; index < blockCount; ++index) {
+    const auto* terminator = function.blocks()[index].terminator();
+    if (terminator == nullptr || terminator->opcode() != "br") {
+      continue;
+    }
+    const auto& operands = terminator->operands();
+    const std::size_t firstTarget = operands.size() == 1 ? 0 : 1;
+    for (std::size_t operand = firstTarget; operand < operands.size(); ++operand) {
+      const auto target = blockIndex.find(operands[operand]);
+      if (target == blockIndex.end()) {
+        continue;
+      }
+      reachable[index][target->second] = true;
+      hasSelfEdge[index] = hasSelfEdge[index] || target->second == index;
+    }
+  }
+  for (std::size_t through = 0; through < blockCount; ++through) {
+    for (std::size_t from = 0; from < blockCount; ++from) {
+      if (!reachable[from][through]) {
+        continue;
+      }
+      for (std::size_t to = 0; to < blockCount; ++to) {
+        reachable[from][to] =
+            reachable[from][to] || reachable[through][to];
+      }
+    }
+  }
+
+  std::unordered_set<std::string> cyclic;
+  for (std::size_t index = 0; index < blockCount; ++index) {
+    if (hasSelfEdge[index]) {
+      cyclic.insert(function.blocks()[index].name());
+      continue;
+    }
+    for (std::size_t other = 0; other < blockCount; ++other) {
+      if (other != index && reachable[index][other] &&
+          reachable[other][index]) {
+        cyclic.insert(function.blocks()[index].name());
+        break;
+      }
+    }
+  }
+  return cyclic;
+}
+
+bool accessesSymbolInBlocks(
+    const Function& function, const std::string& symbol,
+    const std::unordered_set<std::string>& blockNames,
+    bool requireStore) {
+  for (const auto& block : function.blocks()) {
+    if (blockNames.find(block.name()) == blockNames.end()) {
+      continue;
+    }
+    for (const auto& instruction : block.instructions()) {
+      const auto& operands = instruction.operands();
+      const bool directLoad = instruction.opcode() == "load" &&
+                              operands.size() == 2 && operands[1] == symbol;
+      const bool directStore = instruction.opcode() == "store" &&
+                               operands.size() == 3 && operands[2] == symbol;
+      if (directStore || (!requireStore && directLoad)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 std::unordered_set<std::string> collectCacheWorthyCallees(
     const compiler::ir::core::Module& module,
     const FunctionEffectAnalysis& functionEffects) {
@@ -266,13 +348,18 @@ void localizeGlobals(Function& function,
   auto names = collectValueNames(function);
   std::vector<Candidate> selected;
   const bool usesCalls = containsCall(function);
+  const auto cyclicBlocks = collectCyclicBlockNames(function);
   for (auto& [symbol, candidate] : candidates) {
     (void)symbol;
     if (!candidate.valid || candidate.accesses == 0 ||
         (candidate.hasStore && candidate.accesses < 2)) {
       continue;
     }
-    if (usesCalls &&
+    const bool repeatedlyAccessedInLoop =
+        candidate.accesses >= 2 &&
+        accessesSymbolInBlocks(function, candidate.symbol, cyclicBlocks,
+                               candidate.hasStore);
+    if (usesCalls && !repeatedlyAccessedInLoop &&
         !feedsCacheWorthyCall(function, candidate.symbol, cacheWorthyCallees,
                               functionEffects)) {
       continue;
@@ -282,9 +369,13 @@ void localizeGlobals(Function& function,
     candidate.initial = uniqueValueName(stem + ".initial", names);
     selected.push_back(std::move(candidate));
   }
-  std::sort(selected.begin(), selected.end(), [](const Candidate& lhs, const Candidate& rhs) {
-    return lhs.symbol < rhs.symbol;
-  });
+  if (usesCalls && selected.size() > 1) {
+    selected.clear();
+  }
+  std::sort(selected.begin(), selected.end(),
+            [](const Candidate& lhs, const Candidate& rhs) {
+              return lhs.symbol < rhs.symbol;
+            });
   if (selected.empty()) {
     return;
   }

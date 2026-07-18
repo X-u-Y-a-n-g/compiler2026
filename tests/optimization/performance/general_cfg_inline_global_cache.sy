@@ -1,0 +1,85 @@
+int state;
+int other;
+int scratch[4];
+
+int bump(int x) {
+    if (x % 2 == 0) {
+        state = state + x + 3;
+    } else {
+        state = state * 3 - x;
+    }
+    return state;
+}
+
+void clobber(int x) {
+    state = x;
+}
+
+void touch(int a[], int x) {
+    a[x % 4] = state + other;
+}
+
+int cyclic(int n) {
+    int sum = 0;
+    while (n > 0) {
+        sum = sum + n;
+        n = n - 1;
+    }
+    return sum;
+}
+
+int run(int n) {
+    int i = 0;
+    int sum = 0;
+    while (i < n) {
+        sum = sum + bump(i);
+        if (i == 2) {
+            clobber(-7);
+        }
+        if (i == 3) {
+            touch(scratch, i);
+        }
+        i = i + 1;
+    }
+    return sum + state;
+}
+
+int dual_cache_fallback(int n) {
+    int i = 0;
+    while (i < n) {
+        state = state + i;
+        other = other - i;
+        if (i == 1) {
+            touch(scratch, i);
+        }
+        i = i + 1;
+    }
+    return state + other + scratch[1];
+}
+
+int main() {
+    starttime();
+
+    state = 2147483647;
+    int zero_trip = run(0);
+
+    state = 2147483647;
+    int overflow_path = run(5);
+
+    state = 1;
+    other = 10;
+    int multiple_cache_fallback = dual_cache_fallback(4);
+    int cyclic_fallback = cyclic(5);
+
+    stoptime();
+
+    putint(zero_trip);
+    putch(10);
+    putint(overflow_path);
+    putch(10);
+    putint(multiple_cache_fallback);
+    putch(10);
+    putint(cyclic_fallback);
+    putch(10);
+    return 0;
+}
