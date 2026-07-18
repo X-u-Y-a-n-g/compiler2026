@@ -66,12 +66,13 @@ void combineMultiplyAdds(
   for (std::size_t block = 0; block < function.blocks.size(); ++block) {
     auto& instructions = function.blocks[block].instructions;
     for (auto& add : instructions) {
-      if (add.opcode != "add" || !add.hasResult ||
+      if ((add.opcode != "add" && add.opcode != "sub") || !add.hasResult ||
           add.operands.size() != 2 ||
           (!add.result.type.isInt32() && !add.result.type.isInt64())) {
         continue;
       }
       for (std::size_t productIndex = 0; productIndex < 2; ++productIndex) {
+        if (add.opcode == "sub" && productIndex == 0) continue;
         const auto& product = add.operands[productIndex];
         if (!isVirtualRegister(product) || useCounts[product.text] != 1) continue;
         const auto definition = definitions.find(product.text);
@@ -87,7 +88,7 @@ void combineMultiplyAdds(
           continue;
         }
         add = MachineInstruction::target(
-            "madd", add.result,
+            add.opcode == "sub" ? "msub" : "madd", add.result,
             {multiply.operands[0], multiply.operands[1],
              add.operands[1 - productIndex]});
         removals[block].insert(definition->second.instruction);
