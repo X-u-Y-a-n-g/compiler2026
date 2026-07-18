@@ -25,9 +25,9 @@
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
-#include "../../include/compiler/midend/pass/ArrayDimensionLayoutPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
+#include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
 #include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
@@ -185,11 +185,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineArrayCopyPropagationPass>());
     passManager.add(
-        std::make_unique<compiler::midend::pass::ArrayDimensionLayoutPass>());
-    passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::DivRemPairStrengthReductionPass>());

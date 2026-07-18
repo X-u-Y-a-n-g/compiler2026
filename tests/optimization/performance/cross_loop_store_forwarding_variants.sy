@@ -1,0 +1,123 @@
+int forwarded[2][3];
+int escaped[2][3];
+int separated[2][3];
+int extra_load[2][3];
+int auxiliary[2][3];
+int wrapping[1][2];
+
+int row_sum(int row[], int size) {
+  int index = 0;
+  int sum = 0;
+  while (index < size) {
+    sum = sum + row[index];
+    index = index + 1;
+  }
+  return sum;
+}
+
+int main() {
+  int i = 0;
+  int j = 0;
+  int sum = 5;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      forwarded[i][j] = i * 10 + j;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      sum = sum + forwarded[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(sum);
+  putch(10);
+
+  i = 0;
+  while (i < 1) {
+    j = 0;
+    while (j < 2) {
+      wrapping[i][j] = 2147483647 + j;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  sum = 0;
+  i = 0;
+  while (i < 1) {
+    j = 0;
+    while (j < 2) {
+      sum = sum + wrapping[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(sum);
+  putch(10);
+
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      escaped[i][j] = i + j;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(row_sum(escaped[1], 3));
+  putch(10);
+
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      separated[i][j] = i + j + 1;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(7);
+  putch(10);
+  sum = 0;
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      sum = sum + separated[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(sum);
+  putch(10);
+
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      extra_load[i][j] = i + j;
+      auxiliary[i][j] = 1;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  sum = 0;
+  i = 0;
+  while (i < 2) {
+    j = 0;
+    while (j < 3) {
+      sum = sum + extra_load[i][j] + auxiliary[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(sum);
+  putch(10);
+  return 0;
+}

@@ -1,4 +1,5 @@
 #include "../../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
+#include "../../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -82,6 +83,20 @@ struct Candidate {
   CanonicalLoop outer;
   CanonicalLoop inner;
   std::vector<LoadRewrite> loads;
+};
+
+struct LoopNest {
+  CanonicalLoop outer;
+  CanonicalLoop inner;
+};
+
+struct ReductionForwardCandidate {
+  Location producerStore;
+  std::string storedValue;
+  std::string identity;
+  std::string outerReduction;
+  LoopNest producer;
+  LoopNest consumer;
 };
 
 bool isGepOpcode(const std::string& opcode) {
@@ -275,7 +290,8 @@ bool branchesTo(const BasicBlock& block, const std::string& target) {
 
 std::optional<CanonicalLoop> canonicalLoop(
     const Function& function, const CFG& cfg, const DefinitionMap& definitions,
-    const std::string& induction, std::size_t expectedBound) {
+    const std::string& induction, std::size_t expectedBound,
+    bool requireDedicatedPreheader = true) {
   const auto phiFound = definitions.find(induction);
   if (phiFound == definitions.end() ||
       phiFound->second.instruction->opcode() != "phi") {
@@ -395,13 +411,15 @@ std::optional<CanonicalLoop> canonicalLoop(
   if (outsidePredecessors != 1) {
     return std::nullopt;
   }
-  const auto* preheaderTerminator =
-      function.blocks()[preheaderFound->second].terminator();
-  if (preheaderTerminator == nullptr ||
-      preheaderTerminator->opcode() != "br" ||
-      preheaderTerminator->operands().size() != 1 ||
-      preheaderTerminator->operands()[0] != loop.header) {
-    return std::nullopt;
+  if (requireDedicatedPreheader) {
+    const auto* preheaderTerminator =
+        function.blocks()[preheaderFound->second].terminator();
+    if (preheaderTerminator == nullptr ||
+        preheaderTerminator->opcode() != "br" ||
+        preheaderTerminator->operands().size() != 1 ||
+        preheaderTerminator->operands()[0] != loop.header) {
+      return std::nullopt;
+    }
   }
 
   for (const auto block : loop.blocks) {
@@ -820,10 +838,10 @@ std::optional<Candidate> analyzeStore(
 }
 
 std::string freshValueName(std::unordered_set<std::string>& names,
-                           std::size_t& counter) {
+                           std::size_t& counter,
+                           const std::string& prefix = "%affine.copy.gep.") {
   while (true) {
-    const std::string candidate = "%affine.copy.gep." +
-                                  std::to_string(counter++);
+    const std::string candidate = prefix + std::to_string(counter++);
     if (names.insert(candidate).second) {
       return candidate;
     }
@@ -891,6 +909,448 @@ void applyCandidate(Function& function, const Candidate& candidate) {
   }
 }
 
+std::optional<LoopNest> loopNestForPath(
+    const Function& function, const CFG& cfg, const DefinitionMap& definitions,
+    const ArrayType& type, const PointerPath& path, const Location& location) {
+  if (type.extents.size() != 2 || path.indices.size() != 2 ||
+      path.indices[0] == path.indices[1]) {
+    return std::nullopt;
+  }
+  const auto first = canonicalLoop(function, cfg, definitions, path.indices[0],
+                                   type.extents[0], false);
+  const auto second = canonicalLoop(function, cfg, definitions, path.indices[1],
+                                    type.extents[1], false);
+  if (!first.has_value() || !second.has_value()) {
+    return std::nullopt;
+  }
+  LoopNest nest;
+  if (first->blocks.find(second->headerIndex) != first->blocks.end() &&
+      second->blocks.find(first->headerIndex) == second->blocks.end()) {
+    nest.outer = *first;
+    nest.inner = *second;
+  } else if (second->blocks.find(first->headerIndex) != second->blocks.end() &&
+             first->blocks.find(second->headerIndex) == first->blocks.end()) {
+    nest.outer = *second;
+    nest.inner = *first;
+  } else {
+    return std::nullopt;
+  }
+  if (nest.outer.blocks.find(location.block) == nest.outer.blocks.end() ||
+      nest.inner.blocks.find(location.block) == nest.inner.blocks.end() ||
+      !dominates(cfg, location.block, nest.inner.latchIndex)) {
+    return std::nullopt;
+  }
+  return nest;
+}
+
+bool pointerDoesNotEscape(const Module& module, const std::string& base) {
+  for (const auto& function : module.functions()) {
+    const auto definitions = buildDefinitions(function);
+    for (const auto& block : function.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        for (std::size_t operand = 0; operand < instruction.operands().size();
+             ++operand) {
+          const auto path = pointerPath(instruction.operands()[operand], definitions);
+          if (!path.has_value() || path->base != base) {
+            continue;
+          }
+          if ((isGepOpcode(instruction.opcode()) && operand == 0) ||
+              (instruction.opcode() == "load" && operand == 1) ||
+              (instruction.opcode() == "store" && operand == 2)) {
+            continue;
+          }
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+std::optional<std::string> phiIncoming(const Instruction& phi,
+                                       const std::string& predecessor) {
+  if (phi.opcode() != "phi") {
+    return std::nullopt;
+  }
+  const auto& operands = phi.operands();
+  for (std::size_t index = 1; index + 1 < operands.size(); index += 2) {
+    if (operands[index + 1] == predecessor) {
+      return operands[index];
+    }
+  }
+  return std::nullopt;
+}
+
+bool consumerHasOnlyForwardableEffects(
+    const Function& function, const DefinitionMap& definitions,
+    const LoopNest& consumer, const Location& loadLocation,
+    const std::string& destination, const std::string& outerReduction) {
+  std::unordered_set<std::string> loopDefinitions;
+  std::size_t destinationLoads = 0;
+  for (const auto blockIndex : consumer.outer.blocks) {
+    const auto& instructions = function.blocks()[blockIndex].instructions();
+    for (std::size_t index = 0; index < instructions.size(); ++index) {
+      const auto& instruction = instructions[index];
+      if (instruction.hasResult()) {
+        loopDefinitions.insert(instruction.result());
+      }
+      if (instruction.opcode() == "call" || instruction.opcode() == "ret") {
+        return false;
+      }
+      if (instruction.opcode() == "load") {
+        if (!(Location{blockIndex, index} == loadLocation)) {
+          return false;
+        }
+        const auto path = pointerPath(instruction.operands()[1], definitions);
+        if (!path.has_value() || path->base != destination) {
+          return false;
+        }
+        ++destinationLoads;
+      }
+      if (instruction.opcode() == "store") {
+        const auto path = pointerPath(instruction.operands()[2], definitions);
+        if (!path.has_value() || path->base.empty() ||
+            path->base.front() != '%' || !path->indices.empty()) {
+          return false;
+        }
+        const auto allocation = definitions.find(path->base);
+        if (allocation == definitions.end() ||
+            allocation->second.instruction->opcode() != "alloca" ||
+            allocation->second.instruction->operands().size() != 1 ||
+            allocation->second.instruction->operands()[0].find('[') !=
+                std::string::npos) {
+          return false;
+        }
+      }
+    }
+  }
+  if (destinationLoads != 1) {
+    return false;
+  }
+
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+       ++blockIndex) {
+    if (consumer.outer.blocks.find(blockIndex) != consumer.outer.blocks.end()) {
+      continue;
+    }
+    for (const auto& instruction : function.blocks()[blockIndex].instructions()) {
+      for (const auto& operand : instruction.operands()) {
+        if (loopDefinitions.find(operand) == loopDefinitions.end()) {
+          continue;
+        }
+        if (operand != outerReduction ||
+            blockIndex != consumer.outer.exitIndex) {
+          return false;
+        }
+      }
+    }
+  }
+  const auto& exitInstructions =
+      function.blocks()[consumer.outer.exitIndex].instructions();
+  return exitInstructions.empty() ||
+         exitInstructions.front().opcode() != "phi";
+}
+
+std::optional<ReductionForwardCandidate> analyzeReductionForwarding(
+    const Module& module, std::size_t functionIndex, const CFG& cfg,
+    const DefinitionMap& definitions,
+    const std::unordered_map<std::string, ArrayType>& arrayTypes,
+    const Location& storeLocation) {
+  const auto& function = module.functions()[functionIndex];
+  const auto& store = function.blocks()[storeLocation.block]
+                          .instructions()[storeLocation.instruction];
+  if (store.opcode() != "store" || store.operands().size() != 3) {
+    return std::nullopt;
+  }
+  if (store.operands()[0] != "int") {
+    return std::nullopt;
+  }
+  const auto storePath = pointerPath(store.operands()[2], definitions);
+  if (!storePath.has_value()) {
+    return std::nullopt;
+  }
+  const auto type = arrayTypes.find(storePath->base);
+  if (type == arrayTypes.end() || type->second.scalar != "int") {
+    return std::nullopt;
+  }
+  if (!pointerDoesNotEscape(module, storePath->base)) {
+    return std::nullopt;
+  }
+  const auto producer = loopNestForPath(function, cfg, definitions,
+                                        type->second, *storePath, storeLocation);
+  if (!producer.has_value()) {
+    return std::nullopt;
+  }
+
+  std::size_t writesInProducer = 0;
+  for (const auto blockIndex : producer->outer.blocks) {
+    for (const auto& instruction : function.blocks()[blockIndex].instructions()) {
+      if (instruction.opcode() == "call") {
+        return std::nullopt;
+      }
+      if (instruction.opcode() != "store" ||
+          instruction.operands().size() != 3) {
+        continue;
+      }
+      const auto path = pointerPath(instruction.operands()[2], definitions);
+      if (path.has_value() && path->base == storePath->base) {
+        ++writesInProducer;
+      }
+    }
+  }
+  if (writesInProducer != 1) {
+    return std::nullopt;
+  }
+
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+       ++blockIndex) {
+    const auto& instructions = function.blocks()[blockIndex].instructions();
+    for (std::size_t index = 0; index < instructions.size(); ++index) {
+      const auto& load = instructions[index];
+      if (load.opcode() != "load" || !load.hasResult() ||
+          load.operands().size() != 2 || load.operands()[0] != "int") {
+        continue;
+      }
+      const auto loadPath = pointerPath(load.operands()[1], definitions);
+      if (!loadPath.has_value() || loadPath->base != storePath->base) {
+        continue;
+      }
+      const Location loadLocation{blockIndex, index};
+      const auto consumer = loopNestForPath(function, cfg, definitions,
+                                            type->second, *loadPath,
+                                            loadLocation);
+      if (!consumer.has_value() ||
+          consumer->outer.preheader != producer->outer.exit) {
+        continue;
+      }
+      const auto& forwardingBlock =
+          function.blocks()[producer->outer.exitIndex];
+      const auto* forwardingTerminator = forwardingBlock.terminator();
+      if (forwardingBlock.instructions().size() != 1 ||
+          forwardingTerminator == nullptr ||
+          forwardingTerminator->opcode() != "br" ||
+          forwardingTerminator->operands().size() != 1 ||
+          forwardingTerminator->operands()[0] != consumer->outer.header) {
+        continue;
+      }
+
+      const Instruction* reductionAdd = nullptr;
+      std::string innerReduction;
+      for (const auto innerBlock : consumer->inner.blocks) {
+        for (const auto& instruction :
+             function.blocks()[innerBlock].instructions()) {
+          if (instruction.opcode() != "add" || !instruction.hasResult() ||
+              instruction.operands().size() != 2) {
+            continue;
+          }
+          std::string other;
+          if (instruction.operands()[0] == load.result()) {
+            other = instruction.operands()[1];
+          } else if (instruction.operands()[1] == load.result()) {
+            other = instruction.operands()[0];
+          } else {
+            continue;
+          }
+          const auto phi = definitions.find(other);
+          if (phi != definitions.end() &&
+              phi->second.location.block == consumer->inner.headerIndex &&
+              phi->second.instruction->opcode() == "phi") {
+            reductionAdd = &instruction;
+            innerReduction = other;
+          }
+        }
+      }
+      if (reductionAdd == nullptr) {
+        continue;
+      }
+      const auto innerPhi = definitions.find(innerReduction);
+      const auto innerInitial =
+          phiIncoming(*innerPhi->second.instruction, consumer->inner.preheader);
+      const auto innerNext =
+          phiIncoming(*innerPhi->second.instruction, consumer->inner.latch);
+      if (!innerInitial.has_value() || !innerNext.has_value() ||
+          *innerNext != reductionAdd->result()) {
+        continue;
+      }
+      const auto outerPhi = definitions.find(*innerInitial);
+      if (outerPhi == definitions.end() ||
+          outerPhi->second.location.block != consumer->outer.headerIndex ||
+          outerPhi->second.instruction->opcode() != "phi") {
+        continue;
+      }
+      const auto identity =
+          phiIncoming(*outerPhi->second.instruction, consumer->outer.preheader);
+      const auto outerNext =
+          phiIncoming(*outerPhi->second.instruction, consumer->outer.latch);
+      long long identityValue = 0;
+      if (!identity.has_value() || !outerNext.has_value() ||
+          *outerNext != innerReduction ||
+          !detail::parseIntegerLiteral(*identity, identityValue) ||
+          !consumerHasOnlyForwardableEffects(
+              function, definitions, *consumer, loadLocation,
+              storePath->base, outerPhi->second.instruction->result())) {
+        continue;
+      }
+      return ReductionForwardCandidate{
+          storeLocation, store.operands()[1], *identity,
+          outerPhi->second.instruction->result(), *producer, *consumer};
+    }
+  }
+  return std::nullopt;
+}
+
+std::string freshBlockName(const Function& function,
+                           const std::string& prefix) {
+  std::unordered_set<std::string> names;
+  for (const auto& block : function.blocks()) {
+    names.insert(block.name());
+  }
+  for (std::size_t index = 0;; ++index) {
+    const auto candidate = prefix + std::to_string(index);
+    if (names.find(candidate) == names.end()) {
+      return candidate;
+    }
+  }
+}
+
+void replaceBranchTarget(BasicBlock& block, const std::string& oldTarget,
+                         const std::string& newTarget) {
+  auto& instructions = block.instructions();
+  if (instructions.empty() || instructions.back().opcode() != "br") {
+    return;
+  }
+  auto operands = instructions.back().operands();
+  for (auto& operand : operands) {
+    if (operand == oldTarget) {
+      operand = newTarget;
+    }
+  }
+  instructions.back() = Instruction{"br", std::move(operands)};
+}
+
+void replacePhiPredecessor(BasicBlock& block,
+                           const std::string& oldPredecessor,
+                           const std::string& newPredecessor) {
+  for (auto& instruction : block.instructions()) {
+    if (instruction.opcode() != "phi") {
+      break;
+    }
+    auto operands = instruction.operands();
+    for (std::size_t index = 2; index < operands.size(); index += 2) {
+      if (operands[index] == oldPredecessor) {
+        operands[index] = newPredecessor;
+      }
+    }
+    instruction = Instruction{"phi", std::move(operands), instruction.result()};
+  }
+}
+
+void applyReductionForwarding(Function& function,
+                              const ReductionForwardCandidate& candidate) {
+  std::unordered_set<std::string> values;
+  for (const auto& parameter : function.parameters()) {
+    values.insert(parameter.name);
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) {
+        values.insert(instruction.result());
+      }
+    }
+  }
+  std::size_t valueCounter = 0;
+  const auto slot = freshValueName(values, valueCounter, "%cross.loop.");
+  const auto accumulatorLoad =
+      freshValueName(values, valueCounter, "%cross.loop.");
+  const auto accumulatorNext =
+      freshValueName(values, valueCounter, "%cross.loop.");
+  const auto finalValue =
+      freshValueName(values, valueCounter, "%cross.loop.");
+  const auto initBlockName = freshBlockName(function, "cross.loop.init.");
+
+  auto& entry = function.blocks().front().instructions();
+  entry.insert(entry.end() - 1, Instruction{"alloca", {"int"}, slot});
+
+  const auto producerPreheader = candidate.producer.outer.preheader;
+  replaceBranchTarget(function.blocks()[candidate.producer.outer.preheaderIndex],
+                      candidate.producer.outer.header, initBlockName);
+  replacePhiPredecessor(function.blocks()[candidate.producer.outer.headerIndex],
+                        producerPreheader, initBlockName);
+
+  BasicBlock initBlock(initBlockName);
+  initBlock.addInstruction(
+      Instruction{"store", {"int", candidate.identity, slot}});
+  initBlock.addInstruction(Instruction{"br", {candidate.producer.outer.header}});
+  function.blocks().push_back(std::move(initBlock));
+
+  auto& producerInstructions =
+      function.blocks()[candidate.producerStore.block].instructions();
+  producerInstructions.insert(
+      producerInstructions.begin() +
+          static_cast<std::ptrdiff_t>(candidate.producerStore.instruction + 1),
+      Instruction{"load", {"int", slot}, accumulatorLoad});
+  producerInstructions.insert(
+      producerInstructions.begin() +
+          static_cast<std::ptrdiff_t>(candidate.producerStore.instruction + 2),
+      Instruction{"add", {accumulatorLoad, candidate.storedValue},
+                  accumulatorNext});
+  producerInstructions.insert(
+      producerInstructions.begin() +
+          static_cast<std::ptrdiff_t>(candidate.producerStore.instruction + 3),
+      Instruction{"store", {"int", accumulatorNext, slot}});
+
+  replaceBranchTarget(function.blocks()[candidate.producer.outer.headerIndex],
+                      candidate.producer.outer.exit,
+                      candidate.consumer.outer.exit);
+
+  auto& exitInstructions =
+      function.blocks()[candidate.consumer.outer.exitIndex].instructions();
+  exitInstructions.insert(exitInstructions.begin(),
+                          Instruction{"load", {"int", slot}, finalValue});
+  for (auto& instruction : exitInstructions) {
+    instruction = Instruction{
+        instruction.opcode(),
+        detail::rewriteOperands(
+            instruction.operands(),
+            {{candidate.outerReduction, finalValue}}),
+        instruction.result()};
+  }
+
+  std::unordered_set<std::string> removedNames;
+  for (const auto blockIndex : candidate.consumer.outer.blocks) {
+    removedNames.insert(function.blocks()[blockIndex].name());
+  }
+  auto& blocks = function.blocks();
+  blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                              [&](const BasicBlock& block) {
+                                return removedNames.find(block.name()) !=
+                                       removedNames.end();
+                              }),
+               blocks.end());
+}
+
+bool forwardOneReduction(Module& module, std::size_t functionIndex) {
+  const auto arrayTypes = collectArrayTypes(module);
+  const auto& function = module.functions()[functionIndex];
+  const auto cfg = buildCFG(function);
+  const auto definitions = buildDefinitions(function);
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    for (std::size_t instruction = 0;
+         instruction < function.blocks()[block].instructions().size();
+         ++instruction) {
+      const auto candidate = analyzeReductionForwarding(
+          module, functionIndex, cfg, definitions, arrayTypes,
+          Location{block, instruction});
+      if (!candidate.has_value()) {
+        continue;
+      }
+      applyReductionForwarding(module.functions()[functionIndex], *candidate);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool rewriteOne(Module& module, std::size_t functionIndex) {
   const auto arrayTypes = collectArrayTypes(module);
   const auto& function = module.functions()[functionIndex];
@@ -919,6 +1379,14 @@ void AffineArrayCopyPropagationPass::run(Module& module) {
   for (std::size_t function = 0; function < module.functions().size();
        ++function) {
     while (rewriteOne(module, function)) {
+    }
+  }
+}
+
+void CrossLoopStoreForwardingPass::run(Module& module) {
+  for (std::size_t function = 0; function < module.functions().size();
+       ++function) {
+    while (forwardOneReduction(module, function)) {
     }
   }
 }
