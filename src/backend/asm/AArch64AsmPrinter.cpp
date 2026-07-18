@@ -675,7 +675,10 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
       if (instruction.operands[0].type.isFloat()) emitFloatOperand(os, function, instruction.operands[0], "s0");
       else emitIntegerOperand(os, function, instruction.operands[0], "x0");
     }
-    os << "  b " << returnLabel << '\n'; return;
+    if (fallthrough == nullptr || *fallthrough != returnLabel) {
+      os << "  b " << returnLabel << '\n';
+    }
+    return;
   }
   if (opcode == "call") {
     std::size_t ints = 0, floats = 0, stack = 0;
@@ -931,7 +934,10 @@ void emitFunction(std::ostringstream& os, const MachineModule& module, const Mac
   for (const auto& instruction : function.prologueInstructions) emitInstruction(os, module, function, instruction, exit, labels);
   for (std::size_t index = 0; index < function.blocks.size(); ++index) {
     const auto& block = function.blocks[index]; os << labels.at(block.name) << ":\n";
-    const std::string* fallthrough = index + 1 < function.blocks.size() ? &labels.at(function.blocks[index + 1].name) : nullptr;
+    const std::string* fallthrough =
+        index + 1 < function.blocks.size()
+            ? &labels.at(function.blocks[index + 1].name)
+            : &exit;
     for (const auto& instruction : block.instructions) emitInstruction(os, module, function, instruction, exit, labels, fallthrough);
   }
   os << exit << ":\n";
