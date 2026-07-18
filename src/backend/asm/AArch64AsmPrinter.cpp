@@ -224,6 +224,33 @@ void emitStore(std::ostringstream& os, const std::string& src, const ValueType& 
   }
 }
 
+unsigned scaleShift(std::int64_t scale) {
+  unsigned shift = 0;
+  for (auto value = static_cast<std::uint64_t>(scale); value > 1;
+       value >>= 1U) {
+    ++shift;
+  }
+  return shift;
+}
+
+void emitIndexedLoad(std::ostringstream& os, const std::string& dst,
+                     const ValueType& type, const std::string& base,
+                     const std::string& index, std::int64_t scale) {
+  const std::string out = type.isFloat() ? dst : integerRegister(dst, type);
+  os << "  ldr " << out << ", [" << base << ", " << index;
+  if (scale != 1) os << ", lsl #" << scaleShift(scale);
+  os << "]\n";
+}
+
+void emitIndexedStore(std::ostringstream& os, const std::string& src,
+                      const ValueType& type, const std::string& base,
+                      const std::string& index, std::int64_t scale) {
+  const std::string in = type.isFloat() ? src : integerRegister(src, type);
+  os << "  str " << in << ", [" << base << ", " << index;
+  if (scale != 1) os << ", lsl #" << scaleShift(scale);
+  os << "]\n";
+}
+
 const compiler::backend::mir::StackObject& stackObject(const MachineFunction& function, int index) {
   return function.stackObjects.at(static_cast<std::size_t>(index));
 }
@@ -495,6 +522,30 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     else { emitAddress(os, function, address, kAddrScratch); emitLoad(os, dst, instruction.result.type, kAddrScratch, 0); }
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode == "load.indexed") {
+    const auto& baseOp = instruction.operands[0];
+    const auto& indexOp = instruction.operands[1];
+    const auto scale = instruction.operands[2].intValue;
+    const std::string base =
+        baseOp.kind == MachineOperandKind::PhysicalRegister ? baseOp.text
+                                                            : kAddrScratch;
+    if (baseOp.kind != MachineOperandKind::PhysicalRegister) {
+      emitAddress(os, function, baseOp, kAddrScratch);
+    }
+    const std::string dst = resultRegister(
+        instruction.result,
+        instruction.result.type.isFloat() ? kFloatScratch : kImmScratch);
+    if (indexOp.kind == MachineOperandKind::ImmediateInt) {
+      emitLoad(os, dst, instruction.result.type, base,
+               indexOp.intValue * scale);
+    } else {
+      const std::string index =
+          integerOperand(os, function, indexOp, kImmScratch);
+      emitIndexedLoad(os, dst, instruction.result.type, base, index, scale);
+    }
+    storeResult(os, function, instruction.result, dst);
+    return;
+  }
   if (opcode == "store") {
     const auto& value = instruction.operands[0]; const auto& address = instruction.operands[1];
     const std::string source = value.type.isFloat() ? floatOperand(os, function, value, kFloatScratch)
@@ -502,6 +553,33 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const std::string base = address.kind == MachineOperandKind::PhysicalRegister ? address.text : kAddrScratch;
     if (address.kind != MachineOperandKind::PhysicalRegister) emitAddress(os, function, address, kAddrScratch);
     emitStore(os, source, value.type, base, 0); return;
+  }
+  if (opcode == "store.indexed") {
+    const auto& value = instruction.operands[0];
+    const auto& baseOp = instruction.operands[1];
+    const auto& indexOp = instruction.operands[2];
+    const auto scale = instruction.operands[3].intValue;
+    const std::string base =
+        baseOp.kind == MachineOperandKind::PhysicalRegister ? baseOp.text
+                                                            : kAddrScratch;
+    if (baseOp.kind != MachineOperandKind::PhysicalRegister) {
+      emitAddress(os, function, baseOp, kAddrScratch);
+    }
+    const std::string source =
+        value.type.isFloat()
+            ? floatOperand(os, function, value, kFloatScratch)
+            : integerOperand(os, function, value,
+                             indexOp.kind == MachineOperandKind::ImmediateInt
+                                 ? kImmScratch
+                                 : kHiddenScratch);
+    if (indexOp.kind == MachineOperandKind::ImmediateInt) {
+      emitStore(os, source, value.type, base, indexOp.intValue * scale);
+    } else {
+      const std::string index =
+          integerOperand(os, function, indexOp, kImmScratch);
+      emitIndexedStore(os, source, value.type, base, index, scale);
+    }
+    return;
   }
   if (opcode == "br") {
     if (instruction.operands.size() == 1) {
