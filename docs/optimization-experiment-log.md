@@ -34,6 +34,11 @@
 
 | 提交 | 优化 | 完整性审查 | 正确性 | 隔离性能证据 | 结论 |
 |---|---|---|---|---|---|
+| `463aa57` | AArch64 二次幂有符号除余降低 | 处理 i32/i64、正负除数、`INT_MIN`、截断向零、余数符号与 `±1`；仅当常量绝对值为二次幂且移位合法时使用偏置移位、掩码与条件取负，其他完整 fallback | AArch64 correctness `140/140 AC`，performance `60/60 AC`；11 个被除数×11 个正负除数边界对拍 `121/121` | 正反顺序均值：Huffman 约 `0.183→0.124s`，CRC `0.102→0.063s`，crypto `0.123→0.088s`，FFT1 `0.0369→0.0314s`；Huffman 的 `sdiv` `23→3` | 保留到 `wz-arm`，针对 A53 高延迟整数除法 |
+| `0bf5278` | AArch64 最短宽立即数序列 | 对 32/64 位立即数穷举 16 位分片成本，在 `movz/movk` 与 `movn/movk` 间选最少指令；全零、全一和高位单分片均有合法初始指令 | `140/140 AC`，`60/60 AC` | 60 项总计少 21 条指令；crypto、h-4 各项少 3 条，matmul 各项少 1 条；matmul2 两轮诊断均改善 | 保留到 `wz-arm` |
+| `339992f` | AArch64 整数乘减融合 | 仅把同块、单一用途、类型一致的 `acc - mul(a,b)` 改为 `msub a,b,acc`；`mul-acc` 和多用途乘法保持不变 | `140/140 AC`，`60/60 AC` | 仅 h-5 三项变化，LU 分解四个核心循环每项少 4 条静态指令，热循环每轮少一条 `mul` | 保留到 `wz-arm`，待 A53 平台重点看 h-5 |
+| `a4916bd` | AArch64 零比较分支选择 | 仅对 `eq/ne` 与整数零比较选择 `cbz/cbnz`，同时按物理 fallthrough 反转条件；其他比较仍使用 `cmp+b.cond` | `140/140 AC`，`60/60 AC` | 36 个性能程序变短，总计少 87 条指令；Huffman 每项少 8 条、CRC/FFT 每项少 3 条。QEMU 中 Huffman 改善约 `4%–6%`，knapsack 有小幅波动 | 按 A53 单条 compare-and-branch 成本保留；平台若出现稳定退化则独立撤回 |
+| `94635c1` | AArch64 尾声前返回直落 | 仅当最后物理块的 `ret` 紧邻统一 epilogue 时删除 `b epilogue`；多返回、非末块和需要跳转的路径保持原样 | `140/140 AC`，`60/60 AC` | 60 项总计少 198 条指令；正反顺序均值中 sort、conv2d、Huffman 约改善 4%，crypto 持平，FFT 约改善 2% | 保留到 `wz-arm` |
 | `c8a10be` | AArch64 整数立即数指令选择 | 只选择 A64 可编码的 add/sub/cmp/cmn/移位与 `and #1`；正负立即数统一换算，并专门禁止把 ZR 误用为 add/sub immediate 编码中的 SP | 最终 AArch64 correctness `140/140 AC`，performance `60/60 AC` | Huffman `488→448`、many-mat `321→301`、matmul `161→144` 条静态指令；主要消除循环内 `movz #1` 等立即数物化 | 保留到 `wz-arm`；实际 Cortex-A53 收益待平台复核 |
 | `1fae891` | AArch64 单用途整数乘加融合 | 仅将同基本块、单一用途且类型一致的 `mul + add` 融合为 `madd`；保持 i32/i64 的模回绕语义，其他用途完整 fallback | 最终 AArch64 correctness `140/140 AC`，performance `60/60 AC` | many-mat 生成 14 条 `madd`，指令指标 `301→288`；matmul2 `144→143`；QEMU 交叉顺序诊断中三类样例均值约下降 `1.6%–6.4%` | 保留到 `wz-arm`；A53 上可以用单条 MADD 替代两条依赖指令 |
 | `e8da5a2` | AArch64 GEP 与 load/store 索引寻址融合 | 地址值必须单一用途且定义在同块中；动态下标仅在 scale 精确等于访存宽度时生成 A64 register-offset addressing，常量偏移检查 i64 乘法溢出；打印器分离值、地址和下标 scratch，并回归覆盖大偏移 store 冲突 | 最终 AArch64 correctness `140/140 AC`（包括 long_func 与 long_code2），performance `60/60 AC` | many_mat_cal-1 指令指标 `288→260`，matmul2 `143→135`，huffman-01 `448→442`；热循环由 `add address; ldr/str` 合并为 `ldr/str [base,index,lsl]` | 保留到 `wz-arm`；这是针对 Cortex-A53 地址生成吞吐的主要候选，平台实测前不声称真机提速 |
@@ -76,6 +81,12 @@
 - 机器级死代码消除和带循环深度代价的图着色寄存器分配。
 
 对这些优化的正确表述是“当前合规保留”，而不是“已在最新基线独立证明提速”。
+
+### 2026-07-19 A53 未接受候选
+
+- 单用途 `shl + add/sub` 融合已完成合法性和打印器实现，但 60 项最终汇编 `CHANGED=0`，代码已撤回。
+- 单比特 `and + branch` 到 `tbz/tbnz` 的 SSA 单用途实现在 60 项中 `tbz=0, tbnz=0`；现有 `and #1` 来自更晚的布尔规范化，不在缺少 SSA 证明时做汇编文本窥孔，代码已撤回。
+- 相邻 64 位 callee-saved `str/ldr` 合并为 `stp/ldp` 时，60 项静态少 576 条指令，但 Huffman 正反顺序都稳定从约 `0.117s` 退化到 `0.128–0.130s`；仅保留 `stp` 仍退化约 10%，因此完整撤回。重做必须引入动态调用频率和 A53 load/store 端口成本，不能按静态指令数接受。
 
 ## 4. 实现完整但当前策略退化（B）
 
