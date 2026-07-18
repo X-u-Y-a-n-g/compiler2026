@@ -170,6 +170,16 @@ const compiler::backend::mir::StackObject& stackObject(const MachineFunction& fu
   return function.stackObjects.at(static_cast<std::size_t>(index));
 }
 
+const char* frameBaseRegister(const MachineFunction& function) {
+  return function.usesFramePointer ? "x29" : "sp";
+}
+
+long long frameBaseOffset(const MachineFunction& function, long long cfaOffset) {
+  return function.usesFramePointer
+             ? cfaOffset
+             : static_cast<long long>(function.frameSize) + cfaOffset;
+}
+
 void emitAddress(std::ostringstream& os, const MachineFunction& function,
                  const MachineOperand& operand, const std::string& dst) {
   switch (operand.kind) {
@@ -178,14 +188,16 @@ void emitAddress(std::ostringstream& os, const MachineFunction& function,
       break;
     case MachineOperandKind::FrameIndex:
     case MachineOperandKind::StackObject:
-      emitAddImmediate(os, dst, "x29", -stackObject(function, operand.index).offset);
+      emitAddImmediate(os, dst, frameBaseRegister(function),
+                       frameBaseOffset(function, -stackObject(function, operand.index).offset));
       break;
     case MachineOperandKind::GlobalAddress:
       os << "  adrp " << dst << ", " << operand.text << '\n';
       os << "  add " << dst << ", " << dst << ", :lo12:" << operand.text << '\n';
       break;
     case MachineOperandKind::StackSlot:
-      emitLoad(os, dst, operand.type, "x29", -stackObject(function, operand.index).offset);
+      emitLoad(os, dst, operand.type, frameBaseRegister(function),
+               frameBaseOffset(function, -stackObject(function, operand.index).offset));
       break;
     default:
       emitImmediate(os, dst, 0);
@@ -211,7 +223,8 @@ void emitIntegerOperand(std::ostringstream& os, const MachineFunction& function,
       emitAddress(os, function, operand, dst);
       break;
     case MachineOperandKind::StackSlot:
-      emitLoad(os, dst, operand.type, "x29", -stackObject(function, operand.index).offset);
+      emitLoad(os, dst, operand.type, frameBaseRegister(function),
+               frameBaseOffset(function, -stackObject(function, operand.index).offset));
       break;
     default:
       emitImmediate(os, dst, 0, operand.type);
@@ -231,7 +244,8 @@ void emitFloatOperand(std::ostringstream& os, const MachineFunction& function,
       break;
     case MachineOperandKind::FrameIndex:
     case MachineOperandKind::StackSlot:
-      emitLoad(os, dst, operand.type, "x29", -stackObject(function, operand.index).offset);
+      emitLoad(os, dst, operand.type, frameBaseRegister(function),
+               frameBaseOffset(function, -stackObject(function, operand.index).offset));
       break;
     default:
       os << "  fmov " << dst << ", wzr\n";
@@ -266,7 +280,8 @@ void storeResult(std::ostringstream& os, const MachineFunction& function,
     else os << "  mov " << integerRegister(result.text, result.type) << ", "
             << integerRegister(source, result.type) << '\n';
   } else if (result.kind == MachineOperandKind::StackSlot || result.kind == MachineOperandKind::FrameIndex) {
-    emitStore(os, source, result.type, "x29", -stackObject(function, result.index).offset);
+    emitStore(os, source, result.type, frameBaseRegister(function),
+              frameBaseOffset(function, -stackObject(function, result.index).offset));
   }
 }
 
@@ -381,24 +396,32 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   if (opcode == "stack.restore") {
     if (instruction.result.type.isFloat()) {
       ValueType wide = ValueType::int64Type();
-      emitLoad(os, doubleRegister(instruction.result.text), wide, "x29", instruction.operands[0].intValue);
-    } else emitLoad(os, instruction.result.text, instruction.result.type, "x29", instruction.operands[0].intValue);
+      emitLoad(os, doubleRegister(instruction.result.text), wide, frameBaseRegister(function),
+               frameBaseOffset(function, instruction.operands[0].intValue));
+    } else {
+      emitLoad(os, instruction.result.text, instruction.result.type, frameBaseRegister(function),
+               frameBaseOffset(function, instruction.operands[0].intValue));
+    }
     return;
   }
   if (opcode == "stack.param.load") {
     const std::string dst = resultRegister(instruction.result, instruction.result.type.isFloat() ? kFloatScratch : kAddrScratch);
-    emitLoad(os, dst, instruction.result.type, "x29", instruction.operands[0].intValue);
+    emitLoad(os, dst, instruction.result.type, frameBaseRegister(function),
+             frameBaseOffset(function, instruction.operands[0].intValue));
     storeResult(os, function, instruction.result, dst); return;
   }
   if (opcode == "spill.reload" || opcode == "frame.load") {
     const auto& frame = instruction.operands[0];
-    emitLoad(os, instruction.result.text, instruction.result.type, "x29", -stackObject(function, frame.index).offset); return;
+    emitLoad(os, instruction.result.text, instruction.result.type, frameBaseRegister(function),
+             frameBaseOffset(function, -stackObject(function, frame.index).offset)); return;
   }
   if (opcode == "spill.store" || opcode == "frame.store") {
     const auto& source = instruction.operands[0];
     const std::string reg = source.type.isFloat() ? floatOperand(os, function, source, kFloatScratch)
                                                   : integerOperand(os, function, source, kAddrScratch);
-    emitStore(os, reg, source.type, "x29", -stackObject(function, instruction.operands[1].index).offset); return;
+    emitStore(os, reg, source.type, frameBaseRegister(function),
+              frameBaseOffset(function,
+                              -stackObject(function, instruction.operands[1].index).offset)); return;
   }
   if (opcode == "copy") {
     if (!instruction.hasResult || instruction.operands.empty()) return;
