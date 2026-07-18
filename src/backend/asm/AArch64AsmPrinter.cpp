@@ -126,6 +126,64 @@ void emitAddImmediate(std::ostringstream& os, const std::string& dst, const std:
   }
 }
 
+bool addSubImmediate(std::int64_t value, std::uint64_t& encoded,
+                     unsigned& shift) {
+  const auto magnitude = value < 0
+                             ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                             : static_cast<std::uint64_t>(value);
+  if (magnitude <= 4095) {
+    encoded = magnitude;
+    shift = 0;
+    return true;
+  }
+  if ((magnitude & 4095U) == 0 && (magnitude >> 12U) <= 4095) {
+    encoded = magnitude >> 12U;
+    shift = 12;
+    return true;
+  }
+  return false;
+}
+
+void emitEncodedImmediate(std::ostringstream& os, std::uint64_t value,
+                          unsigned shift) {
+  os << '#' << value;
+  if (shift != 0) os << ", lsl #" << shift;
+}
+
+bool emitIntegerAddSubImmediate(std::ostringstream& os,
+                                const std::string& opcode,
+                                const std::string& destination,
+                                const std::string& source,
+                                std::int64_t value) {
+  // Register 31 denotes SP in this encoding, so a ZR source must use the
+  // register form instead.
+  if (source == "xzr" || source == "wzr") return false;
+  std::uint64_t encoded = 0;
+  unsigned shift = 0;
+  if (!addSubImmediate(value, encoded, shift)) return false;
+  const bool negative = value < 0;
+  const std::string selected =
+      opcode == "add" ? (negative ? "sub" : "add")
+                      : (negative ? "add" : "sub");
+  os << "  " << selected << ' ' << destination << ", " << source << ", ";
+  emitEncodedImmediate(os, encoded, shift);
+  os << '\n';
+  return true;
+}
+
+bool emitCompareImmediate(std::ostringstream& os, const std::string& lhs,
+                          std::int64_t rhs) {
+  // In the add/sub-immediate encoding register 31 denotes SP, not ZR.
+  if (lhs == "xzr" || lhs == "wzr") return false;
+  std::uint64_t encoded = 0;
+  unsigned shift = 0;
+  if (!addSubImmediate(rhs, encoded, shift)) return false;
+  os << "  " << (rhs < 0 ? "cmn" : "cmp") << ' ' << lhs << ", ";
+  emitEncodedImmediate(os, encoded, shift);
+  os << '\n';
+  return true;
+}
+
 unsigned accessSize(const ValueType& type) {
   return type.isInt64() || type.isPointer() ? 8U : 4U;
 }
@@ -461,8 +519,12 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   if (opcode.rfind("br.icmp.", 0) == 0) {
     const auto& lhsOp = instruction.operands[0]; const auto& rhsOp = instruction.operands[1];
     const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
-    const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
-    os << "  cmp " << integerRegister(lhs, lhsOp.type) << ", " << integerRegister(rhs, lhsOp.type) << '\n';
+    const auto lhsRegister = integerRegister(lhs, lhsOp.type);
+    if (rhsOp.kind != MachineOperandKind::ImmediateInt ||
+        !emitCompareImmediate(os, lhsRegister, rhsOp.intValue)) {
+      const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
+      os << "  cmp " << lhsRegister << ", " << integerRegister(rhs, lhsOp.type) << '\n';
+    }
     const auto cond = conditionFor(opcode.substr(3));
     const auto& yes = labels.at(instruction.operands[2].text); const auto& no = labels.at(instruction.operands[3].text);
     if (fallthrough != nullptr && *fallthrough == no) os << "  b." << cond << ' ' << yes << '\n';
@@ -542,11 +604,46 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
       opcode == "sdiv" || opcode == "srem" || opcode == "and" || opcode == "or" || opcode == "xor" ||
       opcode == "shl" || opcode == "ashr" || opcode == "lshr") {
     const auto& lhsOp = instruction.operands[0]; const auto& rhsOp = instruction.operands[1];
-    const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
-    const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
     const auto dst = resultRegister(instruction.result, kImmScratch);
     const auto d = integerRegister(dst, instruction.result.type);
-    const auto l = integerRegister(lhs, instruction.result.type); const auto r = integerRegister(rhs, instruction.result.type);
+    if ((opcode == "add" || opcode == "sub") &&
+        rhsOp.kind == MachineOperandKind::ImmediateInt) {
+      const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
+      if (emitIntegerAddSubImmediate(
+              os, opcode, d, integerRegister(lhs, instruction.result.type),
+              rhsOp.intValue)) {
+        storeResult(os, function, instruction.result, dst);
+        return;
+      }
+    }
+    if (opcode == "add" && lhsOp.kind == MachineOperandKind::ImmediateInt) {
+      const auto rhs = integerOperand(os, function, rhsOp, kAddrScratch);
+      if (emitIntegerAddSubImmediate(
+              os, opcode, d, integerRegister(rhs, instruction.result.type),
+              lhsOp.intValue)) {
+        storeResult(os, function, instruction.result, dst);
+        return;
+      }
+    }
+    const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
+    const auto l = integerRegister(lhs, instruction.result.type);
+    if ((opcode == "shl" || opcode == "ashr" || opcode == "lshr") &&
+        rhsOp.kind == MachineOperandKind::ImmediateInt && rhsOp.intValue >= 0 &&
+        rhsOp.intValue < (isNarrow(instruction.result.type) ? 32 : 64)) {
+      const char* mnemonic = opcode == "shl" ? "lsl" : opcode == "ashr" ? "asr" : "lsr";
+      os << "  " << mnemonic << ' ' << d << ", " << l << ", #"
+         << rhsOp.intValue << '\n';
+      storeResult(os, function, instruction.result, dst);
+      return;
+    }
+    if (opcode == "and" && rhsOp.kind == MachineOperandKind::ImmediateInt &&
+        rhsOp.intValue == 1) {
+      os << "  and " << d << ", " << l << ", #1\n";
+      storeResult(os, function, instruction.result, dst);
+      return;
+    }
+    const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
+    const auto r = integerRegister(rhs, instruction.result.type);
     if (opcode == "add") os << "  add " << d << ", " << l << ", " << r << '\n';
     else if (opcode == "sub") os << "  sub " << d << ", " << l << ", " << r << '\n';
     else if (opcode == "mul") os << "  mul " << d << ", " << l << ", " << r << '\n';
@@ -573,9 +670,14 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   if (opcode.rfind("icmp.", 0) == 0) {
     const auto& lhsOp = instruction.operands[0];
     const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
-    const auto rhs = integerOperand(os, function, instruction.operands[1], kImmScratch);
+    const auto& rhsOp = instruction.operands[1];
     const auto dst = resultRegister(instruction.result, kImmScratch);
-    os << "  cmp " << integerRegister(lhs, lhsOp.type) << ", " << integerRegister(rhs, lhsOp.type) << '\n';
+    const auto lhsRegister = integerRegister(lhs, lhsOp.type);
+    if (rhsOp.kind != MachineOperandKind::ImmediateInt ||
+        !emitCompareImmediate(os, lhsRegister, rhsOp.intValue)) {
+      const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
+      os << "  cmp " << lhsRegister << ", " << integerRegister(rhs, lhsOp.type) << '\n';
+    }
     os << "  cset " << integerRegister(dst, ValueType::int32Type()) << ", " << conditionFor(opcode) << '\n';
     storeResult(os, function, instruction.result, dst); return;
   }
