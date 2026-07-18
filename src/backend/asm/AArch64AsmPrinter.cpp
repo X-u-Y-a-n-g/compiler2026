@@ -30,6 +30,22 @@ constexpr const char* kFloatScratch = "s16";
 
 bool isNarrow(const ValueType& type) { return type.isBool() || type.isInt32(); }
 
+bool powerOfTwoMagnitude(std::int64_t value, std::uint64_t& magnitude) {
+  if (value == 0) return false;
+  magnitude = value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                        : static_cast<std::uint64_t>(value);
+  return (magnitude & (magnitude - 1U)) == 0;
+}
+
+unsigned log2PowerOfTwo(std::uint64_t value) {
+  unsigned shift = 0;
+  while (value > 1U) {
+    value >>= 1U;
+    ++shift;
+  }
+  return shift;
+}
+
 std::string integerRegister(const std::string& reg, const ValueType& type) {
   if (!isNarrow(type)) return reg;
   if (reg == "xzr") return "wzr";
@@ -697,6 +713,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto& lhsOp = instruction.operands[0]; const auto& rhsOp = instruction.operands[1];
     const auto dst = resultRegister(instruction.result, kImmScratch);
     const auto d = integerRegister(dst, instruction.result.type);
+    const bool isDivision = opcode == "div" || opcode == "sdiv";
+    const bool isRemainder = opcode == "mod" || opcode == "srem";
     if ((opcode == "add" || opcode == "sub") &&
         rhsOp.kind == MachineOperandKind::ImmediateInt) {
       const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
@@ -718,6 +736,55 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     }
     const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
     const auto l = integerRegister(lhs, instruction.result.type);
+    std::uint64_t divisorMagnitude = 0;
+    if ((isDivision || isRemainder) &&
+        rhsOp.kind == MachineOperandKind::ImmediateInt &&
+        powerOfTwoMagnitude(rhsOp.intValue, divisorMagnitude)) {
+      const unsigned width = isNarrow(instruction.result.type) ? 32U : 64U;
+      const unsigned shift = log2PowerOfTwo(divisorMagnitude);
+      if (shift < width) {
+        if (shift == 0) {
+          if (isRemainder) {
+            emitImmediate(os, dst, 0, instruction.result.type);
+          } else if (rhsOp.intValue < 0) {
+            os << "  neg " << d << ", " << l << '\n';
+          } else if (d != l) {
+            os << "  mov " << d << ", " << l << '\n';
+          }
+        } else if (isRemainder) {
+          const auto mask = divisorMagnitude - 1U;
+          if (shift == 1) {
+            os << "  and " << d << ", " << l << ", #1\n";
+            os << "  cmp " << l << ", #0\n";
+            os << "  cneg " << d << ", " << d << ", lt\n";
+          } else {
+            const auto temporary =
+                integerRegister(kHiddenScratch, instruction.result.type);
+            os << "  cmp " << l << ", #0\n";
+            os << "  cneg " << temporary << ", " << l << ", lt\n";
+            os << "  and " << d << ", " << temporary << ", #" << mask
+               << '\n';
+            os << "  cneg " << d << ", " << d << ", lt\n";
+          }
+        } else {
+          const auto temporary =
+              integerRegister(kHiddenScratch, instruction.result.type);
+          if (shift == 1) {
+            os << "  add " << d << ", " << l << ", " << l << ", lsr #"
+               << width - 1U << '\n';
+          } else {
+            os << "  asr " << temporary << ", " << l << ", #"
+               << width - 1U << '\n';
+            os << "  add " << d << ", " << l << ", " << temporary
+               << ", lsr #" << width - shift << '\n';
+          }
+          os << "  asr " << d << ", " << d << ", #" << shift << '\n';
+          if (rhsOp.intValue < 0) os << "  neg " << d << ", " << d << '\n';
+        }
+        storeResult(os, function, instruction.result, dst);
+        return;
+      }
+    }
     if ((opcode == "shl" || opcode == "ashr" || opcode == "lshr") &&
         rhsOp.kind == MachineOperandKind::ImmediateInt && rhsOp.intValue >= 0 &&
         rhsOp.intValue < (isNarrow(instruction.result.type) ? 32 : 64)) {
@@ -738,8 +805,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     if (opcode == "add") os << "  add " << d << ", " << l << ", " << r << '\n';
     else if (opcode == "sub") os << "  sub " << d << ", " << l << ", " << r << '\n';
     else if (opcode == "mul") os << "  mul " << d << ", " << l << ", " << r << '\n';
-    else if (opcode == "div" || opcode == "sdiv") os << "  sdiv " << d << ", " << l << ", " << r << '\n';
-    else if (opcode == "mod" || opcode == "srem") {
+    else if (isDivision) os << "  sdiv " << d << ", " << l << ", " << r << '\n';
+    else if (isRemainder) {
       const std::string quotient = integerRegister(kHiddenScratch, instruction.result.type);
       os << "  sdiv " << quotient << ", " << l << ", " << r << '\n';
       os << "  msub " << d << ", " << quotient << ", " << r << ", " << l << '\n';
