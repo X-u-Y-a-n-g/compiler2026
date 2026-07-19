@@ -94,6 +94,35 @@ std::string pairAdjacentStackAccesses(const std::string& assembly) {
   return result.str();
 }
 
+std::string foldShiftIntoAdd(const std::string& assembly) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_SHIFT_ADD") != nullptr) return assembly;
+  static const std::regex shiftPattern{
+      R"(^  (lsl|lsr|asr) ([wx][0-9]+), ([wx][0-9]+), #([0-9]+)$)"};
+  static const std::regex addPattern{
+      R"(^  add ([wx][0-9]+), ([wx][0-9]+), ([wx][0-9]+)$)"};
+  auto lines = splitLines(assembly);
+  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+    std::smatch shift;
+    std::smatch add;
+    if (!std::regex_match(lines[i], shift, shiftPattern) ||
+        !std::regex_match(lines[i + 1], add, addPattern) ||
+        add[1].str() != shift[2].str())
+      continue;
+    const std::string shifted = shift[2].str();
+    std::string other;
+    if (add[2].str() == shifted && add[3].str() != shifted) other = add[3].str();
+    else if (add[3].str() == shifted && add[2].str() != shifted) other = add[2].str();
+    else continue;
+    if (other.front() != shifted.front() || shift[3].str().front() != shifted.front()) continue;
+    lines[i] = "  add " + shifted + ", " + other + ", " + shift[3].str() + ", " +
+               shift[1].str() + " #" + shift[4].str();
+    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
+  }
+  std::ostringstream result;
+  for (const auto& line : lines) result << line << '\n';
+  return result.str();
+}
+
 std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
   static const std::regex signedHalfPattern{
       R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
@@ -2432,12 +2461,12 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(vectorizeContiguousConstantFills(
+  return pairAdjacentStackAccesses(foldShiftIntoAdd(vectorizeContiguousConstantFills(
       memoizePureAdditiveTailLoop(
           collapsePositivePowerOfTwoSteps(
               vectorizeConditionalMatrixReduction(
                   vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str())))))));
+                      vectorizeContiguousIntegerMadds(os.str()))))))));
 }
 
 }  // namespace compiler::backend::asmcode
