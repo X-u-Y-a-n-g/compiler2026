@@ -831,7 +831,7 @@ std::optional<Candidate> analyzeStore(
   // statically observed innermost-loop access strides worse in aggregate.
   // This conservatively preserves deliberately materialized layouts that are
   // reused primarily through their contiguous dimension.
-  if (localityDelta > 0.0L) {
+  if (localityDelta >= 0.0L) {
     return std::nullopt;
   }
   return candidate;
