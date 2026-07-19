@@ -101,6 +101,15 @@
 - 轻量 MemorySSA 候选用“局部标量槽 + Mem2Reg”在纯调用之间保留全局内存版本。三个跨调用活跃状态将 `read_bits` 从 485 缩到 472 条汇编，但栈帧从 32B 增至 64B，callee-saved 活跃寄存器从 2 增至 5；同容器交错 QEMU 两轮稳定退化约 12–14%。将压力上限收紧为一个状态后仍未超过基线，因此按门槛撤回该变换，不扩展为完整 MemoryDef/Use/Phi。
 - 撤回变换后，ARM 60 项 `-O1` 汇编与 `791d16a` 基线逐字节一致；ARM 功能集 `140/140 AC`。该批代码由 AI 辅助实现和消融，未使用外部技术资料，不包含函数名、变量名、用例名或输入特征触发。
 
+### 2026-07-19 SCEV、Alias、MemorySSA 与归约分析
+
+- 增加共享 `ScalarEvolutionAnalysis`：从规范归纳变量形成 `start + step * iteration` 加法递推，规范化正反比较与循环继续边，常量边界给出精确 trip count，符号边界保留结构化 `start/bound/step/predicate`；线性及普通 GEP 可形成以递推值为索引的仿射地址和元素步幅。
+- 增加 `AliasAnalysis`，区分全局、栈对象、参数、派生指针与未知指针；相同根和相同索引链为 `MustAlias`，不同栈/全局对象为 `NoAlias`，参数及无法证明的派生关系为 `MayAlias`，同时记录指针捕获。没有按变量名、函数名或用例名分类。
+- 增加轻量 `MemorySSA` 分析对象，为 load、store、call 和 CFG 汇合构造 `Use/StoreDef/CallDef/Phi` 内存版本；查询 reaching store 时沿 Phi 的所有路径求共同定义，并使用 Alias 分类、逐全局调用写集合及未捕获局部对象穿过安全调用。增加统一 `ReductionAnalysis`，识别整数/浮点 add、multiply、xor、and/or、min/max 的 Phi 回边归约，并显式区分浮点不可重结合语义。
+- 合成 CFG 同时验证常量 trip count `ceil((12-2)/2)=5`、仿射地址步幅 `2`、加法归约、不同栈对象 `NoAlias` 和跨循环共同 reaching store，全部通过。
+- 将 MemorySSA 接入冗余 load 消除后，初始有 15 项汇编变化；递归函数触发既有 Phi 清理错误路径并产生 3 项 WA，因此沿调用图识别递归环，环内函数只提供分析、不消费 MemorySSA。无静态收益的少量转发还会扰动寄存器分配，因此要求每函数至少转发 4 个 load；为控制编译时间，再限制最多 4096 条 IR 指令和 512 个块，并延迟构造调用效果分析。
+- 最终 60 项仅 `shuffle0/1/2` 汇编变化，每项约 `265→226` 条、load `43→30`、store 不变；精确 `5871502` 基线正反交错 QEMU 两轮总和均值约 `2.620s→2.505s`，但单项仍有明显宿主噪声，最终收益以 A53 板端为准。ARM 功能集 `140/140 AC`，其中 `long_func` 编译约 `50.28s`，低于 60 秒门槛。
+
 ## 4. 实现完整但当前策略退化（B）
 
 | 候选 | 完整性判定 | 实验结果 | 真正结论 | 后续重做条件 |

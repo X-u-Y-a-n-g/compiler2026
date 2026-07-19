@@ -17,9 +17,13 @@ add_library(compiler_lib
   src/ir/builder/AstToIR.cpp
   src/ir/analysis/UseDefAnalysis.cpp
   src/ir/analysis/LoopAnalysis.cpp
+  src/ir/analysis/AliasAnalysis.cpp
+  src/ir/analysis/ScalarEvolutionAnalysis.cpp
+  src/ir/analysis/ReductionAnalysis.cpp
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/analysis/FunctionEffectAnalysis.cpp
+  src/midend/analysis/MemorySSA.cpp
   src/midend/pass/AffineArrayCopyPropagationPass.cpp
   src/midend/pass/AffineModularRecurrencePass.cpp
   src/midend/pass/ArrayDimensionLayoutPass.cpp
