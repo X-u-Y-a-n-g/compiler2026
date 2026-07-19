@@ -384,6 +384,208 @@ std::string vectorizeContiguousIntegerMadds(const std::string& assembly) {
   return optimized.str();
 }
 
+std::optional<std::string> matchingXRegister(const std::string& reg) {
+  if (reg.size() < 2 || (reg.front() != 'w' && reg.front() != 'x')) {
+    return std::nullopt;
+  }
+  if (!std::all_of(reg.begin() + 1, reg.end(), [](char ch) {
+        return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+      })) {
+    return std::nullopt;
+  }
+  return "x" + reg.substr(1);
+}
+
+// Vectorize a contiguous i32 recurrence of the form
+//   destination[index] = destination[index] * factor + source[index].
+// The scalar loop remains as the exact fallback and tail. A runtime range
+// guard proves that the source and destination spans do not overlap and that
+// the broadcast factor cannot be changed by a destination store.
+std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
+  static const std::regex reservedVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq](24|25|26)([^A-Za-z0-9_]|$))"};
+  static const std::regex addressPattern{
+      R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
+  static const std::regex indexedLoadPattern{
+      R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
+  static const std::regex incrementPattern{
+      R"(^  add (w[0-9]+), (w[0-9]+), #1$)"};
+  static const std::regex comparePattern{
+      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
+
+  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
+  auto lines = splitLines(assembly);
+  bool changed = false;
+  for (std::size_t start = 0; start + 6 < lines.size(); ++start) {
+    std::smatch addressMatch;
+    if (!std::regex_match(lines[start], addressMatch, addressPattern)) continue;
+    const std::string destinationAddress = addressMatch[1].str();
+    const std::string destinationBase = addressMatch[2].str();
+    const std::string indexX = addressMatch[3].str();
+    if (destinationAddress == "x16" || destinationAddress == "x17" ||
+        destinationAddress == "x18" || destinationBase == "x16" ||
+        destinationBase == "x17" || destinationBase == "x18" ||
+        indexX == "x16" || indexX == "x17" || indexX == "x18") {
+      continue;
+    }
+
+    std::string destinationValue;
+    std::string loadedDestinationBase;
+    long long destinationOffset = 0;
+    if (!parseDirectIntLoad(lines[start + 1], destinationValue,
+                            loadedDestinationBase, destinationOffset) ||
+        loadedDestinationBase != destinationAddress || destinationOffset != 0) {
+      continue;
+    }
+    std::string factor;
+    std::string factorAddress;
+    long long factorOffset = 0;
+    if (!parseDirectIntLoad(lines[start + 2], factor, factorAddress,
+                            factorOffset) ||
+        factorOffset != 0 || factorAddress == "x16" ||
+        factorAddress == "x17" || factorAddress == "x18") {
+      continue;
+    }
+    std::smatch sourceMatch;
+    if (!std::regex_match(lines[start + 3], sourceMatch,
+                          indexedLoadPattern)) {
+      continue;
+    }
+    const std::string sourceValue = sourceMatch[1].str();
+    const std::string sourceBase = sourceMatch[2].str();
+    if (sourceMatch[3].str() != indexX || sourceBase == "x16" ||
+        sourceBase == "x17" || sourceBase == "x18") {
+      continue;
+    }
+    std::string result;
+    std::string lhs;
+    std::string rhs;
+    std::string accumulator;
+    if (!parseIntMadd(lines[start + 4], result, lhs, rhs, accumulator) ||
+        accumulator != sourceValue ||
+        !((lhs == destinationValue && rhs == factor) ||
+          (lhs == factor && rhs == destinationValue))) {
+      continue;
+    }
+    std::string storedValue;
+    std::string storedBase;
+    long long storedOffset = 0;
+    if (!parseDirectIntStore(lines[start + 5], storedValue, storedBase,
+                             storedOffset) ||
+        storedValue != result || storedBase != destinationAddress ||
+        storedOffset != 0) {
+      continue;
+    }
+    std::smatch incrementMatch;
+    if (!std::regex_match(lines[start + 6], incrementMatch,
+                          incrementPattern) ||
+        incrementMatch[1].str() != incrementMatch[2].str()) {
+      continue;
+    }
+    const std::string indexW = incrementMatch[1].str();
+    const auto expectedIndexX = matchingXRegister(indexW);
+    if (!expectedIndexX.has_value() || *expectedIndexX != indexX) continue;
+
+    const auto bodyBounds = assemblyBlockBounds(lines, start);
+    if (bodyBounds.first != start || bodyBounds.second != start + 7) continue;
+    const auto bodyLabel = assemblyBlockLabel(lines, start);
+    const auto headerLabel = followingBlockLabel(lines, bodyBounds);
+    if (!bodyLabel.has_value() || !headerLabel.has_value()) continue;
+    const auto headerFound = std::find(lines.begin() + bodyBounds.second,
+                                       lines.end(), *headerLabel + ":");
+    if (headerFound == lines.end()) continue;
+    const std::size_t headerLine =
+        static_cast<std::size_t>(headerFound - lines.begin());
+    const auto headerBounds = assemblyBlockBounds(lines, headerLine + 1);
+    std::optional<std::string> boundW;
+    std::size_t headerInstructionCount = 0;
+    bool backedge = false;
+    for (std::size_t line = headerBounds.first; line < headerBounds.second;
+         ++line) {
+      if (lines[line].empty()) continue;
+      ++headerInstructionCount;
+      std::smatch compareMatch;
+      if (std::regex_match(lines[line], compareMatch, comparePattern) &&
+          compareMatch[1].str() == indexW) {
+        boundW = compareMatch[2].str();
+      } else if (lines[line] == "  b.lt " + *bodyLabel) {
+        backedge = true;
+      }
+    }
+    if (headerInstructionCount != 2 || !boundW.has_value() || !backedge) {
+      continue;
+    }
+    const auto boundX = matchingXRegister(*boundW);
+    if (!boundX.has_value() || *boundX == "x16" || *boundX == "x17" ||
+        *boundX == "x18") {
+      continue;
+    }
+
+    std::optional<std::size_t> entryBranch;
+    for (std::size_t line = 0; line < bodyBounds.first; ++line) {
+      if (lines[line] == "  b " + *headerLabel) {
+        if (entryBranch.has_value()) {
+          entryBranch.reset();
+          break;
+        }
+        entryBranch = line;
+      }
+    }
+    if (!entryBranch.has_value()) continue;
+    const auto entryBounds = assemblyBlockBounds(lines, *entryBranch);
+    bool zeroInitialized = false;
+    for (std::size_t line = entryBounds.first; line < *entryBranch; ++line) {
+      if (lines[line] == "  movz " + indexW + ", #0") {
+        zeroInitialized = true;
+      }
+    }
+    if (!zeroInitialized) continue;
+
+    const std::string vectorBody = *bodyLabel + ".vector4";
+    const std::string vectorHeader = *headerLabel + ".vector4";
+    const std::string aliasSafe = *bodyLabel + ".vector4_alias_safe";
+    if (assembly.find(vectorBody + ":") != std::string::npos ||
+        assembly.find(vectorHeader + ":") != std::string::npos ||
+        assembly.find(aliasSafe + ":") != std::string::npos) {
+      continue;
+    }
+
+    lines[*entryBranch] =
+        "  cmp " + *boundW + ", #4\n  b.lt " + *headerLabel +
+        "\n  add x17, " + destinationBase + ", " + *boundX +
+        ", lsl #2\n  add x18, " + sourceBase + ", " + *boundX +
+        ", lsl #2\n  cmp x17, " + sourceBase + "\n  b.ls " + aliasSafe +
+        "\n  cmp x18, " + destinationBase + "\n  b.hi " + *headerLabel +
+        "\n" + aliasSafe + ":\n  cmp " + factorAddress + ", " +
+        destinationBase + "\n  b.lo " + vectorHeader + "\n  cmp " +
+        factorAddress + ", x17\n  b.lo " + *headerLabel + "\n  b " +
+        vectorHeader;
+
+    const std::string vectorBlocks =
+        vectorBody + ":\n  add " + destinationAddress + ", " +
+        destinationBase + ", " + indexX +
+        ", lsl #2\n  add x16, " + sourceBase + ", " + indexX +
+        ", lsl #2\n  ldr q24, [" + destinationAddress +
+        "]\n  ldr " + factor + ", [" + factorAddress +
+        "]\n  dup v25.4s, " + factor +
+        "\n  ldr q26, [x16]\n  mla v26.4s, v24.4s, v25.4s\n  str q26, [" +
+        destinationAddress + "]\n  add " + indexW + ", " + indexW +
+        ", #4\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
+        indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody + "\n  b " +
+        *headerLabel;
+    lines[bodyBounds.first - 1] =
+        vectorBlocks + "\n" + lines[bodyBounds.first - 1];
+    changed = true;
+    start = headerBounds.second;
+  }
+  if (!changed) return assembly;
+  std::ostringstream optimized;
+  for (const auto& line : lines) {
+    if (!line.empty()) optimized << line << '\n';
+  }
+  return optimized.str();
+}
+
 bool isNarrow(const ValueType& type) { return type.isBool() || type.isInt32(); }
 
 bool powerOfTwoMagnitude(std::int64_t value, std::uint64_t& magnitude) {
@@ -1309,7 +1511,8 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return vectorizeContiguousIntegerMadds(os.str());
+  return vectorizeGuardedContiguousMadds(
+      vectorizeContiguousIntegerMadds(os.str()));
 }
 
 }  // namespace compiler::backend::asmcode
