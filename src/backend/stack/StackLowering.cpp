@@ -184,11 +184,14 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
         hasDynamicStackAdjustment(function) ||
         bodyUsesFramePointer(function, regInfo.framePointerRegister());
 
-    function.savedRaOffset = static_cast<int>(module.target.pointerSize());
+    std::size_t fixedSaveCount = 0;
+    function.savedRaOffset =
+        hasCall ? static_cast<int>(module.target.pointerSize() * ++fixedSaveCount)
+                : 0;
     function.savedFpOffset =
-        function.usesFramePointer ? static_cast<int>(module.target.pointerSize() * 2) : 0;
-
-    const std::size_t fixedSaveCount = function.usesFramePointer ? 2 : 1;
+        function.usesFramePointer
+            ? static_cast<int>(module.target.pointerSize() * ++fixedSaveCount)
+            : 0;
 
     function.savedIntegerRegisterOffsets.clear();
     function.savedIntegerRegisterOffsets.reserve(function.usedIntegerCalleeSavedRegisters.size());
@@ -226,9 +229,11 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
     function.epilogueInstructions.clear();
 
     function.prologueInstructions.push_back(makeStackAdjust(-static_cast<long long>(function.frameSize)));
-    function.prologueInstructions.push_back(
-        makeStackSave(regInfo.returnAddressRegister(), ValueType::int64Type(),
-                      static_cast<long long>(function.frameSize - module.target.pointerSize())));
+    if (hasCall) {
+      function.prologueInstructions.push_back(makeStackSave(
+          regInfo.returnAddressRegister(), ValueType::int64Type(),
+          static_cast<long long>(function.frameSize - function.savedRaOffset)));
+    }
     if (function.usesFramePointer) {
       function.prologueInstructions.push_back(
           makeStackSave(regInfo.framePointerRegister(), ValueType::int64Type(),
@@ -310,9 +315,11 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
           makeStackRestore(function.usedIntegerCalleeSavedRegisters[i - 1], ValueType::int64Type(),
                            -function.savedIntegerRegisterOffsets[i - 1]));
     }
-    function.epilogueInstructions.push_back(
-        makeStackRestore(regInfo.returnAddressRegister(), ValueType::int64Type(),
-                         -function.savedRaOffset));
+    if (hasCall) {
+      function.epilogueInstructions.push_back(makeStackRestore(
+          regInfo.returnAddressRegister(), ValueType::int64Type(),
+          -function.savedRaOffset));
+    }
     if (function.usesFramePointer) {
       function.epilogueInstructions.push_back(
           makeStackRestore(regInfo.framePointerRegister(), ValueType::int64Type(),
