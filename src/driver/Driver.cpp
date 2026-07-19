@@ -40,6 +40,7 @@
 #include "../../include/compiler/midend/pass/MonotonicLoopBoundPass.h"
 #include "../../include/compiler/midend/pass/NestedInvariantReductionPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
+#include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
@@ -184,6 +185,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::BitwiseIdiomRecognitionPass>());
+    passManager.add(
+        std::make_unique<compiler::midend::pass::PowerOfTwoDispatchPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
     passManager.add(
