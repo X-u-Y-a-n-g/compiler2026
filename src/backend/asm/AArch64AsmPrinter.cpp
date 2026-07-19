@@ -52,6 +52,48 @@ std::vector<std::string> splitLines(const std::string& assembly) {
   return lines;
 }
 
+std::string pairAdjacentStackAccesses(const std::string& assembly) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_STP_LDP") != nullptr) return assembly;
+  static const std::regex accessPattern{
+      R"(^  (str|ldr) (x[0-9]+), \[(sp|x29)(?:, #(-?[0-9]+))?\]$)"};
+  auto lines = splitLines(assembly);
+  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+    std::smatch first;
+    std::smatch second;
+    if (!std::regex_match(lines[i], first, accessPattern) ||
+        !std::regex_match(lines[i + 1], second, accessPattern) ||
+        first[1].str() != second[1].str() || first[3].str() != second[3].str() ||
+        first[2].str() == second[2].str())
+      continue;
+    const auto firstOffset = first[4].matched ? std::stoll(first[4].str()) : 0;
+    const auto secondOffset = second[4].matched ? std::stoll(second[4].str()) : 0;
+    std::string lowRegister;
+    std::string highRegister;
+    long long lowOffset = 0;
+    if (firstOffset + 8 == secondOffset) {
+      lowRegister = first[2].str();
+      highRegister = second[2].str();
+      lowOffset = firstOffset;
+    } else if (secondOffset + 8 == firstOffset) {
+      lowRegister = second[2].str();
+      highRegister = first[2].str();
+      lowOffset = secondOffset;
+    } else {
+      continue;
+    }
+    if (lowOffset < -512 || lowOffset > 504 || lowOffset % 8 != 0) continue;
+    std::string replacement = "  " + std::string(first[1].str() == "str" ? "stp " : "ldp ") +
+                              lowRegister + ", " + highRegister + ", [" + first[3].str();
+    if (lowOffset != 0) replacement += ", #" + std::to_string(lowOffset);
+    replacement += "]";
+    lines[i] = std::move(replacement);
+    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
+  }
+  std::ostringstream result;
+  for (const auto& line : lines) result << line << '\n';
+  return result.str();
+}
+
 std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
   static const std::regex signedHalfPattern{
       R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
@@ -2390,12 +2432,12 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return vectorizeContiguousConstantFills(
+  return pairAdjacentStackAccesses(vectorizeContiguousConstantFills(
       memoizePureAdditiveTailLoop(
           collapsePositivePowerOfTwoSteps(
               vectorizeConditionalMatrixReduction(
                   vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str()))))));
+                      vectorizeContiguousIntegerMadds(os.str())))))));
 }
 
 }  // namespace compiler::backend::asmcode
