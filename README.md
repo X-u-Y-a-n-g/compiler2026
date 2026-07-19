@@ -43,7 +43,7 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 ## 人工智能辅助与技术参考披露
 
 - 开发过程中使用 OpenAI Codex 辅助进行源码审查、优化方案分析、C++ 实现与重构、测试脚本和项目文档编写。参赛队员负责确定需求、审查和修改生成代码、处理集成冲突、运行正确性/性能测试，并决定最终保留或撤销的实现。
-- 优化思路曾参考 2020 年 USTC [FlammingMyCompiler](https://github.com/mlzeng/CSC2020-USTC-FlammingMyCompiler)、2021 年 [MahoShojo](https://github.com/wildoranges/MahoShojo) 和 2025 年剑桥大学[不队](https://gitlab.eduxiji.net/educg-group-36290-2935672/T202500000205464-2455)等公开项目，以及公开的经典编译原理和 RISC-V ABI/ISA 资料；本仓库未直接复制 GCC、LLVM 或上述项目源码。借鉴的是结构化循环优化、循环旋转、数据流优化、指令选择和图着色寄存器分配等通用思想，具体分析、数据结构、合法性条件和成本模型均结合本项目 IR 与后端独立实现。
+- 优化思路曾参考 2020 年 USTC [FlammingMyCompiler](https://github.com/mlzeng/CSC2020-USTC-FlammingMyCompiler)、2021 年 [MahoShojo](https://github.com/wildoranges/MahoShojo)、2025 年剑桥大学[不队](https://gitlab.eduxiji.net/educg-group-36290-2935672/T202500000205464-2455)和电子科技大学 [0x676e616c63](https://gitlab.eduxiji.net/educg-group-36290-2935672/T202510614205710-2983)等公开项目，以及公开的经典编译原理和 RISC-V/AArch64 ABI/ISA 资料；本仓库未直接复制 GCC、LLVM 或上述项目源码。借鉴的是结构化循环优化、循环旋转、数据流优化、指令选择、向量化成本模型和图着色寄存器分配等通用思想，具体分析、数据结构、合法性条件和成本模型均结合本项目 IR 与后端独立实现。
 
 ## 验证记录
 
@@ -53,6 +53,8 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 - `correctness` 通道最近一次完整回归为 140/140 AC。
 - 当前 `wz` 的 `performance` 通道为 60/60 AC，`correctness` 通道为 140/140 AC；本地 QEMU 计时只用于版本间回归，不代表官方 BOOM 评测机时间。固定栈指针递归函数省略 frame pointer 后，官方 BOOM 上代表性递归热点从 `2,399,145,393` 降至 `2,143,867,371` cycles；继续加入受代码增长约束的递归自内联后降至 `1,261,469,485` cycles，相对前一提交再下降 `41.16%`，相对原始基线总下降 `47.42%`。
 - 当前性能分析入口可记录计时区间动态指令、最热基本块及 RISC-V `generic-ooo` 近似调度结果；这些分析运行不参与计时。
+
+当前 `BitwiseIdiomRecognitionPass` 识别二参数 i32 函数中的通用 radix-2 逐位递推：两个参数每轮分别执行 `% 2` 与 `/ 2`，位权从 1 开始乘 2，计数从任意 `2..32` 的常量按 1 递减，累加器从 0 开始，并由两个余数的 AND/OR/XOR 布尔关系决定是否累加位权。匹配器逐项验证参数、商、余数、Phi 回边、计数、位权、累加器与返回值的数据流，不读取输入路径、用例名、函数名、变量名、数组尺寸、计时位置、输入或输出。仅当两个实参均非负时进入原生 `and`/`or`/`xor` 快速路径；负数执行完整原循环。匿名合成回归覆盖 5 位与 32 位递推、语句重排、正负输入及 fallback，并与优化前编译器逐字节对拍一致。AArch64 QEMU 上三个 Huffman 用例分别由约 `50.84s` 降至 `12.25s`，降低约 `75.9%`；最终 ARM 正确性回归为 `140/140 AC`。
 
 ## 项目结构
 
