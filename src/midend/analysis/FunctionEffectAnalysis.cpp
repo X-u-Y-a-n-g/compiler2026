@@ -107,7 +107,11 @@ DirectFunctionEffects analyzeDirectEffects(
     const std::unordered_set<std::string>& definedFunctions) {
   DirectFunctionEffects result;
   if (function.blocks().empty()) {
-    result.effects = FunctionEffects{true, true, true};
+    result.effects.readsExternalMemory = true;
+    result.effects.writesExternalMemory = true;
+    result.effects.hasOtherSideEffects = true;
+    result.effects.readsUnknownMemory = true;
+    result.effects.writesUnknownMemory = true;
     return result;
   }
   const auto localPointers = findLocalPointers(function);
@@ -121,6 +125,12 @@ DirectFunctionEffects analyzeDirectEffects(
                            localPointers.find(operands.back()) !=
                                localPointers.end();
         result.effects.readsExternalMemory |= !local;
+        if (!local && !operands.empty() && !operands.back().empty() &&
+            operands.back().front() == '@') {
+          result.effects.readSymbols.insert(operands.back());
+        } else if (!local) {
+          result.effects.readsUnknownMemory = true;
+        }
         continue;
       }
       if (opcode == "store") {
@@ -128,6 +138,12 @@ DirectFunctionEffects analyzeDirectEffects(
             !operands.empty() &&
             localPointers.find(operands.back()) != localPointers.end();
         result.effects.writesExternalMemory |= !localDestination;
+        if (!localDestination && !operands.empty() &&
+            !operands.back().empty() && operands.back().front() == '@') {
+          result.effects.writtenSymbols.insert(operands.back());
+        } else if (!localDestination) {
+          result.effects.writesUnknownMemory = true;
+        }
         const bool storesLocalPointer =
             operands.size() >= 2 &&
             localPointers.find(operands[operands.size() - 2]) !=
@@ -158,6 +174,8 @@ DirectFunctionEffects analyzeDirectEffects(
       result.effects.readsExternalMemory = true;
       result.effects.writesExternalMemory = true;
       result.effects.hasOtherSideEffects = true;
+      result.effects.readsUnknownMemory = true;
+      result.effects.writesUnknownMemory = true;
     }
   }
   return result;
@@ -170,9 +188,17 @@ bool FunctionEffects::merge(const FunctionEffects& other) {
   readsExternalMemory |= other.readsExternalMemory;
   writesExternalMemory |= other.writesExternalMemory;
   hasOtherSideEffects |= other.hasOtherSideEffects;
+  readsUnknownMemory |= other.readsUnknownMemory;
+  writesUnknownMemory |= other.writesUnknownMemory;
+  readSymbols.insert(other.readSymbols.begin(), other.readSymbols.end());
+  writtenSymbols.insert(other.writtenSymbols.begin(), other.writtenSymbols.end());
   return readsExternalMemory != before.readsExternalMemory ||
          writesExternalMemory != before.writesExternalMemory ||
-         hasOtherSideEffects != before.hasOtherSideEffects;
+         hasOtherSideEffects != before.hasOtherSideEffects ||
+         readsUnknownMemory != before.readsUnknownMemory ||
+         writesUnknownMemory != before.writesUnknownMemory ||
+         readSymbols != before.readSymbols ||
+         writtenSymbols != before.writtenSymbols;
 }
 
 FunctionEffectAnalysis::FunctionEffectAnalysis(const Module& module) {
@@ -200,7 +226,11 @@ FunctionEffectAnalysis::FunctionEffectAnalysis(const Module& module) {
       }
       if (recomputed.readsExternalMemory != before.readsExternalMemory ||
           recomputed.writesExternalMemory != before.writesExternalMemory ||
-          recomputed.hasOtherSideEffects != before.hasOtherSideEffects) {
+          recomputed.hasOtherSideEffects != before.hasOtherSideEffects ||
+          recomputed.readsUnknownMemory != before.readsUnknownMemory ||
+          recomputed.writesUnknownMemory != before.writesUnknownMemory ||
+          recomputed.readSymbols != before.readSymbols ||
+          recomputed.writtenSymbols != before.writtenSymbols) {
         functionEffects = recomputed;
         changed = true;
       }
@@ -214,7 +244,15 @@ const FunctionEffects& FunctionEffectAnalysis::effectFor(
   if (found != effects_.end()) {
     return found->second;
   }
-  static const FunctionEffects unknown{true, true, true};
+  static const FunctionEffects unknown = [] {
+    FunctionEffects effects;
+    effects.readsExternalMemory = true;
+    effects.writesExternalMemory = true;
+    effects.hasOtherSideEffects = true;
+    effects.readsUnknownMemory = true;
+    effects.writesUnknownMemory = true;
+    return effects;
+  }();
   return unknown;
 }
 

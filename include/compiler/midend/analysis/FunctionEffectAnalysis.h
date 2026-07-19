@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace compiler::ir::core {
 class Module;
@@ -14,6 +15,10 @@ struct FunctionEffects {
   bool readsExternalMemory = false;
   bool writesExternalMemory = false;
   bool hasOtherSideEffects = false;
+  bool readsUnknownMemory = false;
+  bool writesUnknownMemory = false;
+  std::unordered_set<std::string> readSymbols;
+  std::unordered_set<std::string> writtenSymbols;
 
   [[nodiscard]] bool isReadNone() const {
     return !readsExternalMemory && !writesExternalMemory &&
@@ -26,6 +31,16 @@ struct FunctionEffects {
   }
 
   bool merge(const FunctionEffects& other);
+
+  [[nodiscard]] bool mayReadSymbol(std::string_view symbol) const {
+    return readsUnknownMemory ||
+           readSymbols.find(std::string(symbol)) != readSymbols.end();
+  }
+
+  [[nodiscard]] bool mayWriteSymbol(std::string_view symbol) const {
+    return writesUnknownMemory ||
+           writtenSymbols.find(std::string(symbol)) != writtenSymbols.end();
+  }
 };
 
 class FunctionEffectAnalysis {

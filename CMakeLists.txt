@@ -15,6 +15,8 @@ add_library(compiler_lib
   src/frontend/sema/SemanticAnalyzer.cpp
   src/frontend/types/TypeChecker.cpp
   src/ir/builder/AstToIR.cpp
+  src/ir/analysis/UseDefAnalysis.cpp
+  src/ir/analysis/LoopAnalysis.cpp
   src/ir/printer/IRPrinter.cpp
   src/ir/verify/IRVerifier.cpp
   src/midend/analysis/FunctionEffectAnalysis.cpp
@@ -30,6 +32,7 @@ add_library(compiler_lib
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopCanonicalizationPass.cpp
   src/midend/pass/LoopUnrollAndJamPass.cpp
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/MonotonicContinueEliminationPass.cpp

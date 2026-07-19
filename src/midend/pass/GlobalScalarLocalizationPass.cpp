@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/ir/analysis/LoopAnalysis.h"
+#include "../../../include/compiler/ir/analysis/UseDefAnalysis.h"
 #include "../../../include/compiler/midend/analysis/FunctionEffectAnalysis.h"
 #include "IRPassUtils.h"
 
@@ -17,6 +19,8 @@ namespace {
 
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
+using compiler::ir::analysis::LoopAnalysis;
+using compiler::ir::analysis::UseDefAnalysis;
 using compiler::midend::analysis::FunctionEffectAnalysis;
 
 struct Candidate {
@@ -75,66 +79,6 @@ bool containsCall(const Function& function) {
     }
   }
   return false;
-}
-
-std::unordered_set<std::string> collectCyclicBlockNames(
-    const Function& function) {
-  constexpr std::size_t kMaximumAnalyzedBlocks = 512;
-  const std::size_t blockCount = function.blocks().size();
-  if (blockCount > kMaximumAnalyzedBlocks) {
-    return {};
-  }
-  std::unordered_map<std::string, std::size_t> blockIndex;
-  for (std::size_t index = 0; index < blockCount; ++index) {
-    blockIndex.emplace(function.blocks()[index].name(), index);
-  }
-
-  std::vector<std::vector<bool>> reachable(
-      blockCount, std::vector<bool>(blockCount, false));
-  std::vector<bool> hasSelfEdge(blockCount, false);
-  for (std::size_t index = 0; index < blockCount; ++index) {
-    const auto* terminator = function.blocks()[index].terminator();
-    if (terminator == nullptr || terminator->opcode() != "br") {
-      continue;
-    }
-    const auto& operands = terminator->operands();
-    const std::size_t firstTarget = operands.size() == 1 ? 0 : 1;
-    for (std::size_t operand = firstTarget; operand < operands.size(); ++operand) {
-      const auto target = blockIndex.find(operands[operand]);
-      if (target == blockIndex.end()) {
-        continue;
-      }
-      reachable[index][target->second] = true;
-      hasSelfEdge[index] = hasSelfEdge[index] || target->second == index;
-    }
-  }
-  for (std::size_t through = 0; through < blockCount; ++through) {
-    for (std::size_t from = 0; from < blockCount; ++from) {
-      if (!reachable[from][through]) {
-        continue;
-      }
-      for (std::size_t to = 0; to < blockCount; ++to) {
-        reachable[from][to] =
-            reachable[from][to] || reachable[through][to];
-      }
-    }
-  }
-
-  std::unordered_set<std::string> cyclic;
-  for (std::size_t index = 0; index < blockCount; ++index) {
-    if (hasSelfEdge[index]) {
-      cyclic.insert(function.blocks()[index].name());
-      continue;
-    }
-    for (std::size_t other = 0; other < blockCount; ++other) {
-      if (other != index && reachable[index][other] &&
-          reachable[other][index]) {
-        cyclic.insert(function.blocks()[index].name());
-        break;
-      }
-    }
-  }
-  return cyclic;
 }
 
 bool accessesSymbolInBlocks(
@@ -305,29 +249,8 @@ bool feedsCacheWorthyCall(
   return false;
 }
 
-void inspectInstruction(const Instruction& instruction,
-                        std::unordered_map<std::string, Candidate>& candidates) {
-  const auto& operands = instruction.operands();
-  for (const auto& operand : operands) {
-    auto found = candidates.find(operand);
-    if (found == candidates.end()) {
-      continue;
-    }
-    auto& candidate = found->second;
-    const bool directLoad = instruction.opcode() == "load" && operands.size() == 2 &&
-                            operands[1] == candidate.symbol;
-    const bool directStore = instruction.opcode() == "store" && operands.size() == 3 &&
-                             operands[2] == candidate.symbol;
-    if (!directLoad && !directStore) {
-      candidate.valid = false;
-      continue;
-    }
-    ++candidate.accesses;
-    candidate.hasStore |= directStore;
-  }
-}
-
-void localizeGlobals(Function& function,
+void localizeGlobals(const compiler::ir::core::Module& module,
+                     Function& function,
                      const std::unordered_map<std::string, std::string>& scalarGlobals,
                      const FunctionEffectAnalysis& functionEffects,
                      const std::unordered_set<std::string>& cacheWorthyCallees) {
@@ -339,16 +262,35 @@ void localizeGlobals(Function& function,
   for (const auto& [symbol, type] : scalarGlobals) {
     candidates.emplace(symbol, Candidate{symbol, type, "", "", 0, false, true});
   }
-  for (const auto& block : function.blocks()) {
-    for (const auto& instruction : block.instructions()) {
-      inspectInstruction(instruction, candidates);
+  const UseDefAnalysis useDef(module, function);
+  for (auto& [symbol, candidate] : candidates) {
+    for (const auto& use : useDef.uses(symbol)) {
+      const auto& instruction =
+          function.blocks()[use.blockIndex].instructions()[use.instructionIndex];
+      const auto& operands = instruction.operands();
+      const bool directLoad = instruction.opcode() == "load" &&
+                              operands.size() == 2 && operands[1] == symbol;
+      const bool directStore = instruction.opcode() == "store" &&
+                               operands.size() == 3 && operands[2] == symbol;
+      if (!directLoad && !directStore) {
+        candidate.valid = false;
+        break;
+      }
+      ++candidate.accesses;
+      candidate.hasStore |= directStore;
     }
   }
 
   auto names = collectValueNames(function);
   std::vector<Candidate> selected;
   const bool usesCalls = containsCall(function);
-  const auto cyclicBlocks = collectCyclicBlockNames(function);
+  std::unordered_set<std::string> cyclicBlocks;
+  const LoopAnalysis loops(function);
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    if (loops.loopDepth(block) != 0) {
+      cyclicBlocks.insert(function.blocks()[block].name());
+    }
+  }
   for (auto& [symbol, candidate] : candidates) {
     (void)symbol;
     if (!candidate.valid || candidate.accesses == 0 ||
@@ -477,7 +419,8 @@ void GlobalScalarLocalizationPass::run(compiler::ir::core::Module& module) {
   const auto cacheWorthyCallees =
       collectCacheWorthyCallees(module, functionEffects);
   for (auto& function : module.functions()) {
-    localizeGlobals(function, scalarGlobals, functionEffects, cacheWorthyCallees);
+    localizeGlobals(module, function, scalarGlobals, functionEffects,
+                    cacheWorthyCallees);
   }
 }
 
