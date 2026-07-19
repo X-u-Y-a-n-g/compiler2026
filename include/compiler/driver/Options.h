@@ -7,7 +7,7 @@ namespace compiler::driver {
 struct Options {
   std::string inputPath;
   std::string outputPath;
-  std::string target = "aarch64";
+  std::string target = "riscv64";
   bool emitAssembly = true;
   bool dumpTokens = false;
   bool dumpAst = false;
