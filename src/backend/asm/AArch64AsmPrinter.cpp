@@ -50,6 +50,111 @@ std::vector<std::string> splitLines(const std::string& assembly) {
   return lines;
 }
 
+std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
+  static const std::regex signedHalfPattern{
+      R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
+  static const std::regex shiftPattern{
+      R"(^  asr (w[0-9]+), (w[0-9]+), #1$)"};
+  static const std::regex incrementPattern{
+      R"(^  add (w[0-9]+), \1, #1$)"};
+  static const std::regex branchPattern{R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
+  auto lines = splitLines(assembly);
+  std::unordered_set<std::string> labels;
+  for (const auto& line : lines) {
+    if (!line.empty() && line.back() == ':') labels.insert(line.substr(0, line.size() - 1));
+  }
+
+  for (std::size_t index = 0; index + 3 < lines.size(); ++index) {
+    constexpr const char* signedHalfSuffix = ", lsr #31";
+    constexpr std::size_t signedHalfSuffixSize = 9;
+    if (lines[index].compare(0, 7, "  add w") != 0 ||
+        lines[index].size() < signedHalfSuffixSize ||
+        lines[index].compare(lines[index].size() - signedHalfSuffixSize,
+                             signedHalfSuffixSize, signedHalfSuffix) != 0) {
+      continue;
+    }
+    std::smatch signedHalf;
+    std::smatch shift;
+    std::smatch increment;
+    std::smatch branch;
+    if (!std::regex_match(lines[index], signedHalf, signedHalfPattern) ||
+        !std::regex_match(lines[index + 1], shift, shiftPattern) ||
+        !std::regex_match(lines[index + 2], increment, incrementPattern) ||
+        !std::regex_match(lines[index + 3], branch, branchPattern)) {
+      continue;
+    }
+    const auto state = signedHalf[1].str();
+    const auto depth = increment[1].str();
+    const auto header = branch[1].str();
+    if (shift[1].str() != state || shift[2].str() != state ||
+        state == depth || state == "w16" || depth == "w16") {
+      continue;
+    }
+
+    const auto headerLine = std::find(lines.begin(), lines.end(), header + ":");
+    if (headerLine == lines.end()) continue;
+    const auto headerIndex = static_cast<std::size_t>(headerLine - lines.begin());
+    if (headerIndex + 2 >= lines.size() ||
+        lines[headerIndex + 1] != "  cmp " + state + ", #1") {
+      continue;
+    }
+
+    // Prove that this block is the even successor of the same loop header:
+    // the header's non-terminal path reaches an AND-by-one test whose false
+    // fallthrough is exactly this block.  No source or symbol names are used.
+    bool provenEvenSuccessor = false;
+    const std::size_t scanEnd = std::min(lines.size(), headerIndex + 16);
+    for (std::size_t probe = headerIndex + 2; probe + 3 < scanEnd; ++probe) {
+      static const std::regex parityPattern{
+          R"(^  and (w[0-9]+), (w[0-9]+), #1$)"};
+      static const std::regex nonzeroBranchPattern{
+          R"(^  cbnz (w[0-9]+), (\.[A-Za-z0-9_.$]+)$)"};
+      std::smatch parity;
+      std::smatch nonzeroBranch;
+      if (!std::regex_match(lines[probe], parity, parityPattern) ||
+          parity[2].str() != state ||
+          !std::regex_match(lines[probe + 1], nonzeroBranch,
+                            nonzeroBranchPattern) ||
+          nonzeroBranch[1].str() != parity[1].str() ||
+          lines[probe + 2].empty() || lines[probe + 2].back() != ':' ||
+          probe + 3 != index) {
+        continue;
+      }
+      provenEvenSuccessor = true;
+      break;
+    }
+    if (!provenEvenSuccessor) continue;
+
+    std::string fallback = header + ".positive_half_fallback";
+    for (unsigned suffix = 0; labels.find(fallback) != labels.end(); ++suffix) {
+      fallback = header + ".positive_half_fallback." + std::to_string(suffix);
+    }
+    labels.insert(fallback);
+    const std::vector<std::string> replacement{
+        "  cmp " + state + ", #0",
+        "  b.le " + fallback,
+        "  rbit w16, " + state,
+        "  clz w16, w16",
+        "  lsr " + state + ", " + state + ", w16",
+        "  add " + depth + ", " + depth + ", w16",
+        "  b " + header,
+        fallback + ":",
+        lines[index],
+        lines[index + 1],
+        lines[index + 2],
+        lines[index + 3]};
+    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(index),
+                lines.begin() + static_cast<std::ptrdiff_t>(index + 4));
+    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
+                 replacement.begin(), replacement.end());
+    index += replacement.size() - 1;
+  }
+
+  std::ostringstream result;
+  for (const auto& line : lines) result << line << '\n';
+  return result.str();
+}
+
 bool parseDirectIntLoad(const std::string& line, std::string& destination,
                         std::string& base, long long& offset) {
   static const std::regex pattern{
@@ -1902,9 +2007,10 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return vectorizeConditionalMatrixReduction(
-      vectorizeGuardedContiguousMadds(
-          vectorizeContiguousIntegerMadds(os.str())));
+  return collapsePositivePowerOfTwoSteps(
+      vectorizeConditionalMatrixReduction(
+          vectorizeGuardedContiguousMadds(
+              vectorizeContiguousIntegerMadds(os.str()))));
 }
 
 }  // namespace compiler::backend::asmcode
