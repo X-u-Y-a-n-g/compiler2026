@@ -481,6 +481,178 @@ bool blockBranchesTo(const std::vector<std::string>& lines,
   return false;
 }
 
+// Vectorize a canonical counted loop containing only one or two independent
+// contiguous i32 stores of loop-invariant constants.  A two-destination loop
+// keeps the scalar path unless a runtime interval check proves that the two
+// written ranges do not overlap.  This is deliberately structural: no source,
+// function, global, block or benchmark name participates in the decision.
+std::string vectorizeContiguousConstantFills(const std::string& assembly) {
+  static const std::regex reservedVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq](16|17)([^A-Za-z0-9_]|$))"};
+  static const std::regex constantPattern{
+      R"(^  movz (w[0-9]+), #([0-9]+)$)"};
+  static const std::regex storePattern{
+      R"(^  str (wzr|w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
+  static const std::regex incrementPattern{
+      R"(^  add (w[0-9]+), \1, #1$)"};
+  static const std::regex comparePattern{
+      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
+  static const std::regex lessBranchPattern{
+      R"(^  b\.lt (\.[A-Za-z0-9_.$]+)$)"};
+
+  if (std::getenv("COMPILER_AARCH64_DISABLE_VECTOR_FILL") != nullptr ||
+      std::regex_search(assembly, reservedVectorPattern)) {
+    return assembly;
+  }
+  auto lines = splitLines(assembly);
+  bool changed = false;
+  for (std::size_t bodyLabel = 1; bodyLabel + 5 < lines.size(); ++bodyLabel) {
+    if (lines[bodyLabel].empty() || lines[bodyLabel].front() == ' ' ||
+        lines[bodyLabel].back() != ':') {
+      continue;
+    }
+    std::size_t headerLabel = bodyLabel + 1;
+    while (headerLabel < lines.size() &&
+           (lines[headerLabel].empty() || lines[headerLabel].front() == ' ' ||
+            lines[headerLabel].back() != ':')) {
+      ++headerLabel;
+    }
+    if (headerLabel + 2 >= lines.size()) continue;
+
+    std::unordered_map<std::string, unsigned> constants;
+    struct Store {
+      std::string source;
+      std::string base;
+      std::string indexX;
+      unsigned value = 0;
+    };
+    std::vector<Store> stores;
+    std::smatch increment;
+    bool bodyValid = true;
+    for (std::size_t line = bodyLabel + 1; line < headerLabel; ++line) {
+      std::smatch constant;
+      if (std::regex_match(lines[line], constant, constantPattern)) {
+        const auto value = std::stoull(constant[2].str());
+        if (value > 255) {
+          bodyValid = false;
+          break;
+        }
+        constants[constant[1].str()] = static_cast<unsigned>(value);
+        continue;
+      }
+      std::smatch store;
+      if (std::regex_match(lines[line], store, storePattern)) {
+        unsigned value = 0;
+        if (store[1].str() != "wzr") {
+          const auto found = constants.find(store[1].str());
+          if (found == constants.end()) {
+            bodyValid = false;
+            break;
+          }
+          value = found->second;
+        }
+        stores.push_back(Store{store[1].str(), store[2].str(),
+                               store[3].str(), value});
+        continue;
+      }
+      if (std::regex_match(lines[line], increment, incrementPattern) &&
+          line + 1 == headerLabel) {
+        continue;
+      }
+      bodyValid = false;
+      break;
+    }
+    if (!bodyValid || stores.empty() || stores.size() > 2 ||
+        increment.empty()) {
+      continue;
+    }
+    const std::string indexW = increment[1].str();
+    const std::string indexX = "x" + indexW.substr(1);
+    if (indexW == "w16" || indexW == "w17" || indexW == "w18") continue;
+    std::unordered_set<std::string> bases;
+    for (const auto& store : stores) {
+      if (store.indexX != indexX || store.base == "x16" ||
+          store.base == "x17" || store.base == "x18" ||
+          !bases.insert(store.base).second) {
+        bodyValid = false;
+      }
+    }
+    if (!bodyValid) continue;
+
+    std::smatch compare;
+    std::smatch branch;
+    if (!std::regex_match(lines[headerLabel + 1], compare, comparePattern) ||
+        compare[1].str() != indexW ||
+        !std::regex_match(lines[headerLabel + 2], branch,
+                          lessBranchPattern) ||
+        branch[1].str() + ":" != lines[bodyLabel]) {
+      continue;
+    }
+    const std::string boundW = compare[2].str();
+    const std::string boundX = "x" + boundW.substr(1);
+    if (boundW == "w16" || boundW == "w17" || boundW == "w18" ||
+        lines[bodyLabel - 1] !=
+            "  b " + lines[headerLabel].substr(0,
+                                               lines[headerLabel].size() - 1)) {
+      continue;
+    }
+
+    const std::string header =
+        lines[headerLabel].substr(0, lines[headerLabel].size() - 1);
+    const std::string prefix = header + ".vector_fill4";
+    if (assembly.find(prefix + ".header:") != std::string::npos) continue;
+    const std::string entry = prefix + ".entry";
+    const std::string aliasSafe = prefix + ".alias_safe";
+    const std::string vectorBody = prefix + ".body";
+    const std::string vectorHeader = prefix + ".header";
+
+    std::ostringstream blocks;
+    blocks << entry << ":\n";
+    for (std::size_t store = 0; store < stores.size(); ++store) {
+      blocks << "  movi v" << (16 + store) << ".4s, #"
+             << stores[store].value << "\n";
+    }
+    if (stores.size() == 2) {
+      blocks << "  add x16, " << stores[0].base << ", " << indexX
+             << ", lsl #2\n"
+             << "  add x17, " << stores[0].base << ", " << boundX
+             << ", lsl #2\n"
+             << "  add x18, " << stores[1].base << ", " << indexX
+             << ", lsl #2\n"
+             << "  cmp x18, x17\n"
+             << "  b.hs " << aliasSafe << "\n"
+             << "  add x17, " << stores[1].base << ", " << boundX
+             << ", lsl #2\n"
+             << "  cmp x16, x17\n"
+             << "  b.lo " << header << "\n"
+             << aliasSafe << ":\n";
+    }
+    blocks << "  b " << vectorHeader << "\n" << vectorBody << ":\n";
+    for (std::size_t store = 0; store < stores.size(); ++store) {
+      blocks << "  add x16, " << stores[store].base << ", " << indexX
+             << ", lsl #2\n"
+             << "  str q" << (16 + store) << ", [x16]\n";
+    }
+    blocks << "  add " << indexW << ", " << indexW << ", #4\n"
+           << vectorHeader << ":\n"
+           << "  sub w17, " << boundW << ", " << indexW << "\n"
+           << "  cmp w17, #4\n"
+           << "  b.ge " << vectorBody << "\n"
+           << "  b " << header;
+
+    lines[bodyLabel - 1] = "  b " + entry;
+    lines[bodyLabel] = blocks.str() + "\n" + lines[bodyLabel];
+    changed = true;
+    bodyLabel = headerLabel + 2;
+  }
+  if (!changed) return assembly;
+  std::ostringstream optimized;
+  for (const auto& line : lines) {
+    if (!line.empty()) optimized << line << '\n';
+  }
+  return optimized.str();
+}
+
 // Pack eight adjacent, independent i32 multiply-add reductions into two NEON
 // vectors.  The matcher is deliberately assembly-semantic: it requires a
 // common broadcast operand, monotonically adjacent addresses, independent
@@ -2218,11 +2390,12 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return memoizePureAdditiveTailLoop(
-      collapsePositivePowerOfTwoSteps(
-          vectorizeConditionalMatrixReduction(
-              vectorizeGuardedContiguousMadds(
-                  vectorizeContiguousIntegerMadds(os.str())))));
+  return vectorizeContiguousConstantFills(
+      memoizePureAdditiveTailLoop(
+          collapsePositivePowerOfTwoSteps(
+              vectorizeConditionalMatrixReduction(
+                  vectorizeGuardedContiguousMadds(
+                      vectorizeContiguousIntegerMadds(os.str()))))));
 }
 
 }  // namespace compiler::backend::asmcode
