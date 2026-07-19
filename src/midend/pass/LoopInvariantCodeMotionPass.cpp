@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/ir/analysis/LoopAnalysis.h"
 #include "../../../include/compiler/midend/analysis/FunctionEffectAnalysis.h"
 #include "IRPassUtils.h"
 
@@ -19,6 +20,7 @@ namespace {
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
 using compiler::ir::core::Module;
+using compiler::ir::analysis::LoopAnalysis;
 using compiler::midend::analysis::FunctionEffectAnalysis;
 
 struct BlockInfo {
@@ -715,21 +717,27 @@ bool hoistFromLoop(Function& function, const LoopInfo& loop,
 
 bool runLicmOnce(Function& function) {
   const auto cfg = buildCFG(function);
-  if (cfg.empty()) {
-    return false;
-  }
-
+  if (cfg.empty()) return false;
   const auto reachable = computeReachable(cfg);
   const auto idom = computeImmediateDominators(cfg, reachable);
-  const auto loops = findLoops(cfg, idom, reachable);
-  if (loops.empty()) {
+  const auto legacyLoops = findLoops(cfg, idom, reachable);
+  const LoopAnalysis analysis(function);
+  if (analysis.loops().empty() || legacyLoops.empty()) {
     return false;
   }
 
-  bool changed = false;
   const auto definitions = computeDefinitionBlocks(function);
-  for (const auto& loop : loops) {
-    changed |= hoistFromLoop(function, loop, definitions);
+  bool changed = false;
+  for (const auto& loop : analysis.loops()) {
+    if (!loop.preheader.has_value()) continue;
+    const auto legacy = std::find_if(
+        legacyLoops.begin(), legacyLoops.end(), [&](const LoopInfo& candidate) {
+          return candidate.header == loop.header &&
+                 candidate.preheader == *loop.preheader &&
+                 candidate.blocks == loop.blocks;
+        });
+    if (legacy == legacyLoops.end()) continue;
+    changed |= hoistFromLoop(function, *legacy, definitions);
   }
   return changed;
 }

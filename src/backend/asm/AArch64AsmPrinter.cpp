@@ -54,7 +54,7 @@ std::vector<std::string> splitLines(const std::string& assembly) {
 
 std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
   static const std::regex signedHalfPattern{
-      R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
+      R"(^  add (w[0-9]+), (w[0-9]+), \2, lsr #31$)"};
   static const std::regex shiftPattern{
       R"(^  asr (w[0-9]+), (w[0-9]+), #1$)"};
   static const std::regex incrementPattern{
@@ -81,14 +81,25 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
     std::smatch branch;
     if (!std::regex_match(lines[index], signedHalf, signedHalfPattern) ||
         !std::regex_match(lines[index + 1], shift, shiftPattern) ||
-        !std::regex_match(lines[index + 2], increment, incrementPattern) ||
-        !std::regex_match(lines[index + 3], branch, branchPattern)) {
+        !std::regex_match(lines[index + 2], increment, incrementPattern)) {
       continue;
     }
-    const auto state = signedHalf[1].str();
+    const auto temporary = signedHalf[1].str();
+    const auto state = signedHalf[2].str();
     const auto depth = increment[1].str();
+    bool canonicalLatch = false;
+    if (!std::regex_match(lines[index + 3], branch, branchPattern)) {
+      if (index + 5 >= lines.size() || lines[index + 3].empty() ||
+          lines[index + 3].back() != ':' ||
+          lines[index + 4] != "  mov " + state + ", " + temporary ||
+          !std::regex_match(lines[index + 5], branch, branchPattern)) {
+        continue;
+      }
+      canonicalLatch = true;
+    }
     const auto header = branch[1].str();
-    if (shift[1].str() != state || shift[2].str() != state ||
+    if (shift[1].str() != temporary || shift[2].str() != temporary ||
+        (!canonicalLatch && temporary != state) ||
         state == depth || state == "w16" || depth == "w16") {
       continue;
     }
@@ -143,10 +154,9 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
         fallback + ":",
         lines[index],
         lines[index + 1],
-        lines[index + 2],
-        lines[index + 3]};
+        lines[index + 2]};
     lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(index),
-                lines.begin() + static_cast<std::ptrdiff_t>(index + 4));
+                lines.begin() + static_cast<std::ptrdiff_t>(index + 3));
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
                  replacement.begin(), replacement.end());
     index += replacement.size() - 1;
@@ -244,6 +254,8 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
     std::size_t contextLoad = lines.size();
     std::string context;
     bool safe = true;
+    if (state == "w0") stateInit = functionBegin;
+    if (depth == "w1") depthInit = functionBegin;
     for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
       const auto& line = lines[index];
       if (line.compare(0, 5, "  bl ") == 0 ||
@@ -254,8 +266,14 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
       }
       std::smatch move;
       if (std::regex_match(line, move, movePattern)) {
-        if (move[1].str() == state && move[2].str() == "w0") stateInit = index;
-        if (move[1].str() == depth && move[2].str() == "w1") depthInit = index;
+        if (index < headerIndex && move[1].str() == state &&
+            move[2].str() == "w0") {
+          stateInit = index;
+        }
+        if (index < headerIndex && move[1].str() == depth &&
+            move[2].str() == "w1") {
+          depthInit = index;
+        }
       }
       std::smatch load;
       if (std::regex_match(line, load, loadPattern)) {

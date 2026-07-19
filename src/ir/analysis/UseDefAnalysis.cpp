@@ -59,12 +59,14 @@ bool isFloatingLiteral(const std::string& text) {
 
 std::string instructionResultType(const Instruction& instruction,
                                   const std::unordered_map<std::string,
-                                                           DefinitionSite>& definitions) {
+                                                           DefinitionSite>& definitions,
+                                  const std::unordered_map<std::string,
+                                                           std::string>& returnTypes) {
   const auto& opcode = instruction.opcode();
   const auto& operands = instruction.operands();
   if ((opcode == "alloca") && !operands.empty()) return "ptr(" + operands[0] + ")";
   if ((opcode == "load" || opcode == "phi") && !operands.empty()) return operands[0];
-  if (opcode.rfind("icmp.", 0) == 0 || opcode.rfind("fcmp.", 0) == 0) return "i1";
+  if (opcode.rfind("icmp.", 0) == 0 || opcode.rfind("fcmp.", 0) == 0) return "bool";
   if (opcode == "fneg" || opcode == "fadd" || opcode == "fsub" ||
       opcode == "fmul" || opcode == "fdiv" || opcode == "sitofp" ||
       opcode == "uitofp") {
@@ -74,20 +76,29 @@ std::string instructionResultType(const Instruction& instruction,
        opcode == "fptosi" || opcode == "cast") && operands.size() >= 2) {
     return operands[1];
   }
+  if (opcode == "call" && !operands.empty() && operands[0].size() > 1 &&
+      operands[0].front() == '@') {
+    const auto found = returnTypes.find(operands[0].substr(1));
+    return found == returnTypes.end() ? "int" : found->second;
+  }
   for (const auto& operand : operands) {
     const auto found = definitions.find(operand);
     if (found != definitions.end() && !found->second.type.empty() &&
-        found->second.type != "i1") {
+        found->second.type != "bool") {
       return found->second.type;
     }
   }
-  return opcode == "call" ? "unknown" : "i32";
+  return "int";
 }
 
 }  // namespace
 
 UseDefAnalysis::UseDefAnalysis(const compiler::ir::core::Module& module,
                                const compiler::ir::core::Function& function) {
+  std::unordered_map<std::string, std::string> returnTypes;
+  for (const auto& candidate : module.functions()) {
+    returnTypes.emplace(candidate.name(), candidate.returnType());
+  }
   for (const auto& global : module.globals()) {
     definitions_.emplace("@" + global.name(),
                          DefinitionSite{"ptr(" + global.type() + ")", false,
@@ -103,7 +114,8 @@ UseDefAnalysis::UseDefAnalysis(const compiler::ir::core::Module& module,
       const auto& instruction = instructions[index];
       if (instruction.hasResult()) {
         definitions_[instruction.result()] =
-            DefinitionSite{instructionResultType(instruction, definitions_),
+            DefinitionSite{instructionResultType(instruction, definitions_,
+                                                 returnTypes),
                            false, false, block, index};
       }
     }
@@ -162,7 +174,7 @@ TypedValueRef UseDefAnalysis::operand(const Instruction& instruction,
   if (!spelling.empty() && spelling.front() == '@') {
     return {ValueRefKind::GlobalAddress, spelling, typeOf(spelling)};
   }
-  if (isIntegerLiteral(spelling)) return {ValueRefKind::IntegerLiteral, spelling, "i32"};
+  if (isIntegerLiteral(spelling)) return {ValueRefKind::IntegerLiteral, spelling, "int"};
   if (isFloatingLiteral(spelling)) return {ValueRefKind::FloatingLiteral, spelling, "float"};
   return {ValueRefKind::Unknown, spelling, {}};
 }
