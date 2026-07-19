@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace compiler::backend::asmcode {
@@ -27,6 +29,360 @@ constexpr const char* kAddrScratch = "x16";
 constexpr const char* kImmScratch = "x17";
 constexpr const char* kHiddenScratch = "x18";
 constexpr const char* kFloatScratch = "s16";
+
+struct ContiguousMaddLane {
+  std::size_t maddLine = 0;
+  std::string accumulator;
+};
+
+std::vector<std::string> splitLines(const std::string& assembly) {
+  std::vector<std::string> lines;
+  std::size_t begin = 0;
+  while (begin < assembly.size()) {
+    const auto end = assembly.find('\n', begin);
+    if (end == std::string::npos) {
+      lines.push_back(assembly.substr(begin));
+      break;
+    }
+    lines.push_back(assembly.substr(begin, end - begin));
+    begin = end + 1;
+  }
+  return lines;
+}
+
+bool parseDirectIntLoad(const std::string& line, std::string& destination,
+                        std::string& base, long long& offset) {
+  static const std::regex pattern{
+      R"(^  ldr (w[0-9]+), \[(x[0-9]+)(?:, #([0-9]+))?\]$)"};
+  std::smatch match;
+  if (!std::regex_match(line, match, pattern)) return false;
+  destination = match[1].str();
+  base = match[2].str();
+  offset = match[3].matched ? std::stoll(match[3].str()) : 0;
+  return true;
+}
+
+bool parseIntMadd(const std::string& line, std::string& destination,
+                  std::string& lhs, std::string& rhs,
+                  std::string& accumulator) {
+  static const std::regex pattern{
+      R"(^  madd (w[0-9]+), (w[0-9]+), (w[0-9]+), (w[0-9]+)$)"};
+  std::smatch match;
+  if (!std::regex_match(line, match, pattern)) return false;
+  destination = match[1].str();
+  lhs = match[2].str();
+  rhs = match[3].str();
+  accumulator = match[4].str();
+  return true;
+}
+
+bool parseDirectIntStore(const std::string& line, std::string& source,
+                         std::string& base, long long& offset) {
+  static const std::regex pattern{
+      R"(^  str (w[0-9]+), \[(x[0-9]+)(?:, #([0-9]+))?\]$)"};
+  std::smatch match;
+  if (!std::regex_match(line, match, pattern)) return false;
+  source = match[1].str();
+  base = match[2].str();
+  offset = match[3].matched ? std::stoll(match[3].str()) : 0;
+  return true;
+}
+
+bool lineUsesRegister(const std::string& line, const std::string& reg) {
+  const auto position = line.find(reg);
+  if (position == std::string::npos) return false;
+  const auto isRegisterCharacter = [](char ch) {
+    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+  };
+  const bool leftBoundary =
+      position == 0 || !isRegisterCharacter(line[position - 1]);
+  const std::size_t end = position + reg.size();
+  const bool rightBoundary =
+      end == line.size() || !isRegisterCharacter(line[end]);
+  return leftBoundary && rightBoundary;
+}
+
+std::string vectorMemoryOperand(const std::string& base, long long offset) {
+  if (offset == 0) return "[" + base + "]";
+  return "[" + base + ", #" + std::to_string(offset) + "]";
+}
+
+std::pair<std::size_t, std::size_t> assemblyBlockBounds(
+    const std::vector<std::string>& lines, std::size_t instruction) {
+  std::size_t begin = instruction;
+  while (begin > 0 &&
+         (lines[begin - 1].empty() || lines[begin - 1].front() == ' ' ||
+          lines[begin - 1].back() != ':')) {
+    --begin;
+  }
+  std::size_t end = instruction + 1;
+  while (end < lines.size() &&
+         (lines[end].empty() || lines[end].front() == ' ' ||
+          lines[end].back() != ':')) {
+    ++end;
+  }
+  return {begin, end};
+}
+
+std::optional<std::string> assemblyBlockLabel(
+    const std::vector<std::string>& lines, std::size_t instruction) {
+  while (instruction > 0) {
+    --instruction;
+    const auto& line = lines[instruction];
+    if (!line.empty() && line.front() != ' ' && line.back() == ':') {
+      return line.substr(0, line.size() - 1);
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> followingBlockLabel(
+    const std::vector<std::string>& lines,
+    const std::pair<std::size_t, std::size_t>& bounds) {
+  for (std::size_t index = bounds.second; index < lines.size(); ++index) {
+    const auto& line = lines[index];
+    if (!line.empty() && line.front() != ' ' && line.back() == ':') {
+      return line.substr(0, line.size() - 1);
+    }
+    if (!line.empty()) break;
+  }
+  return std::nullopt;
+}
+
+bool blockBranchesTo(const std::vector<std::string>& lines,
+                     const std::pair<std::size_t, std::size_t>& bounds,
+                     const std::string& target, bool conditional) {
+  const std::regex pattern{conditional
+                               ? R"(^  b\.[a-z]+ ([^ ]+)$)"
+                               : R"(^  b ([^ ]+)$)"};
+  for (std::size_t index = bounds.first; index < bounds.second; ++index) {
+    std::smatch match;
+    if (std::regex_match(lines[index], match, pattern) &&
+        match[1].str() == target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Pack eight adjacent, independent i32 multiply-add reductions into two NEON
+// vectors.  The matcher is deliberately assembly-semantic: it requires a
+// common broadcast operand, monotonically adjacent addresses, independent
+// accumulators initialized to zero, adjacent stores in the same lane order,
+// and no call while the vector values are live.  It does not inspect source,
+// symbol, function, block, or benchmark names.
+std::string vectorizeContiguousIntegerMadds(const std::string& assembly) {
+  static const std::regex zeroPattern{R"(^  movz (w[0-9]+), #0$)"};
+  static const std::regex reservedVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq](28|29|30|31)([^A-Za-z0-9_]|$))"};
+
+  // These caller-saved registers are private scratch registers for each
+  // matched call-free region.  Reject the whole rewrite if ordinary floating
+  // code already uses any overlapping SIMD register.
+  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
+
+  auto lines = splitLines(assembly);
+  bool changed = false;
+  for (std::size_t start = 0; start + 15 < lines.size(); ++start) {
+    std::vector<ContiguousMaddLane> lanes;
+    std::string loadBase;
+    std::string coefficient;
+    long long firstLoadOffset = 0;
+    bool valid = true;
+    for (std::size_t lane = 0; lane < 8; ++lane) {
+      const std::size_t loadLine = start + lane * 2;
+      const std::size_t maddLine = loadLine + 1;
+      std::string temporary;
+      std::string base;
+      long long offset = 0;
+      if (!parseDirectIntLoad(lines[loadLine], temporary, base, offset)) {
+        valid = false;
+        break;
+      }
+      std::string destination;
+      std::string lhs;
+      std::string rhs;
+      std::string accumulator;
+      if (!parseIntMadd(lines[maddLine], destination, lhs, rhs,
+                        accumulator) ||
+          destination != accumulator ||
+          (lhs != temporary && rhs != temporary)) {
+        valid = false;
+        break;
+      }
+      const std::string laneCoefficient = lhs == temporary ? rhs : lhs;
+      if (lane == 0) {
+        loadBase = base;
+        coefficient = laneCoefficient;
+        firstLoadOffset = offset;
+      } else if (base != loadBase || laneCoefficient != coefficient ||
+                 offset != firstLoadOffset + static_cast<long long>(lane * 4)) {
+        valid = false;
+        break;
+      }
+      if (std::any_of(lanes.begin(), lanes.end(), [&](const auto& previous) {
+            return previous.accumulator == accumulator;
+          })) {
+        valid = false;
+        break;
+      }
+      lanes.push_back({maddLine, accumulator});
+    }
+    if (!valid) continue;
+
+    std::optional<std::size_t> storeStart;
+    std::string storeBase;
+    long long firstStoreOffset = 0;
+    const std::size_t storeSearchEnd =
+        std::min(lines.size(), start + static_cast<std::size_t>(96));
+    for (std::size_t candidate = start + 16;
+         candidate + 7 < storeSearchEnd; ++candidate) {
+      bool storesMatch = true;
+      std::string candidateBase;
+      long long candidateOffset = 0;
+      for (std::size_t lane = 0; lane < 8; ++lane) {
+        std::string source;
+        std::string base;
+        long long offset = 0;
+        if (!parseDirectIntStore(lines[candidate + lane], source, base,
+                                 offset) ||
+            source != lanes[lane].accumulator) {
+          storesMatch = false;
+          break;
+        }
+        if (lane == 0) {
+          candidateBase = base;
+          candidateOffset = offset;
+        } else if (base != candidateBase ||
+                   offset != candidateOffset +
+                                 static_cast<long long>(lane * 4)) {
+          storesMatch = false;
+          break;
+        }
+      }
+      if (storesMatch) {
+        storeStart = candidate;
+        storeBase = candidateBase;
+        firstStoreOffset = candidateOffset;
+        break;
+      }
+    }
+    if (!storeStart.has_value()) continue;
+
+    std::vector<std::size_t> zeroLines;
+    const std::size_t zeroSearchBegin = start > 160 ? start - 160 : 0;
+    const std::size_t zeroSearchEnd =
+        std::min(lines.size(), start + static_cast<std::size_t>(160));
+    for (const auto& lane : lanes) {
+      std::optional<std::size_t> found;
+      for (std::size_t index = zeroSearchBegin; index < zeroSearchEnd;
+           ++index) {
+        std::smatch match;
+        if (std::regex_match(lines[index], match, zeroPattern) &&
+            match[1].str() == lane.accumulator) {
+          found = index;
+        }
+      }
+      if (!found.has_value()) {
+        valid = false;
+        break;
+      }
+      zeroLines.push_back(*found);
+    }
+    if (!valid) continue;
+    const auto firstZero = *std::min_element(zeroLines.begin(), zeroLines.end());
+
+    const auto bodyBounds = assemblyBlockBounds(lines, start);
+    const auto bodyLabel = assemblyBlockLabel(lines, start);
+    const auto headerLabel = followingBlockLabel(lines, bodyBounds);
+    const auto storeBounds = assemblyBlockBounds(lines, *storeStart);
+    const auto storeLabel = assemblyBlockLabel(lines, *storeStart);
+    const auto zeroBounds = assemblyBlockBounds(lines, firstZero);
+    bool oneZeroBlock = true;
+    for (const auto zeroLine : zeroLines) {
+      oneZeroBlock = oneZeroBlock &&
+                     assemblyBlockBounds(lines, zeroLine) == zeroBounds;
+    }
+    if (!bodyLabel.has_value() || !headerLabel.has_value() ||
+        !storeLabel.has_value() || !oneZeroBlock ||
+        bodyBounds.second >= lines.size()) {
+      continue;
+    }
+    const auto headerBounds =
+        assemblyBlockBounds(lines, bodyBounds.second + 1);
+    const auto headerFallthrough = followingBlockLabel(lines, headerBounds);
+    if (!headerFallthrough.has_value() ||
+        *headerFallthrough != *storeLabel ||
+        !blockBranchesTo(lines, headerBounds, *bodyLabel, true) ||
+        !blockBranchesTo(lines, zeroBounds, *headerLabel, false)) {
+      continue;
+    }
+
+    // The scalar accumulator registers may occur only in their zeroing,
+    // multiply-add, and final store inside the three participating basic
+    // blocks.  Checking blocks rather than text order is important because
+    // trace placement can put the initialization block after the loop body.
+    std::unordered_set<std::size_t> allowedLines;
+    for (std::size_t lane = 0; lane < 8; ++lane) {
+      allowedLines.insert(zeroLines[lane]);
+      allowedLines.insert(lanes[lane].maddLine);
+      allowedLines.insert(*storeStart + lane);
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> participatingBlocks;
+    participatingBlocks.push_back(bodyBounds);
+    participatingBlocks.push_back(headerBounds);
+    participatingBlocks.push_back(storeBounds);
+    participatingBlocks.push_back(zeroBounds);
+    for (const auto& [blockBegin, blockEnd] : participatingBlocks) {
+      for (std::size_t index = blockBegin; index < blockEnd && valid; ++index) {
+        if (lines[index].rfind("  bl ", 0) == 0) {
+          valid = false;
+          break;
+        }
+        if (allowedLines.find(index) != allowedLines.end()) continue;
+        for (const auto& lane : lanes) {
+          if (lineUsesRegister(lines[index], lane.accumulator)) {
+            valid = false;
+            break;
+          }
+        }
+      }
+      if (!valid) break;
+    }
+    if (!valid) continue;
+
+    lines[firstZero] = "  movi v30.4s, #0\n  movi v31.4s, #0";
+    for (const auto index : zeroLines) {
+      if (index != firstZero) lines[index].clear();
+    }
+    lines[start] =
+        "  ldr q28, " + vectorMemoryOperand(loadBase, firstLoadOffset) +
+        "\n  dup v29.4s, " + coefficient +
+        "\n  mla v30.4s, v28.4s, v29.4s\n  ldr q28, " +
+        vectorMemoryOperand(loadBase, firstLoadOffset + 16) +
+        "\n  mla v31.4s, v28.4s, v29.4s";
+    for (std::size_t index = start + 1; index < start + 16; ++index) {
+      lines[index].clear();
+    }
+    lines[*storeStart] =
+        "  str q30, " + vectorMemoryOperand(storeBase, firstStoreOffset) +
+        "\n  str q31, " +
+        vectorMemoryOperand(storeBase, firstStoreOffset + 16);
+    for (std::size_t index = *storeStart + 1; index < *storeStart + 8;
+         ++index) {
+      lines[index].clear();
+    }
+    changed = true;
+    start = *storeStart + 7;
+  }
+  if (!changed) return assembly;
+
+  std::ostringstream optimized;
+  for (const auto& line : lines) {
+    if (!line.empty()) optimized << line << '\n';
+  }
+  return optimized.str();
+}
 
 bool isNarrow(const ValueType& type) { return type.isBool() || type.isInt32(); }
 
@@ -953,7 +1309,7 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return os.str();
+  return vectorizeContiguousIntegerMadds(os.str());
 }
 
 }  // namespace compiler::backend::asmcode

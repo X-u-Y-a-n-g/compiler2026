@@ -327,11 +327,13 @@ python3 scripts/eval.py correctness --keep-artifacts
 
 2026-07-14 的 60 个性能测试点、榜上最佳时间和差距快照见 [docs/performance-leaderboard-snapshot.md](docs/performance-leaderboard-snapshot.md)。该表只用于选择通用编译器热点，所有优化仍须遵守 `AGENTS.md` 的比赛合规门禁。
 
+AArch64 后端会把八路连续、独立的 `i32` 乘加归约合并为两组四路 NEON 运算。匹配器要求同一广播因子、连续加载、独立零初值、同序连续写回，以及清零块、循环回边和退出写回之间可验证的 CFG 关系；向量值存活区间内出现调用或寄存器额外使用时拒绝转换。该规则不读取源码、符号名、函数名、基本块名或数组尺寸。Cortex-A53 的 LLVM MCA 模型中，八路核心从 `8.0` 降至 `3.0 cycles`；ARM 功能测试 `140/140` 通过，60 项性能汇编中仅三项满足转换条件且均运行 AC。QEMU 对 NEON 软件模拟较慢，因此本地墙钟不作为该规则的 A53 成本判断。
+
 ## 当前限制
 
 - 仅支持单输入文件。
 - 类型检查和语义分析仍有部分语言边界未完整覆盖。
 - IR 尚未形成完整 use-def 链，优化框架仍在演进。
-- 当前维护完整的 `riscv64` 与 `aarch64` 标量后端链路，暂未实现 RVV/NEON 向量化。
+- 当前维护完整的 `riscv64` 与 `aarch64` 后端链路；AArch64 已支持受严格 CFG 与数据流门槛约束的整数乘加 SLP，尚未形成通用循环向量化框架。
 - 当前比赛链接口径为 `rv64gc`，不包含 RISC-V Vector Extension，因此不能直接生成 RVV 指令；可继续采用标量循环展开、软件流水、访存合并和指令调度。
 - 本地性能评测依赖 QEMU，数值与官方硬件不可直接比较；`generic-ooo` 同样只是乱序流水线近似模型，不模拟官方 BOOM 的缓存和内存系统。
