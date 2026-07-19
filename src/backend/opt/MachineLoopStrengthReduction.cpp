@@ -1,7 +1,9 @@
 #include "../../../include/compiler/backend/opt/MachineLoopStrengthReduction.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <deque>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -42,6 +44,7 @@ struct Definition {
 struct Induction {
   MachineOperand phi;
   MachineOperand initial;
+  std::int64_t step = 0;
 };
 
 struct Candidate {
@@ -322,6 +325,7 @@ std::optional<Induction> matchInduction(
   if (!initial.has_value()) {
     return std::nullopt;
   }
+  std::optional<std::int64_t> inductionStep;
   for (const auto latch : loop.latches) {
     const auto next = phiIncoming(phi, function.blocks[latch].name);
     if (!next.has_value() || !isVirtualRegister(*next)) {
@@ -336,43 +340,65 @@ std::optional<Induction> matchInduction(
     if (update.opcode != "add" || update.operands.size() != 2) {
       return std::nullopt;
     }
-    const auto isUnitStep = [&](const MachineOperand& value,
-                                const MachineOperand& step) {
-      return sameOperand(value, phi.result) &&
-             step.kind == MachineOperandKind::ImmediateInt &&
-             step.intValue == 1;
+    const auto matchStep = [&](const MachineOperand& value,
+                               const MachineOperand& step)
+        -> std::optional<std::int64_t> {
+      if (!sameOperand(value, phi.result) ||
+          step.kind != MachineOperandKind::ImmediateInt ||
+          step.intValue == 0) {
+        return std::nullopt;
+      }
+      return step.intValue;
     };
-    if (!isUnitStep(update.operands[0], update.operands[1]) &&
-        !isUnitStep(update.operands[1], update.operands[0])) {
+    auto step = matchStep(update.operands[0], update.operands[1]);
+    if (!step.has_value()) {
+      step = matchStep(update.operands[1], update.operands[0]);
+    }
+    if (!step.has_value() ||
+        (inductionStep.has_value() && *inductionStep != *step)) {
       return std::nullopt;
     }
+    inductionStep = step;
   }
-  return Induction{phi.result, *initial};
+  if (!inductionStep.has_value()) return std::nullopt;
+  return Induction{phi.result, *initial, *inductionStep};
 }
 
-unsigned dynamicGepCost(long long scale) {
+unsigned dynamicGepCost(long long scale, bool aarch64) {
   if (scale == 0 || scale == 1) {
     return 1;
   }
   const auto magnitude =
       static_cast<unsigned long long>(scale < 0 ? -scale : scale);
   if ((magnitude & (magnitude - 1)) == 0) {
-    return 2;
+    return aarch64 ? 1 : 2;
   }
   return 3;
 }
 
-unsigned immediateGepCost(long long scale) {
-  if (scale == 0) {
+bool aarch64AddImmediate(std::uint64_t magnitude) {
+  return magnitude <= 4095 ||
+         (magnitude % 4096 == 0 && magnitude / 4096 <= 4095);
+}
+
+unsigned immediateGepCost(long long offset, bool aarch64) {
+  if (offset == 0) {
     return 0;
   }
-  return scale >= -2048 && scale <= 2047 ? 1 : 2;
+  if (aarch64) {
+    const auto magnitude = offset < 0
+                               ? static_cast<std::uint64_t>(-(offset + 1)) + 1
+                               : static_cast<std::uint64_t>(offset);
+    return aarch64AddImmediate(magnitude) ? 1 : 2;
+  }
+  return offset >= -2048 && offset <= 2047 ? 1 : 2;
 }
 
 std::optional<Plan> findPlan(
     const MachineFunction& function,
     const compiler::backend::target::TargetInstrAdapter& adapter,
-    const std::unordered_set<std::string>& transformedHeaders) {
+    const std::unordered_set<std::string>& transformedHeaders,
+    bool aarch64) {
   const auto cfg = CFGBuilder{}.build(function, adapter);
   const auto reachable = computeReachable(cfg);
   const auto dominators = computeDominators(cfg, reachable);
@@ -385,6 +411,14 @@ std::optional<Plan> findPlan(
     if (transformedHeaders.find(headerName) != transformedHeaders.end()) {
       continue;
     }
+    const bool hasInternalConditionalControl = std::any_of(
+        loop.blocks.begin(), loop.blocks.end(), [&](const auto block) {
+          if (block == loop.header) return false;
+          const auto& instructions = function.blocks[block].instructions;
+          return !instructions.empty() &&
+                 adapter.isConditionalBranch(instructions.back());
+        });
+    if (hasInternalConditionalControl) continue;
     for (const auto& phi : function.blocks[loop.header].instructions) {
       const auto induction = matchInduction(function, loop, phi, definitions);
       if (!induction.has_value()) {
@@ -422,9 +456,23 @@ std::optional<Plan> findPlan(
             continue;
           }
           const auto scale = current.operands[2].intValue;
-          const auto oldCost = dynamicGepCost(scale);
-          const auto newCost = immediateGepCost(scale);
-          if (oldCost < newCost + 2) {
+          if (!aarch64 && induction->step != 1) continue;
+          const __int128 updateOffset =
+              static_cast<__int128>(scale) * induction->step;
+          if (updateOffset < std::numeric_limits<std::int64_t>::min() ||
+              updateOffset > std::numeric_limits<std::int64_t>::max()) {
+            continue;
+          }
+          const auto oldCost = dynamicGepCost(scale, aarch64);
+          const auto newCost = immediateGepCost(
+              static_cast<std::int64_t>(updateOffset), aarch64);
+          // A two-instruction recurrence still carries a serial pointer
+          // dependency and can increase register-save pressure.  On AArch64,
+          // require the latch update itself to fit a single ADD/SUB immediate.
+          const bool profitable =
+              aarch64 ? oldCost > newCost && newCost == 1
+                      : oldCost >= newCost + 2;
+          if (!profitable) {
             continue;
           }
           candidates.push_back(
@@ -587,10 +635,16 @@ bool transform(MachineFunction& function, const Plan& plan) {
   for (const auto& candidate : plan.candidates) {
     const auto initialPointer =
         freshVirtual(names, "%loop.pointer.initial", candidate.gep.result.type);
-    preheaderInitializers.push_back(MachineInstruction::target(
-        candidate.gep.opcode, initialPointer,
-        {candidate.gep.operands[0], plan.induction.initial,
-         candidate.gep.operands[2]}));
+    if (plan.induction.initial.kind == MachineOperandKind::ImmediateInt &&
+        plan.induction.initial.intValue == 0) {
+      preheaderInitializers.push_back(MachineInstruction::copy(
+          initialPointer, candidate.gep.operands[0]));
+    } else {
+      preheaderInitializers.push_back(MachineInstruction::target(
+          candidate.gep.opcode, initialPointer,
+          {candidate.gep.operands[0], plan.induction.initial,
+           candidate.gep.operands[2]}));
+    }
 
     const auto pointerPhi =
         freshVirtual(names, "%loop.pointer", candidate.gep.result.type);
@@ -604,7 +658,8 @@ bool transform(MachineFunction& function, const Plan& plan) {
           candidate.gep.opcode, nextPointer,
           {pointerPhi,
            MachineOperand::immediateInt(
-               1, compiler::backend::mir::ValueType::int32Type()),
+               plan.induction.step,
+               compiler::backend::mir::ValueType::int32Type()),
            candidate.gep.operands[2]}));
       incoming.push_back({function.blocks[latch].name, nextPointer});
     }
@@ -677,6 +732,7 @@ void MachineLoopStrengthReduction::run(
     compiler::backend::mir::MachineModule& module) const {
   const auto& adapter =
       compiler::backend::target::instrAdapterFor(module.target);
+  const bool aarch64 = module.target.name() == "aarch64";
   for (auto& function : module.functions) {
     std::size_t instructionCount = 0;
     for (const auto& block : function.blocks) {
@@ -686,7 +742,8 @@ void MachineLoopStrengthReduction::run(
       continue;
     }
     std::unordered_set<std::string> transformedHeaders;
-    while (const auto plan = findPlan(function, adapter, transformedHeaders)) {
+    while (const auto plan =
+               findPlan(function, adapter, transformedHeaders, aarch64)) {
       transformedHeaders.insert(function.blocks[plan->loop.header].name);
       if (!transform(function, *plan)) {
         break;
