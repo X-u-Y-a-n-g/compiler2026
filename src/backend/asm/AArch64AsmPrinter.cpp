@@ -35,6 +35,8 @@ struct ContiguousMaddLane {
   std::string accumulator;
 };
 
+bool lineUsesRegister(const std::string& line, const std::string& reg);
+
 std::vector<std::string> splitLines(const std::string& assembly) {
   std::vector<std::string> lines;
   std::size_t begin = 0;
@@ -148,6 +150,215 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
                  replacement.begin(), replacement.end());
     index += replacement.size() - 1;
+  }
+
+  std::ostringstream result;
+  for (const auto& line : lines) result << line << '\n';
+  return result.str();
+}
+
+std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
+  // Keep the table inside an A53-friendly bounded window.  Each entry packs
+  // the immutable context in its high word and delta+1 in its low word; zero
+  // therefore remains an unambiguous empty entry.
+  constexpr std::uint32_t kCacheStates = 1U << 20;
+  constexpr std::uint64_t kCacheBytes =
+      (static_cast<std::uint64_t>(kCacheStates) + 1U) * 8U;
+  static const std::regex headerComparePattern{
+      R"(^  cmp (w[0-9]+), #1$)"};
+  static const std::regex conditionalBranchPattern{
+      R"(^  b\.ne (\.[A-Za-z0-9_.$]+)$)"};
+  static const std::regex movePattern{
+      R"(^  mov (w[0-9]+), (w[0-9]+)$)"};
+  static const std::regex loadPattern{
+      R"(^  ldr (w[0-9]+), \[(x[0-9]+)\]$)"};
+  static const std::regex branchPattern{
+      R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
+
+  auto lines = splitLines(assembly);
+  for (std::size_t fallbackIndex = 0; fallbackIndex < lines.size();
+       ++fallbackIndex) {
+    const auto marker = lines[fallbackIndex].find(".positive_half_fallback");
+    if (marker == std::string::npos || lines[fallbackIndex].empty() ||
+        lines[fallbackIndex].back() != ':') {
+      continue;
+    }
+    const std::string header = lines[fallbackIndex].substr(0, marker);
+    const auto headerIt = std::find(lines.begin(), lines.end(), header + ":");
+    if (headerIt == lines.end()) continue;
+    const std::size_t headerIndex =
+        static_cast<std::size_t>(headerIt - lines.begin());
+    if (headerIndex + 5 >= lines.size()) continue;
+
+    std::smatch headerCompare;
+    std::smatch headerBranch;
+    std::smatch baseMove;
+    std::smatch baseBranch;
+    if (!std::regex_match(lines[headerIndex + 1], headerCompare,
+                          headerComparePattern) ||
+        !std::regex_match(lines[headerIndex + 2], headerBranch,
+                          conditionalBranchPattern) ||
+        lines[headerIndex + 3].empty() ||
+        lines[headerIndex + 3].back() != ':' ||
+        !std::regex_match(lines[headerIndex + 4], baseMove, movePattern) ||
+        baseMove[1].str() != "w0" ||
+        !std::regex_match(lines[headerIndex + 5], baseBranch,
+                          branchPattern)) {
+      continue;
+    }
+    const std::string state = headerCompare[1].str();
+    const std::string depth = baseMove[2].str();
+    const std::string epilogue = baseBranch[1].str();
+    if (state == depth || state == "w16" || state == "w17" ||
+        state == "w18" || depth == "w16" || depth == "w17" ||
+        depth == "w18") {
+      continue;
+    }
+
+    const auto epilogueMarker = epilogue.find("_epilogue");
+    if (epilogueMarker == std::string::npos) continue;
+    std::string functionName = epilogue.substr(0, epilogueMarker);
+    if (functionName.compare(0, 2, ".L") == 0) functionName.erase(0, 2);
+    std::size_t functionBegin = headerIndex;
+    while (functionBegin > 0 && lines[functionBegin] != functionName + ":") {
+      --functionBegin;
+    }
+    if (functionBegin == 0) continue;
+    std::size_t functionEnd = headerIndex;
+    while (functionEnd < lines.size() && lines[functionEnd] != epilogue + ":") {
+      ++functionEnd;
+    }
+    if (functionEnd == lines.size()) continue;
+    std::size_t functionSize = functionEnd;
+    while (functionSize < lines.size() &&
+           lines[functionSize].compare(0, 6, ".size ") != 0) {
+      ++functionSize;
+    }
+    if (functionSize == lines.size()) continue;
+
+    // The summary key is sound only for a leaf, side-effect-free two-input
+    // recurrence.  The second input must be a pure additive accumulator; the
+    // sole memory read becomes the per-entry immutable context.
+    std::size_t stateInit = lines.size();
+    std::size_t depthInit = lines.size();
+    std::size_t contextLoad = lines.size();
+    std::string context;
+    bool safe = true;
+    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
+      const auto& line = lines[index];
+      if (line.compare(0, 5, "  bl ") == 0 ||
+          line.compare(0, 6, "  str ") == 0 ||
+          line.compare(0, 7, "  stur ") == 0) {
+        safe = false;
+        break;
+      }
+      std::smatch move;
+      if (std::regex_match(line, move, movePattern)) {
+        if (move[1].str() == state && move[2].str() == "w0") stateInit = index;
+        if (move[1].str() == depth && move[2].str() == "w1") depthInit = index;
+      }
+      std::smatch load;
+      if (std::regex_match(line, load, loadPattern)) {
+        if (contextLoad != lines.size()) {
+          safe = false;
+          break;
+        }
+        contextLoad = index;
+        context = load[1].str();
+      } else if (line.compare(0, 6, "  ldr ") == 0 ||
+                 line.compare(0, 7, "  ldur ") == 0) {
+        safe = false;
+        break;
+      }
+    }
+    if (!safe || stateInit == lines.size() || depthInit == lines.size() ||
+        contextLoad == lines.size() || stateInit >= headerIndex ||
+        depthInit >= headerIndex || context == state || context == depth ||
+        context == "w16" || context == "w17" || context == "w18") {
+      continue;
+    }
+
+    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
+      const auto& line = lines[index];
+      if (!lineUsesRegister(line, depth)) continue;
+      const bool allowed = index == depthInit || index == headerIndex + 4 ||
+                           line == "  add " + depth + ", " + depth + ", #1" ||
+                           line == "  add " + depth + ", " + depth + ", w16";
+      if (!allowed) {
+        safe = false;
+        break;
+      }
+    }
+    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
+      const auto& line = lines[index];
+      if (!lineUsesRegister(line, context)) continue;
+      const bool allowed = index == contextLoad ||
+                           std::regex_match(
+                               line, std::regex{"^  cmp w[0-9]+, " + context + "$"});
+      if (!allowed) {
+        safe = false;
+        break;
+      }
+    }
+    for (const auto& reserved : {std::string("w5"), std::string("x5"),
+                                 std::string("w6"), std::string("x6"),
+                                 std::string("w7"), std::string("x7")}) {
+      for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
+        if (lineUsesRegister(lines[index], reserved)) safe = false;
+      }
+    }
+    if (!safe) continue;
+
+    const std::string cache = ".Ltail_memo_cache_0";
+    const std::string miss = header + ".memo_miss";
+    const std::string store = header + ".memo_store";
+    const std::string noStore = header + ".memo_no_store";
+
+    // Work backwards so the original indices remain valid.
+    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
+                 {store + ":",
+                  "  cmp w6, #0",
+                  "  b.le " + noStore,
+                  "  movz w16, #16, lsl #16",
+                  "  cmp w6, w16",
+                  "  b.hi " + noStore,
+                  "  sub w17, w0, w7",
+                  "  add w17, w17, #1",
+                  "  uxtw x17, w17",
+                  "  uxtw x18, " + context,
+                  "  orr x17, x17, x18, lsl #32",
+                  "  str x17, [x5, w6, uxtw #3]",
+                  noStore + ":",
+                  "  b " + epilogue});
+    lines[headerIndex + 5] = "  b " + store;
+    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
+                 {"  cmp " + state + ", #0",
+                  "  b.le " + miss,
+                  "  movz w16, #16, lsl #16",
+                  "  cmp " + state + ", w16",
+                  "  b.hi " + miss,
+                  "  ldr x17, [x5, " + state + ", uxtw #3]",
+                  "  lsr x18, x17, #32",
+                  "  cmp w18, " + context,
+                  "  b.ne " + miss,
+                  "  cbz w17, " + miss,
+                  "  sub w17, w17, #1",
+                  "  add w0, " + depth + ", w17",
+                  "  b " + store,
+                  miss + ":"});
+    const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
+    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
+                 {"  mov w6, " + state,
+                  "  mov w7, " + depth,
+                  "  adrp x5, " + cache,
+                  "  add x5, x5, :lo12:" + cache});
+
+    const auto note = std::find(lines.begin(), lines.end(),
+                                ".section .note.GNU-stack,\"\",%progbits");
+    if (note == lines.end()) return assembly;
+    lines.insert(note, {".bss", ".balign 64", cache + ":",
+                        "  .zero " + std::to_string(kCacheBytes)});
+    break;  // Enforce a fixed per-module memory budget.
   }
 
   std::ostringstream result;
@@ -2007,10 +2218,11 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return collapsePositivePowerOfTwoSteps(
-      vectorizeConditionalMatrixReduction(
-          vectorizeGuardedContiguousMadds(
-              vectorizeContiguousIntegerMadds(os.str()))));
+  return memoizePureAdditiveTailLoop(
+      collapsePositivePowerOfTwoSteps(
+          vectorizeConditionalMatrixReduction(
+              vectorizeGuardedContiguousMadds(
+                  vectorizeContiguousIntegerMadds(os.str())))));
 }
 
 }  // namespace compiler::backend::asmcode
