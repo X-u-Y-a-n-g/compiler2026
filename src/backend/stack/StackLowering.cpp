@@ -112,19 +112,6 @@ bool instructionUsesPhysicalRegister(const MachineInstruction& instruction,
   return false;
 }
 
-bool containsDirectRecursiveCall(const MachineFunction& function) {
-  for (const auto& block : function.blocks) {
-    for (const auto& instruction : block.instructions) {
-      if (instruction.opcode == "call" && !instruction.operands.empty() &&
-          instruction.operands.front().kind == MachineOperandKind::FunctionSymbol &&
-          instruction.operands.front().text == function.name) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 bool hasDynamicStackAdjustment(const MachineFunction& function) {
   for (const auto& block : function.blocks) {
     for (const auto& instruction : block.instructions) {
@@ -190,12 +177,11 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
       continue;
     }
 
-    // A fixed stack pointer is a cheaper frame base for recursively executed
-    // functions: every omitted frame-pointer save/setup/restore is paid at
-    // each recursive invocation. Keep the conventional frame pointer whenever
-    // the body adjusts sp itself or already refers to the target FP register.
+    // With a fixed stack pointer, SP is a stable frame base for every function,
+    // not only directly recursive ones.  Keep FP only when the body changes SP
+    // dynamically or already contains an explicit reference to the target FP.
     function.usesFramePointer =
-        !containsDirectRecursiveCall(function) || hasDynamicStackAdjustment(function) ||
+        hasDynamicStackAdjustment(function) ||
         bodyUsesFramePointer(function, regInfo.framePointerRegister());
 
     function.savedRaOffset = static_cast<int>(module.target.pointerSize());
