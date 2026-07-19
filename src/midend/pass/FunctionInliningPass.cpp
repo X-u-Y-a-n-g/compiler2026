@@ -636,6 +636,9 @@ std::size_t staticCallCount(
 bool inlineOneGeneralCall(Module& module, std::size_t& totalGrowth,
                           std::unordered_set<std::string>& inlinedCallees) {
   constexpr std::size_t kSmallCalleeLimit = 24;
+  // A single-call loop is removed after cloning, so a slightly larger local
+  // limit still reduces whole-module code size while eliminating a hot call.
+  constexpr std::size_t kSmallLoopCalleeLimit = 48;
   constexpr std::size_t kCallerGrowthLimit = 160;
   constexpr std::size_t kModuleGrowthLimit = 320;
 
@@ -680,15 +683,18 @@ bool inlineOneGeneralCall(Module& module, std::size_t& totalGrowth,
           const std::string calleeName =
               !target.empty() && target.front() == '@' ? target.substr(1) : target;
           const auto found = snapshots.find(calleeName);
+          const bool calleeHasLoop =
+              found != snapshots.end() && !cyclicBlocks(found->second).empty();
           if (!hot || found == snapshots.end() || calleeName == caller.name() ||
               staticCallCount(callGraph, calleeName) != 1 ||
               callGraphReaches(callGraph, calleeName, caller.name()) ||
-              !isGeneralInlineCandidate(found->second) ||
-              !cyclicBlocks(found->second).empty()) {
+              !isGeneralInlineCandidate(found->second)) {
             continue;
           }
           const std::size_t cost = instructionCount(found->second);
-          if (cost == 0 || cost > kSmallCalleeLimit ||
+          const std::size_t costLimit =
+              calleeHasLoop ? kSmallLoopCalleeLimit : kSmallCalleeLimit;
+          if (cost == 0 || cost > costLimit ||
               callerGrowth + cost > kCallerGrowthLimit ||
               totalGrowth + cost > kModuleGrowthLimit) {
             continue;

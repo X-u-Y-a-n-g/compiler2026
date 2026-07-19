@@ -177,6 +177,10 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::TailRecursionEliminationPass>());
+    // Tail-recursion elimination can turn a formerly recursive helper into a
+    // small loop with a single hot call site.  Give the CFG inliner another
+    // chance after that structural change.
+    passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
     passManager.add(
