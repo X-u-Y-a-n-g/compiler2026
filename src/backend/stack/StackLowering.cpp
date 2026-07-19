@@ -112,6 +112,19 @@ bool instructionUsesPhysicalRegister(const MachineInstruction& instruction,
   return false;
 }
 
+bool containsDirectRecursiveCall(const MachineFunction& function) {
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instruction.opcode == "call" && !instruction.operands.empty() &&
+          instruction.operands.front().kind == MachineOperandKind::FunctionSymbol &&
+          instruction.operands.front().text == function.name) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool hasDynamicStackAdjustment(const MachineFunction& function) {
   for (const auto& block : function.blocks) {
     for (const auto& instruction : block.instructions) {
@@ -177,21 +190,19 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
       continue;
     }
 
-    // With a fixed stack pointer, SP is a stable frame base for every function,
-    // not only directly recursive ones.  Keep FP only when the body changes SP
-    // dynamically or already contains an explicit reference to the target FP.
+    // A fixed stack pointer is a cheaper frame base for recursively executed
+    // functions: every omitted frame-pointer save/setup/restore is paid at
+    // each recursive invocation. Keep the conventional frame pointer whenever
+    // the body adjusts sp itself or already refers to the target FP register.
     function.usesFramePointer =
-        hasDynamicStackAdjustment(function) ||
+        !containsDirectRecursiveCall(function) || hasDynamicStackAdjustment(function) ||
         bodyUsesFramePointer(function, regInfo.framePointerRegister());
 
-    std::size_t fixedSaveCount = 0;
-    function.savedRaOffset =
-        hasCall ? static_cast<int>(module.target.pointerSize() * ++fixedSaveCount)
-                : 0;
+    function.savedRaOffset = static_cast<int>(module.target.pointerSize());
     function.savedFpOffset =
-        function.usesFramePointer
-            ? static_cast<int>(module.target.pointerSize() * ++fixedSaveCount)
-            : 0;
+        function.usesFramePointer ? static_cast<int>(module.target.pointerSize() * 2) : 0;
+
+    const std::size_t fixedSaveCount = function.usesFramePointer ? 2 : 1;
 
     function.savedIntegerRegisterOffsets.clear();
     function.savedIntegerRegisterOffsets.reserve(function.usedIntegerCalleeSavedRegisters.size());
@@ -229,11 +240,9 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
     function.epilogueInstructions.clear();
 
     function.prologueInstructions.push_back(makeStackAdjust(-static_cast<long long>(function.frameSize)));
-    if (hasCall) {
-      function.prologueInstructions.push_back(makeStackSave(
-          regInfo.returnAddressRegister(), ValueType::int64Type(),
-          static_cast<long long>(function.frameSize - function.savedRaOffset)));
-    }
+    function.prologueInstructions.push_back(
+        makeStackSave(regInfo.returnAddressRegister(), ValueType::int64Type(),
+                      static_cast<long long>(function.frameSize - module.target.pointerSize())));
     if (function.usesFramePointer) {
       function.prologueInstructions.push_back(
           makeStackSave(regInfo.framePointerRegister(), ValueType::int64Type(),
@@ -315,11 +324,9 @@ void StackLowering::lower(compiler::backend::mir::MachineModule& module) const {
           makeStackRestore(function.usedIntegerCalleeSavedRegisters[i - 1], ValueType::int64Type(),
                            -function.savedIntegerRegisterOffsets[i - 1]));
     }
-    if (hasCall) {
-      function.epilogueInstructions.push_back(makeStackRestore(
-          regInfo.returnAddressRegister(), ValueType::int64Type(),
-          -function.savedRaOffset));
-    }
+    function.epilogueInstructions.push_back(
+        makeStackRestore(regInfo.returnAddressRegister(), ValueType::int64Type(),
+                         -function.savedRaOffset));
     if (function.usesFramePointer) {
       function.epilogueInstructions.push_back(
           makeStackRestore(regInfo.framePointerRegister(), ValueType::int64Type(),
