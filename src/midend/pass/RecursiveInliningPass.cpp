@@ -399,6 +399,12 @@ bool inlineRecursiveCalls(Function &function) {
 
 void RecursiveInliningPass::run(compiler::ir::core::Module &module) {
   for (auto &function : module.functions()) {
+    // The guarded fast path already removes recursion for the proven common
+    // domain.  Cloning its preserved semantic fallback only grows cold code.
+    if (!function.blocks().empty() &&
+        function.blocks().front().name().rfind("modmul.guard", 0) == 0) {
+      continue;
+    }
     inlineRecursiveCalls(function);
   }
 }

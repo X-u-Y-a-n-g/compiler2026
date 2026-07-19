@@ -50,6 +50,38 @@ std::vector<std::string> splitLines(const std::string& assembly) {
   return lines;
 }
 
+std::string foldMaterializedConditionSelects(const std::string& assembly) {
+  static const std::unordered_set<std::string> conditions{
+      "eq", "ne", "lt", "le", "gt", "ge", "lo", "ls", "hi", "hs"};
+  auto lines = splitLines(assembly);
+  for (std::size_t index = 1; index + 2 < lines.size(); ++index) {
+    constexpr std::size_t csetPrefix = 7;
+    if (lines[index].compare(0, csetPrefix, "  cset ") != 0) continue;
+    const auto separator = lines[index].find(", ", csetPrefix);
+    if (separator == std::string::npos) continue;
+    const auto boolean = lines[index].substr(csetPrefix,
+                                             separator - csetPrefix);
+    const auto condition = lines[index].substr(separator + 2);
+    if (conditions.find(condition) == conditions.end() ||
+        lines[index + 1] != "  cmp " + boolean + ", #0" ||
+        lines[index + 2].compare(0, 7, "  csel ") != 0 ||
+        lines[index + 2].size() < 4 ||
+        lines[index + 2].compare(lines[index + 2].size() - 4, 4, ", ne") != 0) {
+      continue;
+    }
+    // CSET preserves the flags from the defining compare.  The materialized
+    // boolean remains available for its other users, while CSEL can consume
+    // those original flags directly.
+    lines[index + 1].clear();
+    lines[index + 2].replace(lines[index + 2].size() - 2, 2, condition);
+  }
+  std::ostringstream result;
+  for (const auto& line : lines) {
+    if (!line.empty()) result << line << '\n';
+  }
+  return result.str();
+}
+
 bool parseDirectIntLoad(const std::string& line, std::string& destination,
                         std::string& base, long long& offset) {
   static const std::regex pattern{
@@ -1663,8 +1695,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
         os << "  add " << dst << ", " << base << ", " << index << ", lsl #" << shift << '\n';
       } else {
         emitImmediate(os, kHiddenScratch, scale);
-        os << "  mul x18, " << index << ", x18\n";
-        os << "  add " << dst << ", " << base << ", x18\n";
+        os << "  madd " << dst << ", " << index << ", x18, " << base << '\n';
       }
     }
     storeResult(os, function, instruction.result, dst); return;
@@ -1902,9 +1933,10 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return vectorizeConditionalMatrixReduction(
-      vectorizeGuardedContiguousMadds(
-          vectorizeContiguousIntegerMadds(os.str())));
+  return foldMaterializedConditionSelects(
+      vectorizeConditionalMatrixReduction(
+          vectorizeGuardedContiguousMadds(
+              vectorizeContiguousIntegerMadds(os.str()))));
 }
 
 }  // namespace compiler::backend::asmcode
