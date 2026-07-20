@@ -343,7 +343,7 @@ AArch64 后端会折叠正数尾循环中的连续除二步骤：当 CFG 能证�
 
 中端还会对规范单位递增循环做带仿射不别名证明的标量提升。候选地址必须在循环外定义，循环内只能有一次对该地址的 load 和一次条件 store，且无调用或其他 store；同一数组对象的其余 load 必须通过完整 GEP 下标、循环条件和归纳变量初值证明至少一维恒不相等。变换用运行时入口条件保留零趟循环，在入口加载一次，通过 Phi 在寄存器中维护当前值，删除循环内目标 load/store，并在唯一出口一次写回。更新块中的重复 load 会由支配它的循环主体 load 转发；仅含可安全推测整数运算时进一步改成 `select`。AArch64 MIR 会把单用途 `icmp + select` 合并为直接的 `cmp + csel`，避免布尔值物化。合成回归覆盖零趟、单趟、多趟、无更新和无法证明别名时的 fallback；ARM performance `60/60 AC`、correctness `140/140 AC`。60 项中 `h-8` 三项命中标量提升，`h-4` 与 transpose 各三项仅命中通用 compare-select 合并；真实 Cortex-A53 收益仍需官方平台复核。
 
-AArch64 后端会把 i32 有符号常量除法降级为通用 magic-number 乘高序列。除数为非零、非 `±1`、非二次幂的编译期常量时，后端根据完整 32 位除数计算 multiplier 与 shift，使用 `smull` 取得有符号乘积高半部，并按 multiplier/除数符号和商符号完成向零截断修正；二次幂继续使用更短的移位路径，i64、变量除数和除零保持原 fallback。匿名回归覆盖 `INT_MIN/INT_MAX`、正负被除数、正负及大常量除数、二次幂和零趟循环；另对 28,200 个除数样本完成 2,056,775 组生成器对拍。AArch64 performance `60/60 AC`、correctness `140/140 AC`，60 项中 9 项汇编变化，目标 Cortex-A53 收益仍需官方平台复核。
+AArch64 后端会把 i32 有符号常量除法降级为通用 magic-number 乘高序列。除数为非零、非 `±1`、非二次幂的编译期常量时，后端根据完整 32 位除数计算 multiplier 与 shift，使用 `smull` 取得有符号乘积高半部，并按 multiplier/除数符号和商符号完成向零截断修正；二次幂继续使用更短的移位路径，i64、变量除数和除零保持原 fallback。对于无调用、具有唯一预头的最内层自然循环，Machine IR 会把循环内使用频率最高的一个 magic multiplier 提升到预头并交给寄存器分配，消除每次迭代中的重复 `movz/movk`；同循环其余常量、含调用循环和无法证明结构的 CFG 保留原路径。匿名回归覆盖 `INT_MIN/INT_MAX`、正负被除数、多个除数、零趟循环和调用 fallback；AArch64 performance `60/60 AC`、correctness `140/140 AC`，外提仅改变 h-4 与 many-mat 六项且没有新增栈访问，目标 Cortex-A53 收益仍需官方平台复核。
 
 ## 当前限制
 

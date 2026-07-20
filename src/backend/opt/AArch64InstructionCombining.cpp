@@ -1,5 +1,6 @@
 #include "../../../include/compiler/backend/opt/AArch64InstructionCombining.h"
 
+#include <cstdint>
 #include <string>
 #include <limits>
 #include <unordered_map>
@@ -7,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/backend/target/AArch64MagicDivision.h"
 #include "../../../include/compiler/backend/target/TargetBackend.h"
 
 namespace compiler::backend::opt {
@@ -16,6 +18,7 @@ using compiler::backend::mir::MachineFunction;
 using compiler::backend::mir::MachineInstruction;
 using compiler::backend::mir::MachineOperand;
 using compiler::backend::mir::MachineOperandKind;
+using compiler::backend::mir::ValueType;
 
 struct Definition {
   std::size_t block = 0;
@@ -24,6 +27,52 @@ struct Definition {
 
 bool isVirtualRegister(const MachineOperand& operand) {
   return operand.kind == MachineOperandKind::VirtualRegister;
+}
+
+bool isPowerOfTwoMagnitude(std::int64_t value) {
+  if (value == 0) return false;
+  const auto magnitude =
+      value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                : static_cast<std::uint64_t>(value);
+  return (magnitude & (magnitude - 1U)) == 0;
+}
+
+void lowerSignedConstantDivisions(MachineFunction& function) {
+  for (auto& block : function.blocks) {
+    for (auto& instruction : block.instructions) {
+      if ((instruction.opcode != "div" && instruction.opcode != "sdiv") ||
+          !instruction.hasResult || !instruction.result.type.isInt32() ||
+          instruction.operands.size() != 2 ||
+          instruction.operands[1].kind != MachineOperandKind::ImmediateInt) {
+        continue;
+      }
+      const auto rawDivisor = instruction.operands[1].intValue;
+      if (rawDivisor < std::numeric_limits<std::int32_t>::min() ||
+          rawDivisor > std::numeric_limits<std::int32_t>::max() ||
+          isPowerOfTwoMagnitude(rawDivisor)) {
+        continue;
+      }
+      const auto divisor = static_cast<std::int32_t>(rawDivisor);
+      const auto magic =
+          compiler::backend::target::aarch64::signedMagic32(divisor);
+      if (!magic.has_value()) continue;
+
+      int adjustment = 0;
+      if (divisor > 0 && magic->multiplier < 0) {
+        adjustment = 1;
+      } else if (divisor < 0 && magic->multiplier > 0) {
+        adjustment = -1;
+      }
+      instruction = MachineInstruction::target(
+          "sdiv.magic.i32", instruction.result,
+          {instruction.operands[0],
+           MachineOperand::immediateInt(magic->multiplier,
+                                        ValueType::int32Type()),
+           MachineOperand::immediateInt(adjustment, ValueType::int32Type()),
+           MachineOperand::immediateInt(magic->shift,
+                                        ValueType::int32Type())});
+    }
+  }
 }
 
 bool isAddressCalculation(const MachineInstruction& instruction) {
@@ -280,9 +329,18 @@ void foldIndexedAddresses(
 
 }  // namespace
 
+void AArch64InstructionCombining::lowerConstantDivisions(
+    compiler::backend::mir::MachineModule& module) const {
+  if (module.target.name() != "aarch64") return;
+  for (auto& function : module.functions) {
+    lowerSignedConstantDivisions(function);
+  }
+}
+
 void AArch64InstructionCombining::run(
     compiler::backend::mir::MachineModule& module) const {
   if (module.target.name() != "aarch64") return;
+  lowerConstantDivisions(module);
   const auto& adapter =
       compiler::backend::target::instrAdapterFor(module.target);
   for (auto& function : module.functions) {

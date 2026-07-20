@@ -1,6 +1,7 @@
 #include "../../../include/compiler/backend/opt/MachineLoopStrengthReduction.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
@@ -576,6 +577,71 @@ void hoistInnermostBranchConstants(
   }
 }
 
+void hoistInnermostMagicMultipliers(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  const auto cfg = CFGBuilder{}.build(function, adapter);
+  const auto reachable = computeReachable(cfg);
+  const auto dominators = computeDominators(cfg, reachable);
+  const auto loops = findLoops(cfg, reachable, dominators);
+  auto names = collectVirtualNames(function);
+
+  for (const auto& loop : loops) {
+    const bool containsNestedLoop = std::any_of(
+        loops.begin(), loops.end(), [&](const auto& candidate) {
+          return isStrictSubset(candidate.blocks, loop.blocks);
+        });
+    if (containsNestedLoop) continue;
+
+    bool hasCall = false;
+    std::unordered_map<std::int64_t, std::size_t> frequencies;
+    for (const auto blockIndex : loop.blocks) {
+      for (const auto& instruction : function.blocks[blockIndex].instructions) {
+        if (instruction.opcode == "call") hasCall = true;
+        if (instruction.opcode != "sdiv.magic.i32" ||
+            instruction.operands.size() != 4 ||
+            instruction.operands[1].kind !=
+                MachineOperandKind::ImmediateInt) {
+          continue;
+        }
+        ++frequencies[instruction.operands[1].intValue];
+      }
+    }
+    if (hasCall || frequencies.empty()) continue;
+
+    const auto best = std::max_element(
+        frequencies.begin(), frequencies.end(),
+        [](const auto& lhs, const auto& rhs) {
+          if (lhs.second != rhs.second) return lhs.second < rhs.second;
+          return lhs.first < rhs.first;
+        });
+    const auto multiplier = freshVirtual(
+        names, "%loop.magic.multiplier",
+        compiler::backend::mir::ValueType::int32Type());
+    auto& preheader = function.blocks[loop.preheader];
+    const auto position = insertionPoint(preheader);
+    preheader.instructions.insert(
+        preheader.instructions.begin() + position,
+        MachineInstruction::copy(
+            multiplier,
+            MachineOperand::immediateInt(
+                best->first,
+                compiler::backend::mir::ValueType::int32Type())));
+
+    for (const auto blockIndex : loop.blocks) {
+      for (auto& instruction : function.blocks[blockIndex].instructions) {
+        if (instruction.opcode == "sdiv.magic.i32" &&
+            instruction.operands.size() == 4 &&
+            instruction.operands[1].kind ==
+                MachineOperandKind::ImmediateInt &&
+            instruction.operands[1].intValue == best->first) {
+          instruction.operands[1] = multiplier;
+        }
+      }
+    }
+  }
+}
+
 bool transform(MachineFunction& function, const Plan& plan) {
   auto names = collectVirtualNames(function);
   std::vector<MachineInstruction> preheaderInitializers;
@@ -693,6 +759,9 @@ void MachineLoopStrengthReduction::run(
       }
     }
     hoistInnermostBranchConstants(function, adapter);
+    if (module.target.name() == "aarch64") {
+      hoistInnermostMagicMultipliers(function, adapter);
+    }
   }
 }
 

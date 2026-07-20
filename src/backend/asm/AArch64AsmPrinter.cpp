@@ -7,13 +7,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "../../../include/compiler/backend/target/AArch64MagicDivision.h"
 
 namespace compiler::backend::asmcode {
 namespace {
@@ -1588,51 +1589,6 @@ unsigned log2PowerOfTwo(std::uint64_t value) {
   return shift;
 }
 
-struct SignedMagic32 {
-  std::int32_t multiplier = 0;
-  unsigned shift = 0;
-};
-
-std::optional<SignedMagic32> signedMagic32(std::int32_t divisor) {
-  if (divisor == 0 || divisor == 1 || divisor == -1) return std::nullopt;
-
-  const std::uint64_t magnitude =
-      divisor < 0 ? static_cast<std::uint64_t>(-(static_cast<std::int64_t>(divisor)))
-                  : static_cast<std::uint64_t>(divisor);
-  constexpr std::uint64_t signedMinimum = UINT64_C(1) << 31U;
-  const std::uint64_t threshold = signedMinimum + (divisor < 0 ? 1U : 0U);
-  const std::uint64_t adjusted = threshold - 1U - threshold % magnitude;
-
-  unsigned precision = 31;
-  std::uint64_t quotient1 = signedMinimum / adjusted;
-  std::uint64_t remainder1 = signedMinimum % adjusted;
-  std::uint64_t quotient2 = signedMinimum / magnitude;
-  std::uint64_t remainder2 = signedMinimum % magnitude;
-  std::uint64_t delta = 0;
-  do {
-    ++precision;
-    quotient1 <<= 1U;
-    remainder1 <<= 1U;
-    if (remainder1 >= adjusted) {
-      ++quotient1;
-      remainder1 -= adjusted;
-    }
-    quotient2 <<= 1U;
-    remainder2 <<= 1U;
-    if (remainder2 >= magnitude) {
-      ++quotient2;
-      remainder2 -= magnitude;
-    }
-    delta = magnitude - remainder2;
-  } while (quotient1 < delta || (quotient1 == delta && remainder1 == 0));
-
-  std::uint32_t multiplierBits = static_cast<std::uint32_t>(quotient2 + 1U);
-  if (divisor < 0) multiplierBits = 0U - multiplierBits;
-  std::int32_t multiplier = 0;
-  std::memcpy(&multiplier, &multiplierBits, sizeof(multiplier));
-  return SignedMagic32{multiplier, precision - 32U};
-}
-
 std::string integerRegister(const std::string& reg, const ValueType& type) {
   if (!isNarrow(type)) return reg;
   if (reg == "xzr") return "wzr";
@@ -2352,6 +2308,33 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode == "sdiv.magic.i32" && instruction.operands.size() == 4 &&
+      instruction.operands[2].kind == MachineOperandKind::ImmediateInt &&
+      instruction.operands[3].kind == MachineOperandKind::ImmediateInt &&
+      instruction.operands[3].intValue >= 0 &&
+      instruction.operands[3].intValue < 32) {
+    const auto lhs = integerOperand(os, function, instruction.operands[0],
+                                    kAddrScratch);
+    const auto multiplier = integerOperand(
+        os, function, instruction.operands[1], kImmScratch);
+    const auto dst = resultRegister(instruction.result, kImmScratch);
+    const auto d = integerRegister(dst, ValueType::int32Type());
+    const auto l = integerRegister(lhs, ValueType::int32Type());
+    const auto m = integerRegister(multiplier, ValueType::int32Type());
+    os << "  smull x18, " << l << ", " << m << '\n';
+    os << "  asr x18, x18, #32\n";
+    if (instruction.operands[2].intValue > 0) {
+      os << "  add w18, w18, " << l << '\n';
+    } else if (instruction.operands[2].intValue < 0) {
+      os << "  sub w18, w18, " << l << '\n';
+    }
+    if (instruction.operands[3].intValue != 0) {
+      os << "  asr w18, w18, #" << instruction.operands[3].intValue << '\n';
+    }
+    os << "  add " << d << ", w18, w18, lsr #31\n";
+    storeResult(os, function, instruction.result, dst);
+    return;
+  }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {
     const auto lhs = integerOperand(os, function, instruction.operands[0], kAddrScratch);
@@ -2449,7 +2432,8 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
         rhsOp.intValue >= std::numeric_limits<std::int32_t>::min() &&
         rhsOp.intValue <= std::numeric_limits<std::int32_t>::max()) {
       const auto divisor = static_cast<std::int32_t>(rhsOp.intValue);
-      if (const auto magic = signedMagic32(divisor)) {
+      if (const auto magic =
+              compiler::backend::target::aarch64::signedMagic32(divisor)) {
         emitImmediate(os, kImmScratch, magic->multiplier,
                       ValueType::int32Type());
         os << "  smull x18, " << l << ", w17\n";

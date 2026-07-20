@@ -1,0 +1,57 @@
+int values[16];
+
+void initialize() {
+  int index = 0;
+  while (index < 16) {
+    values[index] = index * 17 - 100;
+    index = index + 1;
+  }
+}
+
+int divide_loop(int count) {
+  int index = 0;
+  int sum = 0;
+  while (index < count) {
+    values[index] = values[index] / 3;
+    sum = sum + values[index];
+    index = index + 1;
+  }
+  return sum;
+}
+
+int two_divisors(int count) {
+  int index = 0;
+  int sum = 0;
+  while (index < count) {
+    int first = values[index] / 5;
+    int second = values[index] / 7;
+    sum = sum + first + second;
+    index = index + 1;
+  }
+  return sum;
+}
+
+int call_loop(int count, int value) {
+  int index = 0;
+  while (index < count) {
+    putch(48);
+    value = value / 11;
+    index = index + 1;
+  }
+  return value;
+}
+
+int main() {
+  initialize();
+  putint(divide_loop(0));
+  putch(10);
+  initialize();
+  putint(divide_loop(16));
+  putch(10);
+  initialize();
+  putint(two_divisors(16));
+  putch(10);
+  putint(call_loop(2, 121));
+  putch(10);
+  return 0;
+}
