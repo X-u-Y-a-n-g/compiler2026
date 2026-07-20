@@ -1,0 +1,44 @@
+int data[32];
+
+int promote_max(int target) {
+  int k = 0;
+  while (k < target) {
+    if (data[target] < data[k]) {
+      data[target] = data[k];
+    }
+    k = k + 1;
+  }
+  return data[target];
+}
+
+int fallback_alias(int values[], int limit, int target) {
+  int k = 0;
+  while (k < limit) {
+    if (values[target] < values[k]) {
+      values[target] = values[k];
+    }
+    k = k + 1;
+  }
+  return values[target];
+}
+
+int main() {
+  int i = 0;
+  while (i < 32) {
+    data[i] = i * 3 - 7;
+    i = i + 1;
+  }
+
+  putint(promote_max(0));
+  putch(10);
+  putint(promote_max(1));
+  putch(10);
+  putint(promote_max(8));
+  putch(10);
+  data[8] = 100;
+  putint(promote_max(8));
+  putch(10);
+  putint(fallback_alias(data, 8, 8));
+  putch(10);
+  return 0;
+}

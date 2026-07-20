@@ -2276,6 +2276,30 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
        << ", " << integerRegister(no, instruction.result.type) << ", ne\n";
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode.rfind("select.icmp.", 0) == 0 &&
+      instruction.operands.size() == 4) {
+    const auto& lhsOp = instruction.operands[0];
+    const auto& rhsOp = instruction.operands[1];
+    const auto lhs = integerOperand(os, function, lhsOp, kAddrScratch);
+    const auto lhsRegister = integerRegister(lhs, lhsOp.type);
+    if (rhsOp.kind != MachineOperandKind::ImmediateInt ||
+        !emitCompareImmediate(os, lhsRegister, rhsOp.intValue)) {
+      const auto rhs = integerOperand(os, function, rhsOp, kImmScratch);
+      os << "  cmp " << lhsRegister << ", "
+         << integerRegister(rhs, lhsOp.type) << '\n';
+    }
+    const auto yes = integerOperand(os, function, instruction.operands[2],
+                                    kImmScratch);
+    const auto no = integerOperand(os, function, instruction.operands[3],
+                                   kHiddenScratch);
+    const auto dst = resultRegister(instruction.result, kHiddenScratch);
+    os << "  csel " << integerRegister(dst, instruction.result.type) << ", "
+       << integerRegister(yes, instruction.result.type) << ", "
+       << integerRegister(no, instruction.result.type) << ", "
+       << conditionFor(opcode.substr(7)) << '\n';
+    storeResult(os, function, instruction.result, dst);
+    return;
+  }
   if (opcode == "fneg") {
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';

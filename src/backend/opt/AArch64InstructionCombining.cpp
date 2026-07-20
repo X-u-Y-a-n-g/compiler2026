@@ -114,6 +114,78 @@ void combineMultiplyAdds(
   }
 }
 
+void combineCompareSelects(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  std::unordered_map<std::string, Definition> definitions;
+  std::unordered_map<std::string, std::size_t> useCounts;
+  std::vector<MachineOperand> uses;
+  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
+    const auto& instructions = function.blocks[block].instructions;
+    for (std::size_t instruction = 0; instruction < instructions.size();
+         ++instruction) {
+      const auto& current = instructions[instruction];
+      if (current.hasResult && isVirtualRegister(current.result)) {
+        definitions.emplace(current.result.text, Definition{block, instruction});
+      }
+      adapter.enumerateUses(current, uses);
+      for (const auto& operand : uses) {
+        if (isVirtualRegister(operand)) ++useCounts[operand.text];
+      }
+    }
+  }
+
+  std::vector<std::unordered_set<std::size_t>> removals(function.blocks.size());
+  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
+    auto& instructions = function.blocks[block].instructions;
+    for (auto& select : instructions) {
+      if (select.opcode != "select" || !select.hasResult ||
+          select.operands.size() != 3 ||
+          (!select.result.type.isInt32() && !select.result.type.isInt64() &&
+           !select.result.type.isPointer()) ||
+          !isVirtualRegister(select.operands[0]) ||
+          useCounts[select.operands[0].text] != 1) {
+        continue;
+      }
+      const auto found = definitions.find(select.operands[0].text);
+      if (found == definitions.end() || found->second.block != block ||
+          removals[block].find(found->second.instruction) !=
+              removals[block].end()) {
+        continue;
+      }
+      const auto& compare = instructions[found->second.instruction];
+      if (!compare.hasResult || compare.opcode.rfind("icmp.", 0) != 0 ||
+          compare.operands.size() != 2 ||
+          (compare.opcode != "icmp.eq" && compare.opcode != "icmp.ne" &&
+           compare.opcode != "icmp.slt" && compare.opcode != "icmp.sle" &&
+           compare.opcode != "icmp.sgt" && compare.opcode != "icmp.sge")) {
+        continue;
+      }
+      select = MachineInstruction::target(
+          "select." + compare.opcode, select.result,
+          {compare.operands[0], compare.operands[1], select.operands[1],
+           select.operands[2]});
+      removals[block].insert(found->second.instruction);
+    }
+  }
+
+  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
+    if (removals[block].empty()) continue;
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(function.blocks[block].instructions.size() -
+                       removals[block].size());
+    for (std::size_t instruction = 0;
+         instruction < function.blocks[block].instructions.size();
+         ++instruction) {
+      if (removals[block].find(instruction) == removals[block].end()) {
+        rewritten.push_back(
+            std::move(function.blocks[block].instructions[instruction]));
+      }
+    }
+    function.blocks[block].instructions = std::move(rewritten);
+  }
+}
+
 void foldIndexedAddresses(
     MachineFunction& function,
     const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -215,6 +287,7 @@ void AArch64InstructionCombining::run(
       compiler::backend::target::instrAdapterFor(module.target);
   for (auto& function : module.functions) {
     combineMultiplyAdds(function, adapter);
+    combineCompareSelects(function, adapter);
     foldIndexedAddresses(function, adapter);
   }
 }
