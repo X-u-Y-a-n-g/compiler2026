@@ -94,6 +94,65 @@ std::string pairAdjacentStackAccesses(const std::string& assembly) {
   return result.str();
 }
 
+std::string synthesizeConstantMultiplies(const std::string& assembly) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_SUPEROPT_MUL") != nullptr) return assembly;
+  static const std::regex constantPattern{
+      R"(^  movz ([wx][0-9]+), #([0-9]+)(?:, lsl #([0-9]+))?$)"};
+  static const std::regex multiplyPattern{
+      R"(^  mul ([wx][0-9]+), ([wx][0-9]+), ([wx][0-9]+)$)"};
+  auto lines = splitLines(assembly);
+  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+    std::smatch materialize;
+    std::smatch multiply;
+    if (!std::regex_match(lines[i], materialize, constantPattern) ||
+        !std::regex_match(lines[i + 1], multiply, multiplyPattern))
+      continue;
+    const std::string constantRegister = materialize[1].str();
+    const std::string constantNumber = constantRegister.substr(1);
+    if (constantNumber != "16" && constantNumber != "17" && constantNumber != "18") continue;
+    std::string valueRegister;
+    if (multiply[2].str() == constantRegister && multiply[3].str() != constantRegister)
+      valueRegister = multiply[3].str();
+    else if (multiply[3].str() == constantRegister && multiply[2].str() != constantRegister)
+      valueRegister = multiply[2].str();
+    else
+      continue;
+    const std::string destination = multiply[1].str();
+    if (destination.front() != valueRegister.front() ||
+        destination.front() != constantRegister.front())
+      continue;
+
+    const auto immediate = static_cast<std::uint64_t>(std::stoull(materialize[2].str()));
+    const auto materializeShift = materialize[3].matched
+                                      ? static_cast<unsigned>(std::stoul(materialize[3].str()))
+                                      : 0U;
+    const unsigned width = destination.front() == 'w' ? 32U : 64U;
+    if (materializeShift >= width || immediate > (UINT64_MAX >> materializeShift)) continue;
+    const std::uint64_t constant = immediate << materializeShift;
+    if (constant == 0) continue;
+
+    std::string replacement;
+    if ((constant & (constant - 1U)) == 0) {
+      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(constant));
+      if (shift >= width) continue;
+      replacement = "  lsl " + destination + ", " + valueRegister + ", #" +
+                    std::to_string(shift);
+    } else {
+      const std::uint64_t remainder = constant - 1U;
+      if ((remainder & (remainder - 1U)) != 0) continue;
+      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(remainder));
+      if (shift == 0 || shift >= width) continue;
+      replacement = "  add " + destination + ", " + valueRegister + ", " + valueRegister +
+                    ", lsl #" + std::to_string(shift);
+    }
+    lines[i] = std::move(replacement);
+    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
+  }
+  std::ostringstream result;
+  for (const auto& line : lines) result << line << '\n';
+  return result.str();
+}
+
 std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
   static const std::regex signedHalfPattern{
       R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
@@ -2432,12 +2491,12 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(vectorizeContiguousConstantFills(
+  return pairAdjacentStackAccesses(synthesizeConstantMultiplies(vectorizeContiguousConstantFills(
       memoizePureAdditiveTailLoop(
           collapsePositivePowerOfTwoSteps(
               vectorizeConditionalMatrixReduction(
                   vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str())))))));
+                      vectorizeContiguousIntegerMadds(os.str()))))))));
 }
 
 }  // namespace compiler::backend::asmcode
