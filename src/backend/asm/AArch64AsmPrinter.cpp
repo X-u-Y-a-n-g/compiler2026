@@ -1132,9 +1132,11 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
 
     const std::string vectorBody = *bodyLabel + ".vector4";
     const std::string vectorHeader = *headerLabel + ".vector4";
+    const std::string vectorSetup = *bodyLabel + ".vector4_setup";
     const std::string aliasSafe = *bodyLabel + ".vector4_alias_safe";
     if (assembly.find(vectorBody + ":") != std::string::npos ||
         assembly.find(vectorHeader + ":") != std::string::npos ||
+        assembly.find(vectorSetup + ":") != std::string::npos ||
         assembly.find(aliasSafe + ":") != std::string::npos) {
       continue;
     }
@@ -1146,18 +1148,18 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
         ", lsl #2\n  cmp x17, " + sourceBase + "\n  b.ls " + aliasSafe +
         "\n  cmp x18, " + destinationBase + "\n  b.hi " + *headerLabel +
         "\n" + aliasSafe + ":\n  cmp " + factorAddress + ", " +
-        destinationBase + "\n  b.lo " + vectorHeader + "\n  cmp " +
+        destinationBase + "\n  b.lo " + vectorSetup + "\n  cmp " +
         factorAddress + ", x17\n  b.lo " + *headerLabel + "\n  b " +
-        vectorHeader;
+        vectorSetup;
 
     const std::string vectorBlocks =
+        vectorSetup + ":\n  ldr " + factor + ", [" + factorAddress +
+        "]\n  dup v25.4s, " + factor + "\n  b " + vectorHeader + "\n" +
         vectorBody + ":\n  add " + destinationAddress + ", " +
         destinationBase + ", " + indexX +
         ", lsl #2\n  add x16, " + sourceBase + ", " + indexX +
         ", lsl #2\n  ldr q24, [" + destinationAddress +
-        "]\n  ldr " + factor + ", [" + factorAddress +
-        "]\n  dup v25.4s, " + factor +
-        "\n  ldr q26, [x16]\n  mla v26.4s, v24.4s, v25.4s\n  str q26, [" +
+        "]\n  ldr q26, [x16]\n  mla v26.4s, v24.4s, v25.4s\n  str q26, [" +
         destinationAddress + "]\n  add " + indexW + ", " + indexW +
         ", #4\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
         indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody + "\n  b " +
