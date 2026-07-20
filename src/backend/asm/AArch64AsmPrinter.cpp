@@ -1193,7 +1193,7 @@ struct CountedAssemblyLoop {
 std::optional<CountedAssemblyLoop> findCountedAssemblyLoop(
     const std::vector<std::string>& lines,
     const std::pair<std::size_t, std::size_t>& bodyBounds,
-    const std::string& indexW) {
+    const std::string& indexW, bool allowEntryAfterBody = false) {
   static const std::regex comparePattern{
       R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
   const auto bodyLabel = assemblyBlockLabel(lines, bodyBounds.first);
@@ -1214,7 +1214,9 @@ std::optional<CountedAssemblyLoop> findCountedAssemblyLoop(
           compare[1].str() == indexW &&
           lines[headerBounds.first + 1] == "  b.lt " + *bodyLabel) {
         std::optional<std::size_t> entryBranch;
-        for (std::size_t line = 0; line < bodyBounds.first; ++line) {
+        const std::size_t searchEnd =
+            allowEntryAfterBody ? lines.size() : bodyBounds.first;
+        for (std::size_t line = 0; line < searchEnd; ++line) {
           if (lines[line] != "  b " + *headerLabel) continue;
           if (entryBranch.has_value()) return std::nullopt;
           entryBranch = line;
@@ -1602,6 +1604,110 @@ std::string vectorizeContiguousElementwiseArithmetic(
     start = loop->headerBounds.second;
   }
 
+  if (!changed) return assembly;
+  std::ostringstream optimized;
+  for (const auto& line : lines) {
+    if (!line.empty()) optimized << line << '\n';
+  }
+  return optimized.str();
+}
+
+// Unroll the K dimension of an already vectorized integer reduction four
+// times. The body must be a branch-free, store-free canonical counted loop
+// with a unit induction update and at least two NEON multiply-accumulates.
+// Repeating the original body preserves its exact load and accumulator order;
+// the original loop remains as the 0..3 iteration tail.
+std::string unrollVectorReductionK4(const std::string& assembly) {
+  static const std::regex copyPattern{
+      R"(^  mov (w[0-9]+), (w[0-9]+)$)"};
+  static const std::regex incrementPattern{
+      R"(^  add (w[0-9]+), \1, #1$)"};
+  static const std::regex vectorMlaPattern{
+      R"(^  mla v[0-9]+\.4s, v[0-9]+\.4s, v[0-9]+\.4s$)"};
+  if (std::getenv("COMPILER_AARCH64_DISABLE_VECTOR_K4_UNROLL") != nullptr) {
+    return assembly;
+  }
+  auto lines = splitLines(assembly);
+  bool changed = false;
+  for (std::size_t start = 0; start < lines.size(); ++start) {
+    const auto bodyBounds = assemblyBlockBounds(lines, start);
+    if (bodyBounds.first != start || bodyBounds.second <= start + 7 ||
+        bodyBounds.second > start + 24) {
+      continue;
+    }
+    unsigned vectorMlas = 0;
+    bool safeBody = true;
+    for (std::size_t line = bodyBounds.first; line < bodyBounds.second;
+         ++line) {
+      if (std::regex_match(lines[line], vectorMlaPattern)) ++vectorMlas;
+      if (lines[line].rfind("  str ", 0) == 0 ||
+          lines[line].rfind("  stp ", 0) == 0 ||
+          lines[line].rfind("  bl ", 0) == 0 ||
+          lines[line].rfind("  b", 0) == 0 ||
+          lines[line].rfind("  cb", 0) == 0) {
+        safeBody = false;
+      }
+    }
+    if (!safeBody || vectorMlas < 2) continue;
+
+    std::optional<std::string> inductionW;
+    for (std::size_t copyLine = bodyBounds.first;
+         copyLine < bodyBounds.second; ++copyLine) {
+      std::smatch copy;
+      if (!std::regex_match(lines[copyLine], copy, copyPattern)) continue;
+      const std::string temporary = copy[1].str();
+      const std::string candidate = copy[2].str();
+      bool incremented = false;
+      bool copiedBack = false;
+      for (std::size_t line = copyLine + 1; line < bodyBounds.second; ++line) {
+        std::smatch increment;
+        if (std::regex_match(lines[line], increment, incrementPattern) &&
+            increment[1].str() == temporary) {
+          incremented = true;
+        }
+        if (lines[line] == "  mov " + candidate + ", " + temporary) {
+          copiedBack = true;
+        }
+      }
+      if (incremented && copiedBack) {
+        if (inductionW.has_value()) {
+          inductionW.reset();
+          break;
+        }
+        inductionW = candidate;
+      }
+    }
+    if (!inductionW.has_value()) continue;
+    const auto loop = findCountedAssemblyLoop(
+        lines, bodyBounds, *inductionW, true);
+    if (!loop.has_value() || loop->bodyHasBackedge || *inductionW == "w17" ||
+        loop->boundW == "w17") {
+      continue;
+    }
+    const std::string prefix = loop->bodyLabel + ".vector_k4";
+    if (assembly.find(prefix + ".body:") != std::string::npos) continue;
+    const std::string fastBody = prefix + ".body";
+    const std::string fastHeader = prefix + ".header";
+
+    std::string repeatedBody;
+    for (unsigned copy = 0; copy < 4; ++copy) {
+      for (std::size_t line = bodyBounds.first; line < bodyBounds.second;
+           ++line) {
+        repeatedBody += lines[line] + "\n";
+      }
+    }
+    lines[loop->guardLine] = "  b " + fastHeader;
+    const std::string blocks =
+        fastBody + ":\n" + repeatedBody + "  b " + fastHeader + "\n" +
+        fastHeader + ":\n  sxtw x17, " + loop->boundW +
+        "\n  sub x17, x17, " + *inductionW +
+        ", sxtw\n  cmp x17, #4\n  b.ge " + fastBody + "\n  b " +
+        loop->headerLabel;
+    lines[bodyBounds.first - 1] =
+        blocks + "\n" + lines[bodyBounds.first - 1];
+    changed = true;
+    start = loop->headerBounds.second;
+  }
   if (!changed) return assembly;
   std::ostringstream optimized;
   for (const auto& line : lines) {
@@ -2950,15 +3056,16 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(vectorizeContiguousElementwiseArithmetic(
-      synthesizeConstantMultiplies(
-          vectorizeContiguousConstantFills(
-              memoizePureAdditiveTailLoop(
-                  collapsePositivePowerOfTwoSteps(
-                      vectorizeConditionalMatrixReduction(
-                          vectorizeGuardedContiguousMadds(
-                              vectorizeContiguousIntegerMadds(
-                                  os.str())))))))));
+  return pairAdjacentStackAccesses(unrollVectorReductionK4(
+      vectorizeContiguousElementwiseArithmetic(
+          synthesizeConstantMultiplies(
+              vectorizeContiguousConstantFills(
+                  memoizePureAdditiveTailLoop(
+                      collapsePositivePowerOfTwoSteps(
+                          vectorizeConditionalMatrixReduction(
+                              vectorizeGuardedContiguousMadds(
+                                  vectorizeContiguousIntegerMadds(
+                                      os.str()))))))))));
 }
 
 }  // namespace compiler::backend::asmcode
