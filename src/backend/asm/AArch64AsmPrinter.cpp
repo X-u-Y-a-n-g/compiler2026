@@ -6,15 +6,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#include "../../../include/compiler/backend/target/AArch64MagicDivision.h"
 
 namespace compiler::backend::asmcode {
 namespace {
@@ -2308,33 +2305,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
     storeResult(os, function, instruction.result, dst); return;
   }
-  if (opcode == "sdiv.magic.i32" && instruction.operands.size() == 4 &&
-      instruction.operands[2].kind == MachineOperandKind::ImmediateInt &&
-      instruction.operands[3].kind == MachineOperandKind::ImmediateInt &&
-      instruction.operands[3].intValue >= 0 &&
-      instruction.operands[3].intValue < 32) {
-    const auto lhs = integerOperand(os, function, instruction.operands[0],
-                                    kAddrScratch);
-    const auto multiplier = integerOperand(
-        os, function, instruction.operands[1], kImmScratch);
-    const auto dst = resultRegister(instruction.result, kImmScratch);
-    const auto d = integerRegister(dst, ValueType::int32Type());
-    const auto l = integerRegister(lhs, ValueType::int32Type());
-    const auto m = integerRegister(multiplier, ValueType::int32Type());
-    os << "  smull x18, " << l << ", " << m << '\n';
-    os << "  asr x18, x18, #32\n";
-    if (instruction.operands[2].intValue > 0) {
-      os << "  add w18, w18, " << l << '\n';
-    } else if (instruction.operands[2].intValue < 0) {
-      os << "  sub w18, w18, " << l << '\n';
-    }
-    if (instruction.operands[3].intValue != 0) {
-      os << "  asr w18, w18, #" << instruction.operands[3].intValue << '\n';
-    }
-    os << "  add " << d << ", w18, w18, lsr #31\n";
-    storeResult(os, function, instruction.result, dst);
-    return;
-  }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {
     const auto lhs = integerOperand(os, function, instruction.operands[0], kAddrScratch);
@@ -2423,30 +2393,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
           os << "  asr " << d << ", " << d << ", #" << shift << '\n';
           if (rhsOp.intValue < 0) os << "  neg " << d << ", " << d << '\n';
         }
-        storeResult(os, function, instruction.result, dst);
-        return;
-      }
-    }
-    if (isDivision && isNarrow(instruction.result.type) &&
-        rhsOp.kind == MachineOperandKind::ImmediateInt &&
-        rhsOp.intValue >= std::numeric_limits<std::int32_t>::min() &&
-        rhsOp.intValue <= std::numeric_limits<std::int32_t>::max()) {
-      const auto divisor = static_cast<std::int32_t>(rhsOp.intValue);
-      if (const auto magic =
-              compiler::backend::target::aarch64::signedMagic32(divisor)) {
-        emitImmediate(os, kImmScratch, magic->multiplier,
-                      ValueType::int32Type());
-        os << "  smull x18, " << l << ", w17\n";
-        os << "  asr x18, x18, #32\n";
-        if (divisor > 0 && magic->multiplier < 0) {
-          os << "  add w18, w18, " << l << '\n';
-        } else if (divisor < 0 && magic->multiplier > 0) {
-          os << "  sub w18, w18, " << l << '\n';
-        }
-        if (magic->shift != 0) {
-          os << "  asr w18, w18, #" << magic->shift << '\n';
-        }
-        os << "  add " << d << ", w18, w18, lsr #31\n";
         storeResult(os, function, instruction.result, dst);
         return;
       }
