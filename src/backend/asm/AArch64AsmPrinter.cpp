@@ -1676,26 +1676,6 @@ void emitImmediate(std::ostringstream& os, const std::string& reg, std::int64_t 
   }
 }
 
-void emitUnsignedImmediate64(std::ostringstream& os, const std::string& reg,
-                             std::uint64_t bits) {
-  bool emitted = false;
-  for (unsigned index = 0; index < 4; ++index) {
-    const auto part =
-        static_cast<unsigned>((bits >> (index * 16U)) & 0xffffU);
-    if (!emitted) {
-      if (part == 0 && index != 3) continue;
-      os << "  movz " << reg << ", #" << part;
-      if (index != 0) os << ", lsl #" << index * 16U;
-      os << '\n';
-      emitted = true;
-    } else if (part != 0) {
-      os << "  movk " << reg << ", #" << part << ", lsl #"
-         << index * 16U << '\n';
-    }
-  }
-  if (!emitted) os << "  movz " << reg << ", #0\n";
-}
-
 void emitStackAdjust(std::ostringstream& os, long long delta) {
   const char* opcode = delta < 0 ? "sub" : "add";
   std::uint64_t amount = delta < 0 ? static_cast<std::uint64_t>(-(delta + 1)) + 1U
@@ -2326,43 +2306,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
     storeResult(os, function, instruction.result, dst); return;
-  }
-  if (opcode == "barrett.mul.srem" && instruction.hasResult &&
-      instruction.operands.size() == 4 &&
-      instruction.operands[2].kind == MachineOperandKind::ImmediateInt &&
-      instruction.operands[3].kind == MachineOperandKind::ImmediateInt) {
-    const auto lhs = integerOperand(os, function, instruction.operands[0], "x15");
-    const auto rhs = integerOperand(os, function, instruction.operands[1], "x16");
-    const auto dst = resultRegister(instruction.result, "x15");
-    const auto modulus =
-        static_cast<std::uint64_t>(instruction.operands[2].intValue);
-    const auto reciprocal =
-        std::numeric_limits<std::uint64_t>::max() / modulus +
-        (std::numeric_limits<std::uint64_t>::max() % modulus == modulus - 1U
-             ? 1U
-             : 0U);
-    const std::string suffix =
-        std::to_string(instruction.operands[3].intValue);
-    const std::string slow = ".Lbarrett_slow_" + suffix;
-    const std::string done = ".Lbarrett_done_" + suffix;
-    emitImmediate(os, "x17", static_cast<std::int64_t>(modulus),
-                  ValueType::int64Type());
-    os << "  cmp " << lhs << ", #0\n  b.lt " << slow << '\n';
-    os << "  cmp " << lhs << ", x17\n  b.hs " << slow << '\n';
-    os << "  cmp " << rhs << ", #0\n  b.lt " << slow << '\n';
-    os << "  cmp " << rhs << ", x17\n  b.hs " << slow << '\n';
-    os << "  mul x16, " << lhs << ", " << rhs << '\n';
-    emitUnsignedImmediate64(os, "x18", reciprocal);
-    os << "  umulh x18, x16, x18\n";
-    os << "  msub x16, x18, x17, x16\n";
-    os << "  cmp x16, x17\n  sub x18, x16, x17\n";
-    os << "  csel " << dst << ", x18, x16, hs\n  b " << done << '\n';
-    os << slow << ":\n  mul x16, " << lhs << ", " << rhs << '\n';
-    os << "  sdiv x18, x16, x17\n";
-    os << "  msub " << dst << ", x18, x17, x16\n";
-    os << done << ":\n";
-    storeResult(os, function, instruction.result, dst);
-    return;
   }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {

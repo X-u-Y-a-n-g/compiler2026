@@ -1,7 +1,6 @@
 #include "../../../include/compiler/backend/opt/AArch64InstructionCombining.h"
 
 #include <string>
-#include <cstdlib>
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
@@ -187,128 +186,6 @@ void combineCompareSelects(
   }
 }
 
-void combineBarrettModularMultiplies(
-    MachineFunction& function,
-    const compiler::backend::target::TargetInstrAdapter& adapter,
-    unsigned& labelCounter) {
-  if (std::getenv("COMPILER_AARCH64_DISABLE_BARRETT_MODMUL") != nullptr) {
-    return;
-  }
-  std::unordered_map<std::string, Definition> definitions;
-  std::unordered_map<std::string, std::size_t> useCounts;
-  std::vector<MachineOperand> uses;
-  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
-    const auto& instructions = function.blocks[block].instructions;
-    for (std::size_t instruction = 0; instruction < instructions.size();
-         ++instruction) {
-      const auto& current = instructions[instruction];
-      if (current.hasResult && isVirtualRegister(current.result)) {
-        definitions.emplace(current.result.text,
-                            Definition{block, instruction});
-      }
-      adapter.enumerateUses(current, uses);
-      for (const auto& operand : uses) {
-        if (isVirtualRegister(operand)) ++useCounts[operand.text];
-      }
-    }
-  }
-
-  std::vector<std::unordered_set<std::size_t>> removals(function.blocks.size());
-  const auto resolveConstant = [&](const MachineOperand& operand,
-                                   std::size_t expectedBlock) {
-    std::optional<std::int64_t> value;
-    MachineOperand current = operand;
-    std::unordered_set<std::string> visiting;
-    for (;;) {
-      if (current.kind == MachineOperandKind::ImmediateInt) {
-        value = current.intValue;
-        break;
-      }
-      if (!isVirtualRegister(current) ||
-          !visiting.insert(current.text).second) {
-        break;
-      }
-      const auto found = definitions.find(current.text);
-      if (found == definitions.end() || found->second.block != expectedBlock) {
-        break;
-      }
-      const auto& definition =
-          function.blocks[found->second.block]
-              .instructions[found->second.instruction];
-      if ((definition.opcode != "cast" && definition.opcode != "sext" &&
-           definition.opcode != "zext" && definition.opcode != "copy") ||
-          definition.operands.size() != 1) {
-        break;
-      }
-      current = definition.operands[0];
-    }
-    return value;
-  };
-  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
-    auto& instructions = function.blocks[block].instructions;
-    unsigned transformed = 0;
-    for (auto& remainder : instructions) {
-      if (transformed >= 4 ||
-          (remainder.opcode != "srem" && remainder.opcode != "mod") ||
-          !remainder.hasResult || !remainder.result.type.isInt64() ||
-          remainder.operands.size() != 2) {
-        continue;
-      }
-      const auto modulus = resolveConstant(remainder.operands[1], block);
-      if (!modulus.has_value() || *modulus <= 1 ||
-          *modulus > std::numeric_limits<std::int32_t>::max()) {
-        continue;
-      }
-      const auto modulusBits = static_cast<std::uint64_t>(*modulus);
-      if ((modulusBits & (modulusBits - 1U)) == 0) continue;
-      const auto& productValue = remainder.operands[0];
-      if (!isVirtualRegister(productValue) ||
-          useCounts[productValue.text] != 1) {
-        continue;
-      }
-      const auto found = definitions.find(productValue.text);
-      if (found == definitions.end() || found->second.block != block ||
-          removals[block].find(found->second.instruction) !=
-              removals[block].end()) {
-        continue;
-      }
-      const auto& multiply = instructions[found->second.instruction];
-      if (multiply.opcode != "mul" || !multiply.hasResult ||
-          !multiply.result.type.isInt64() || multiply.operands.size() != 2 ||
-          !isVirtualRegister(multiply.operands[0]) ||
-          !isVirtualRegister(multiply.operands[1]) ||
-          !multiply.operands[0].type.isInt64() ||
-          !multiply.operands[1].type.isInt64()) {
-        continue;
-      }
-      remainder = MachineInstruction::target(
-          "barrett.mul.srem", remainder.result,
-          {multiply.operands[0], multiply.operands[1],
-           MachineOperand::immediateInt(*modulus,
-                                        remainder.result.type),
-           MachineOperand::immediateInt(labelCounter++,
-                                        remainder.result.type)});
-      removals[block].insert(found->second.instruction);
-      ++transformed;
-    }
-  }
-  for (std::size_t block = 0; block < function.blocks.size(); ++block) {
-    if (removals[block].empty()) continue;
-    std::vector<MachineInstruction> rewritten;
-    rewritten.reserve(function.blocks[block].instructions.size() -
-                       removals[block].size());
-    for (std::size_t instruction = 0;
-         instruction < function.blocks[block].instructions.size();
-         ++instruction) {
-      if (removals[block].find(instruction) == removals[block].end()) {
-        rewritten.push_back(
-            std::move(function.blocks[block].instructions[instruction]));
-      }
-    }
-    function.blocks[block].instructions = std::move(rewritten);
-  }
-}
-
 void foldIndexedAddresses(
     MachineFunction& function,
     const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -408,11 +285,9 @@ void AArch64InstructionCombining::run(
   if (module.target.name() != "aarch64") return;
   const auto& adapter =
       compiler::backend::target::instrAdapterFor(module.target);
-  unsigned barrettLabel = 0;
   for (auto& function : module.functions) {
     combineMultiplyAdds(function, adapter);
     combineCompareSelects(function, adapter);
-    combineBarrettModularMultiplies(function, adapter, barrettLabel);
     foldIndexedAddresses(function, adapter);
   }
 }
