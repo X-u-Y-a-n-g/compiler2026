@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -1169,6 +1171,437 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     changed = true;
     start = headerBounds.second;
   }
+  if (!changed) return assembly;
+  std::ostringstream optimized;
+  for (const auto& line : lines) {
+    if (!line.empty()) optimized << line << '\n';
+  }
+  return optimized.str();
+}
+
+struct CountedAssemblyLoop {
+  std::string bodyLabel;
+  std::string headerLabel;
+  std::string boundW;
+  std::string scalarFallbackLabel;
+  std::string guardPrefix;
+  std::size_t guardLine = 0;
+  bool bodyHasBackedge = false;
+  std::pair<std::size_t, std::size_t> headerBounds;
+};
+
+std::optional<CountedAssemblyLoop> findCountedAssemblyLoop(
+    const std::vector<std::string>& lines,
+    const std::pair<std::size_t, std::size_t>& bodyBounds,
+    const std::string& indexW) {
+  static const std::regex comparePattern{
+      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
+  const auto bodyLabel = assemblyBlockLabel(lines, bodyBounds.first);
+  if (!bodyLabel.has_value()) return std::nullopt;
+
+  if (const auto headerLabel = followingBlockLabel(lines, bodyBounds)) {
+    const auto headerFound =
+        std::find(lines.begin() + bodyBounds.second, lines.end(),
+                  *headerLabel + ":");
+    if (headerFound != lines.end()) {
+      const auto headerLine =
+          static_cast<std::size_t>(headerFound - lines.begin());
+      const auto headerBounds = assemblyBlockBounds(lines, headerLine + 1);
+      std::smatch compare;
+      if (headerBounds.second == headerBounds.first + 2 &&
+          std::regex_match(lines[headerBounds.first], compare,
+                           comparePattern) &&
+          compare[1].str() == indexW &&
+          lines[headerBounds.first + 1] == "  b.lt " + *bodyLabel) {
+        std::optional<std::size_t> entryBranch;
+        for (std::size_t line = 0; line < bodyBounds.first; ++line) {
+          if (lines[line] != "  b " + *headerLabel) continue;
+          if (entryBranch.has_value()) return std::nullopt;
+          entryBranch = line;
+        }
+        if (entryBranch.has_value()) {
+          return CountedAssemblyLoop{
+              *bodyLabel, *headerLabel, compare[2].str(), *headerLabel, "",
+              *entryBranch, false, headerBounds};
+        }
+      }
+    }
+  }
+
+  static const std::regex backedgePattern{R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
+  static const std::regex exitBranchPattern{
+      R"(^  b\.ge (\.[A-Za-z0-9_.$]+)$)"};
+  if (bodyBounds.second == bodyBounds.first) return std::nullopt;
+  std::smatch backedge;
+  if (!std::regex_match(lines[bodyBounds.second - 1], backedge,
+                        backedgePattern)) {
+    return std::nullopt;
+  }
+  const std::string headerLabel = backedge[1].str();
+  const auto headerFound =
+      std::find(lines.begin(), lines.begin() + bodyBounds.first,
+                headerLabel + ":");
+  if (headerFound == lines.begin() + bodyBounds.first) return std::nullopt;
+  const auto headerLine = static_cast<std::size_t>(headerFound - lines.begin());
+  const auto headerBounds = assemblyBlockBounds(lines, headerLine + 1);
+  std::smatch compare;
+  std::smatch exitBranch;
+  if (headerBounds.second != headerBounds.first + 2 ||
+      !std::regex_match(lines[headerBounds.first], compare, comparePattern) ||
+      compare[1].str() != indexW ||
+      !std::regex_match(lines[headerBounds.first + 1], exitBranch,
+                        exitBranchPattern) ||
+      followingBlockLabel(lines, headerBounds) != bodyLabel) {
+    return std::nullopt;
+  }
+  return CountedAssemblyLoop{
+      *bodyLabel, headerLabel, compare[2].str(), *bodyLabel,
+      lines[headerBounds.first + 1] + "\n", headerBounds.first + 1, true,
+      headerBounds};
+}
+
+std::string nonOverlappingRangeGuard(
+    const std::string& destinationBase, const std::string& sourceBase,
+    const std::string& indexX, const std::string& boundX,
+    const std::string& safeLabel, const std::string& fallbackLabel) {
+  return "  add x16, " + destinationBase + ", " + indexX +
+         ", lsl #2\n  add x17, " + destinationBase + ", " + boundX +
+         ", lsl #2\n  add x18, " + sourceBase + ", " + indexX +
+         ", lsl #2\n  cmp x17, x18\n  b.ls " + safeLabel +
+         "\n  add x18, " + sourceBase + ", " + boundX +
+         ", lsl #2\n  cmp x18, x16\n  b.ls " + safeLabel +
+         "\n  b " + fallbackLabel + "\n" + safeLabel + ":\n";
+}
+
+struct SignedVectorMagic32 {
+  std::int32_t multiplier = 0;
+  unsigned shift = 0;
+  int adjustment = 0;
+};
+
+std::optional<SignedVectorMagic32> signedVectorMagic32(
+    std::int32_t divisor) {
+  if (divisor <= 1 ||
+      (static_cast<std::uint32_t>(divisor) &
+       (static_cast<std::uint32_t>(divisor) - 1U)) == 0) {
+    return std::nullopt;
+  }
+  const std::uint64_t magnitude = static_cast<std::uint32_t>(divisor);
+  constexpr std::uint64_t signedMinimum = UINT64_C(1) << 31U;
+  const std::uint64_t adjusted =
+      signedMinimum - 1U - signedMinimum % magnitude;
+  unsigned precision = 31;
+  std::uint64_t quotient1 = signedMinimum / adjusted;
+  std::uint64_t remainder1 = signedMinimum % adjusted;
+  std::uint64_t quotient2 = signedMinimum / magnitude;
+  std::uint64_t remainder2 = signedMinimum % magnitude;
+  std::uint64_t delta = 0;
+  do {
+    ++precision;
+    quotient1 <<= 1U;
+    remainder1 <<= 1U;
+    if (remainder1 >= adjusted) {
+      ++quotient1;
+      remainder1 -= adjusted;
+    }
+    quotient2 <<= 1U;
+    remainder2 <<= 1U;
+    if (remainder2 >= magnitude) {
+      ++quotient2;
+      remainder2 -= magnitude;
+    }
+    delta = magnitude - remainder2;
+  } while (quotient1 < delta || (quotient1 == delta && remainder1 == 0));
+  const std::uint32_t multiplierBits =
+      static_cast<std::uint32_t>(quotient2 + 1U);
+  std::int32_t multiplier = 0;
+  std::memcpy(&multiplier, &multiplierBits, sizeof(multiplier));
+  return SignedVectorMagic32{multiplier, precision - 32U,
+                             multiplier < 0 ? 1 : 0};
+}
+
+std::string materializeVectorMagic(std::int32_t multiplier) {
+  const auto bits = static_cast<std::uint32_t>(multiplier);
+  const unsigned low = bits & 0xffffU;
+  const unsigned high = bits >> 16U;
+  std::string result;
+  if (low != 0 || high == 0) {
+    result = "  movz w17, #" + std::to_string(low) + "\n";
+    if (high != 0) {
+      result += "  movk w17, #" + std::to_string(high) +
+                ", lsl #16\n";
+    }
+  } else {
+    result = "  movz w17, #" + std::to_string(high) + ", lsl #16\n";
+  }
+  return result + "  dup v17.4s, w17\n";
+}
+
+// Vectorize two general contiguous i32 element-loop families:
+//   dst[i] = lhs[i] * C0 + rhs[i] * C1
+// and
+//   dst[i] = (dst[i] * dst[i] + C1) / D,
+// where the latter derives signed magic metadata only for the vector main
+// loop. The original sdiv loop remains as the exact zero-trip, alias-failure
+// and tail path.
+std::string vectorizeContiguousElementwiseArithmetic(
+    const std::string& assembly) {
+  static const std::regex reservedVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq](16|17|18|19|25|26)([^A-Za-z0-9_]|$))"};
+  static const std::regex copyPattern{
+      R"(^  mov (w[0-9]+), (w[0-9]+)$)"};
+  static const std::regex indexedLoadPattern{
+      R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
+  static const std::regex indexedStorePattern{
+      R"(^  str (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
+  static const std::regex movzPattern{
+      R"(^  movz (w[0-9]+), #([0-9]+)$)"};
+  static const std::regex shiftedAddPattern{
+      R"(^  add (w[0-9]+), (w[0-9]+), (w[0-9]+), lsl #([0-9]+)$)"};
+  static const std::regex incrementPattern{
+      R"(^  add (w[0-9]+), (w[0-9]+), #1$)"};
+  static const std::regex addressPattern{
+      R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
+  static const std::regex sdivPattern{
+      R"(^  sdiv (w[0-9]+), (w[0-9]+), (w[0-9]+)$)"};
+
+  if (std::getenv("COMPILER_AARCH64_DISABLE_ELEMENTWISE_VECTOR") != nullptr ||
+      std::regex_search(assembly, reservedVectorPattern)) {
+    return assembly;
+  }
+  auto lines = splitLines(assembly);
+  bool changed = false;
+
+  for (std::size_t start = 0; start + 6 < lines.size(); ++start) {
+    const auto bodyBounds = assemblyBlockBounds(lines, start);
+    if (bodyBounds.first != start) continue;
+    std::size_t position = start;
+    std::smatch copy;
+    const bool hasCopy = std::regex_match(lines[position], copy, copyPattern);
+    if (hasCopy) ++position;
+    if (position + 6 >= bodyBounds.second) continue;
+    std::smatch lhsLoad;
+    std::smatch rhsLoad;
+    std::smatch shiftedAdd;
+    std::smatch lhsCoefficient;
+    std::smatch store;
+    std::smatch increment;
+    if (!std::regex_match(lines[position], lhsLoad, indexedLoadPattern) ||
+        !std::regex_match(lines[position + 1], rhsLoad, indexedLoadPattern) ||
+        !std::regex_match(lines[position + 2], shiftedAdd,
+                          shiftedAddPattern) ||
+        !std::regex_match(lines[position + 3], lhsCoefficient, movzPattern) ||
+        !std::regex_match(lines[position + 5], store, indexedStorePattern) ||
+        !std::regex_match(lines[position + 6], increment, incrementPattern)) {
+      continue;
+    }
+    std::string result;
+    std::string productLhs;
+    std::string productRhs;
+    std::string accumulator;
+    if (!parseIntMadd(lines[position + 4], result, productLhs, productRhs,
+                      accumulator)) {
+      continue;
+    }
+    const std::string indexW =
+        hasCopy ? copy[2].str() : increment[1].str();
+    const std::string tempW = hasCopy ? copy[1].str() : indexW;
+    const std::string tempX = "x" + tempW.substr(1);
+    const std::string indexX = "x" + indexW.substr(1);
+    const auto lhsCoefficientValue = static_cast<unsigned long long>(
+        std::stoull(lhsCoefficient[2].str()));
+    const auto rhsShift =
+        static_cast<unsigned>(std::stoul(shiftedAdd[4].str()));
+    const std::size_t contentEnd = position + 7;
+    if (contentEnd > bodyBounds.second ||
+        bodyBounds.second - contentEnd > 1 || lhsCoefficientValue > 255 ||
+        rhsShift == 0 || rhsShift >= 32 ||
+        lhsLoad[3].str() != tempX || rhsLoad[3].str() != tempX ||
+        store[3].str() != tempX ||
+        shiftedAdd[1].str() != rhsLoad[1].str() ||
+        shiftedAdd[2].str() != rhsLoad[1].str() ||
+        shiftedAdd[3].str() != rhsLoad[1].str() ||
+        accumulator != rhsLoad[1] ||
+        result != store[1].str() || increment[1].str() != indexW ||
+        increment[2].str() != tempW ||
+        !((productLhs == lhsLoad[1].str() &&
+           productRhs == lhsCoefficient[1].str()) ||
+          (productRhs == lhsLoad[1].str() &&
+           productLhs == lhsCoefficient[1].str()))) {
+      continue;
+    }
+    const std::string destinationBase = store[2].str();
+    const std::string lhsBase = lhsLoad[2].str();
+    const std::string rhsBase = rhsLoad[2].str();
+    if (destinationBase == lhsBase || destinationBase == rhsBase ||
+        destinationBase == "x16" || destinationBase == "x17" ||
+        destinationBase == "x18" || lhsBase == "x16" ||
+        lhsBase == "x17" || lhsBase == "x18" || rhsBase == "x16" ||
+        rhsBase == "x17" || rhsBase == "x18") {
+      continue;
+    }
+    const auto loop = findCountedAssemblyLoop(lines, bodyBounds, indexW);
+    if (!loop.has_value()) continue;
+    const std::string boundX = "x" + loop->boundW.substr(1);
+    if (boundX == "x16" || boundX == "x17" || boundX == "x18") continue;
+    const std::string prefix = loop->bodyLabel + ".affine_vector4";
+    if (assembly.find(prefix + ".body:") != std::string::npos) continue;
+    const std::string lhsSafe = prefix + ".lhs_safe";
+    const std::string rhsSafe = prefix + ".rhs_safe";
+    const std::string setup = prefix + ".setup";
+    const std::string vectorBody = prefix + ".body";
+    const std::string vectorHeader = prefix + ".header";
+
+    lines[loop->guardLine] =
+        loop->guardPrefix + "  sub w17, " + loop->boundW + ", " + indexW +
+        "\n  cmp w17, #4\n  b.lt " + loop->scalarFallbackLabel + "\n" +
+        nonOverlappingRangeGuard(destinationBase, lhsBase, indexX, boundX,
+                                 lhsSafe, loop->scalarFallbackLabel) +
+        nonOverlappingRangeGuard(destinationBase, rhsBase, indexX, boundX,
+                                 rhsSafe, loop->scalarFallbackLabel) +
+        "  b " + setup;
+    const std::string vectorBlocks =
+        setup + ":\n  movi v18.4s, #" +
+        std::to_string(lhsCoefficientValue) + "\n  b " + vectorHeader + "\n" +
+        vectorBody + ":\n  add x16, " + lhsBase + ", " + indexX +
+        ", lsl #2\n  ldr q16, [x16]\n  add x17, " + rhsBase + ", " +
+        indexX + ", lsl #2\n  ldr q17, [x17]\n  shl v19.4s, "
+        "v17.4s, #" + std::to_string(rhsShift) +
+        "\n  add v17.4s, v17.4s, v19.4s\n  mla v17.4s, v16.4s, "
+        "v18.4s\n  add x16, " + destinationBase + ", " + indexX +
+        ", lsl #2\n  str q17, [x16]\n  add " + indexW + ", " + indexW +
+        ", #4\n" + vectorHeader + ":\n  sub w17, " + loop->boundW +
+        ", " + indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody +
+        "\n  b " + loop->headerLabel;
+    lines[bodyBounds.first - 1] =
+        vectorBlocks + "\n" + lines[bodyBounds.first - 1];
+    changed = true;
+    start = loop->headerBounds.second;
+  }
+
+  for (std::size_t start = 0; start + 8 < lines.size(); ++start) {
+    const auto bodyBounds = assemblyBlockBounds(lines, start);
+    if (bodyBounds.first != start) continue;
+    std::size_t first = start;
+    std::smatch copy;
+    const bool hasCopy = std::regex_match(lines[first], copy, copyPattern);
+    if (hasCopy) ++first;
+    if (first + 7 >= bodyBounds.second) continue;
+    std::smatch address;
+    std::smatch addConstant;
+    std::smatch divisorConstant;
+    std::smatch division;
+    if (!std::regex_match(lines[first], address, addressPattern) ||
+        !std::regex_match(lines[first + 2], addConstant, movzPattern) ||
+        !std::regex_match(lines[first + 4], divisorConstant, movzPattern) ||
+        !std::regex_match(lines[first + 5], division, sdivPattern)) {
+      continue;
+    }
+    std::string loadedValue;
+    std::string loadedAddress;
+    long long loadOffset = 0;
+    if (!parseDirectIntLoad(lines[first + 1], loadedValue, loadedAddress,
+                            loadOffset) ||
+        loadedAddress != address[1].str() || loadOffset != 0) {
+      continue;
+    }
+    std::string numerator;
+    std::string squareLhs;
+    std::string squareRhs;
+    std::string squareAddend;
+    if (!parseIntMadd(lines[first + 3], numerator, squareLhs, squareRhs,
+                      squareAddend) ||
+        squareLhs != loadedValue || squareRhs != loadedValue ||
+        squareAddend != addConstant[1].str() ||
+        division[1].str() != numerator || division[2].str() != numerator ||
+        division[3].str() != divisorConstant[1].str()) {
+      continue;
+    }
+    const auto addValue =
+        static_cast<unsigned long long>(std::stoull(addConstant[2].str()));
+    const auto divisorValue =
+        static_cast<unsigned long long>(std::stoull(divisorConstant[2].str()));
+    if (addValue > 255 || divisorValue >
+                              static_cast<unsigned long long>(
+                                  std::numeric_limits<std::int32_t>::max())) {
+      continue;
+    }
+    const auto magic =
+        signedVectorMagic32(static_cast<std::int32_t>(divisorValue));
+    if (!magic.has_value()) continue;
+    std::size_t position = first + 6;
+    std::string storedValue;
+    std::string storedAddress;
+    long long storeOffset = 0;
+    if (position >= bodyBounds.second ||
+        !parseDirectIntStore(lines[position], storedValue, storedAddress,
+                             storeOffset) ||
+        storedValue != numerator || storedAddress != address[1].str() ||
+        storeOffset != 0) {
+      continue;
+    }
+    ++position;
+    std::smatch increment;
+    if (position >= bodyBounds.second ||
+        !std::regex_match(lines[position], increment, incrementPattern) ||
+        bodyBounds.second - (position + 1) > 1) {
+      continue;
+    }
+    const std::string indexW =
+        hasCopy ? copy[2].str() : increment[1].str();
+    const std::string tempW = hasCopy ? copy[1].str() : indexW;
+    const std::string tempX = "x" + tempW.substr(1);
+    const std::string indexX = "x" + indexW.substr(1);
+    if (address[3].str() != tempX || increment[1].str() != indexW ||
+        increment[2].str() != tempW) {
+      continue;
+    }
+    const auto loop = findCountedAssemblyLoop(lines, bodyBounds, indexW);
+    if (!loop.has_value()) continue;
+    const std::string destinationBase = address[2].str();
+    if (destinationBase == "x16" || destinationBase == "x17" ||
+        destinationBase == "x18") {
+      continue;
+    }
+    const std::string prefix = loop->bodyLabel + ".square_div_vector4";
+    if (assembly.find(prefix + ".body:") != std::string::npos) continue;
+    const std::string setup = prefix + ".setup";
+    const std::string vectorBody = prefix + ".body";
+    const std::string vectorHeader = prefix + ".header";
+    lines[loop->guardLine] =
+        loop->guardPrefix + "  sub w17, " + loop->boundW + ", " + indexW +
+        "\n  cmp w17, #4\n  b.lt " + loop->scalarFallbackLabel +
+        "\n  b " + setup;
+    std::string adjustmentInstruction;
+    if (magic->adjustment > 0) {
+      adjustmentInstruction = "  add v16.4s, v16.4s, v19.4s\n";
+    }
+    std::string shiftInstruction;
+    if (magic->shift != 0) {
+      shiftInstruction = "  sshr v16.4s, v16.4s, #" +
+                         std::to_string(magic->shift) + "\n";
+    }
+    const std::string vectorBlocks =
+        setup + ":\n" + materializeVectorMagic(magic->multiplier) +
+        "  movi v18.4s, #" +
+        std::to_string(addValue) + "\n  b " + vectorHeader + "\n" +
+        vectorBody + ":\n  add x16, " + destinationBase + ", " + indexX +
+        ", lsl #2\n  ldr q16, [x16]\n  mul v19.4s, v16.4s, "
+        "v16.4s\n  add v19.4s, v19.4s, v18.4s\n  smull v25.2d, "
+        "v19.2s, v17.2s\n  smull2 v26.2d, v19.4s, v17.4s\n  uzp2 "
+        "v16.4s, v25.4s, v26.4s\n" + adjustmentInstruction +
+        shiftInstruction +
+        "  ushr v25.4s, v16.4s, #31\n  add v16.4s, v16.4s, "
+        "v25.4s\n  str q16, [x16]\n  add " + indexW + ", " + indexW +
+        ", #4\n" + vectorHeader + ":\n  sub w17, " + loop->boundW +
+        ", " + indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody +
+        "\n  b " + loop->headerLabel;
+    lines[bodyBounds.first - 1] =
+        vectorBlocks + "\n" + lines[bodyBounds.first - 1];
+    changed = true;
+    start = loop->headerBounds.second;
+  }
+
   if (!changed) return assembly;
   std::ostringstream optimized;
   for (const auto& line : lines) {
@@ -2517,12 +2950,15 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(synthesizeConstantMultiplies(vectorizeContiguousConstantFills(
-      memoizePureAdditiveTailLoop(
-          collapsePositivePowerOfTwoSteps(
-              vectorizeConditionalMatrixReduction(
-                  vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str()))))))));
+  return pairAdjacentStackAccesses(vectorizeContiguousElementwiseArithmetic(
+      synthesizeConstantMultiplies(
+          vectorizeContiguousConstantFills(
+              memoizePureAdditiveTailLoop(
+                  collapsePositivePowerOfTwoSteps(
+                      vectorizeConditionalMatrixReduction(
+                          vectorizeGuardedContiguousMadds(
+                              vectorizeContiguousIntegerMadds(
+                                  os.str())))))))));
 }
 
 }  // namespace compiler::backend::asmcode
