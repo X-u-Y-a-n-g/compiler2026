@@ -1,0 +1,29 @@
+long modular_multiply(long lhs, long rhs) {
+    return (lhs * rhs) % 1000000007;
+}
+
+long modular_multiply_small(long lhs, long rhs) {
+    return (lhs * rhs) % 3;
+}
+
+long modular_multiply_large(long lhs, long rhs) {
+    return (lhs * rhs) % 2147483647;
+}
+
+int main() {
+    putint(modular_multiply(12345, 67890));
+    putch(10);
+    putint(modular_multiply(1000000006, 1000000006));
+    putch(10);
+    putint(modular_multiply(-3, 9));
+    putch(10);
+    putint(modular_multiply(2000000014, 3));
+    putch(10);
+    putint(modular_multiply(0, 1000000006));
+    putch(10);
+    putint(modular_multiply_small(2, 2));
+    putch(10);
+    putint(modular_multiply_large(2147483646, 2147483646));
+    putch(10);
+    return 0;
+}
