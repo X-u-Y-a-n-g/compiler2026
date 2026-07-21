@@ -31,6 +31,7 @@ add_library(compiler_lib
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopScalarPromotionPass.cpp
   src/midend/pass/LoopUnrollAndJamPass.cpp
   src/midend/pass/Mem2RegPass.cpp

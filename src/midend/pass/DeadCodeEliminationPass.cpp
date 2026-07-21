@@ -283,7 +283,12 @@ std::vector<std::string> usedValues(const Instruction& instruction) {
 
 bool isEssential(const Instruction& instruction) {
   const auto& opcode = instruction.opcode();
-  return opcode == "br" || opcode == "ret" || opcode == "store" || opcode == "call";
+  return opcode == "br" || opcode == "ret" || opcode == "store" ||
+         opcode == "call" || opcode == "aarch64.neon.dup.i32x4" ||
+         opcode == "aarch64.neon.mls.i32x4" ||
+         opcode == "aarch64.neon.load.acc.i32x4" ||
+         opcode == "aarch64.neon.mls.acc.i32x4" ||
+         opcode == "aarch64.neon.store.acc.i32x4";
 }
 
 bool eliminateDeadInstructions(Function& function) {

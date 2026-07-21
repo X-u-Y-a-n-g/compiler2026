@@ -423,6 +423,31 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.dup.i32x4") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.mls.i32x4") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]), lowerValueOperand(operands[1])});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.load.acc.i32x4" ||
+        opcode == "aarch64.neon.store.acc.i32x4") {
+      emit(block, opcode, {}, {lowerValueOperand(operands[0])});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.mls.acc.i32x4") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1], ValueType::int32Type())});
+      return;
+    }
+
     if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
         opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi") {
       const ObjectType targetObjectType = parseObjectType(operands[1]);

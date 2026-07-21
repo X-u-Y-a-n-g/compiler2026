@@ -2302,6 +2302,52 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     storeResult(os, function, instruction.result, dst);
     return;
   }
+  if (opcode == "aarch64.neon.dup.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto source = integerOperand(os, function, instruction.operands[0],
+                                       kImmScratch);
+    os << "  dup v16.4s, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.i32x4" &&
+      instruction.operands.size() == 2) {
+    const auto destination =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto source =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  ldr q17, [" << destination << "]\n";
+    os << "  ldr q18, [" << source << "]\n";
+    os << "  mls v17.4s, v18.4s, v16.4s\n";
+    os << "  str q17, [" << destination << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.load.acc.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldr q17, [" << address << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.acc.i32x4" &&
+      instruction.operands.size() == 2) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  dup v16.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    os << "  ldr q18, [" << address << "]\n";
+    os << "  mls v17.4s, v18.4s, v16.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.store.acc.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  str q17, [" << address << "]\n";
+    return;
+  }
   if (opcode == "fneg") {
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
