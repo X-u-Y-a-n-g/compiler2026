@@ -184,6 +184,29 @@ void addDispatchFastPath(Function& function, const DispatchIdiom& idiom) {
   function.blocks().push_front(std::move(guard));
 }
 
+void replaceMultiplicationDispatch(Function& function,
+                                   const DispatchIdiom& idiom) {
+  const std::string entryName = function.blocks().front().name();
+  const std::string lower = freshValueName(function, "pow2.closed.lower");
+  const std::string upper = freshValueName(function, "pow2.closed.upper");
+  const std::string inRange = freshValueName(function, "pow2.closed.range");
+  const std::string safeShift =
+      freshValueName(function, "pow2.closed.safe.shift");
+  const std::string result = freshValueName(function, "pow2.closed.result");
+  BasicBlock entry{entryName};
+  entry.addInstruction(Instruction{"icmp.sge", {idiom.shift, "0"}, lower});
+  entry.addInstruction(Instruction{
+      "icmp.sle", {idiom.shift, std::to_string(idiom.maximumShift)}, upper});
+  entry.addInstruction(Instruction{"and", {lower, upper}, inRange});
+  entry.addInstruction(
+      Instruction{"select", {inRange, idiom.shift, "0"}, safeShift});
+  entry.addInstruction(
+      Instruction{"shl", {idiom.value, safeShift}, result});
+  entry.addInstruction(Instruction{"ret", {result}});
+  function.blocks().clear();
+  function.addBlock(std::move(entry));
+}
+
 ParameterRanges collectConstantParameterRanges(
     const compiler::ir::core::Module& module) {
   ParameterRanges ranges;
@@ -329,7 +352,15 @@ void PowerOfTwoDispatchPass::run(compiler::ir::core::Module& module) {
   }
   for (auto& function : module.functions()) {
     const auto idiom = idioms.find("@" + function.name());
-    if (idiom != idioms.end()) addDispatchFastPath(function, idiom->second);
+    if (idiom == idioms.end()) continue;
+    if (idiom->second.operation == "mul" &&
+        std::getenv("COMPILER_DISABLE_CLOSED_MULTIPLY_DISPATCH") == nullptr &&
+        std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
+            nullptr) {
+      replaceMultiplicationDispatch(function, idiom->second);
+    } else {
+      addDispatchFastPath(function, idiom->second);
+    }
   }
 }
 

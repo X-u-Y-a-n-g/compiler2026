@@ -16,5 +16,7 @@ int main() {
     print_line(scale_by_dispatch(-7, 0));
     print_line(scale_by_dispatch(3, 3));
     print_line(scale_by_dispatch(3, 5));
+    print_line(scale_by_dispatch(7, -1));
+    print_line(scale_by_dispatch(7, 31));
     return 0;
 }

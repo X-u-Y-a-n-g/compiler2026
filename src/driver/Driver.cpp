@@ -191,6 +191,15 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::BitwiseIdiomRecognitionPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::PowerOfTwoDispatchPass>());
+    if (std::getenv("COMPILER_DISABLE_LATE_HELPER_INLINE_CACHE") == nullptr &&
+        std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
+            nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::GlobalScalarLocalizationPass>());
+      passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
     passManager.add(
