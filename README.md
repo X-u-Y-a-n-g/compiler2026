@@ -56,6 +56,8 @@ Docker 镜像包含 Clang、CMake、Ninja、RISC-V/ARM 交叉工具链、QEMU、
 
 当前 `BitwiseIdiomRecognitionPass` 识别二参数 i32 函数中的通用 radix-2 逐位累加：匹配器从自然循环、唯一预头、回边和 Phi 数据流出发，验证两个参数的 `%2`/`/2` 递推、常量 `2..32` 计数、单位位权和零累加器；随后对余数的 `00/01/10/11` 四种组合解释真实 CFG，只有累加器回边真值表严格等于 AND、OR 或 XOR 时才建立摘要。AND/OR 对负操作数按原有 `remainder == 1` 语义归零；XOR 对同号输入计算无符号 magnitude XOR、异号输入计算 magnitude OR，使用 i32 模取负覆盖 `INT_MIN`，从而对全部有符号输入删除原 32 轮 fallback。完整幂二乘法分派会把区间外 shift 安全选择为零并压缩成单块动态移位；晚期受预算内联随后消除这些 helper 调用，再运行全局标量本地化和 Mem2Reg，使跨调用状态只在入口加载、出口回写。匿名回归覆盖 5/32 位、正负数、`INT_MIN/MAX`、NAND 误匹配和越界 shift fallback。
 
+上述 helper 闭式化、晚期内联和状态提升组合已在官方 Cortex-A53 上将 Huffman 三项由约 `13.92s` 降至 `7.67s`，下降约 `44.9%`、提速约 `1.81×`，三项均通过。
+
 ## 项目结构
 
 ```text

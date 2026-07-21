@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <deque>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -732,6 +734,156 @@ void inlineGeneralCFGCalls(Module& module) {
       module.functions().end());
 }
 
+struct StateChainAccessSummary {
+  std::size_t accesses = 0;
+  std::size_t stores = 0;
+  std::unordered_set<std::string> objects;
+};
+
+std::unordered_set<std::string> scalarGlobalSymbols(const Module& module) {
+  std::unordered_set<std::string> symbols;
+  for (const auto& global : module.globals()) {
+    if (global.type().find('[') == std::string::npos) {
+      symbols.insert("@" + global.name());
+    }
+  }
+  return symbols;
+}
+
+std::optional<StateChainAccessSummary> stateChainAccessSummary(
+    const Function& function,
+    const std::unordered_set<std::string>& scalarGlobals) {
+  StateChainAccessSummary summary;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() == "call") return std::nullopt;
+      const auto& operands = instruction.operands();
+      const bool directLoad = instruction.opcode() == "load" &&
+                              operands.size() == 2 &&
+                              scalarGlobals.count(operands[1]) != 0;
+      const bool directStore = instruction.opcode() == "store" &&
+                               operands.size() == 3 &&
+                               scalarGlobals.count(operands[2]) != 0;
+      if (!directLoad && !directStore) continue;
+      ++summary.accesses;
+      summary.stores += directStore ? 1U : 0U;
+      summary.objects.insert(directLoad ? operands[1] : operands[2]);
+    }
+  }
+  if (summary.objects.size() < 2 || summary.accesses < 4 ||
+      summary.stores == 0) {
+    return std::nullopt;
+  }
+  return summary;
+}
+
+struct CallerCallSummary {
+  std::size_t targetCalls = 0;
+  std::size_t otherCalls = 0;
+  bool allTargetCallsHot = true;
+};
+
+CallerCallSummary summarizeCallerCalls(const Function& caller,
+                                       const std::string& callee) {
+  CallerCallSummary summary;
+  const auto hotBlocks = cyclicBlocks(caller);
+  for (const auto& block : caller.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "call" || instruction.operands().empty()) {
+        continue;
+      }
+      const auto& target = instruction.operands().front();
+      const std::string name =
+          !target.empty() && target.front() == '@' ? target.substr(1) : target;
+      if (name == callee) {
+        ++summary.targetCalls;
+        summary.allTargetCallsHot &= hotBlocks.count(block.name()) != 0;
+      } else {
+        ++summary.otherCalls;
+      }
+    }
+  }
+  return summary;
+}
+
+bool inlineNextCallTo(Function& caller, const Function& callee) {
+  const std::string symbol = "@" + callee.name();
+  for (std::size_t blockIndex = 0; blockIndex < caller.blocks().size();
+       ++blockIndex) {
+    for (std::size_t instructionIndex = 0;
+         instructionIndex < caller.blocks()[blockIndex].instructions().size();
+         ++instructionIndex) {
+      const auto& instruction =
+          caller.blocks()[blockIndex].instructions()[instructionIndex];
+      if (instruction.opcode() == "call" &&
+          !instruction.operands().empty() &&
+          instruction.operands().front() == symbol) {
+        return inlineGeneralCallSite(caller, callee, blockIndex,
+                                     instructionIndex);
+      }
+    }
+  }
+  return false;
+}
+
+bool inlineOneStateChain(Module& module, std::size_t& totalGrowth) {
+  constexpr std::size_t kMaximumCalleeInstructions = 64;
+  constexpr std::size_t kMaximumCallerInstructions = 320;
+  constexpr std::size_t kMaximumModuleGrowth = 256;
+  const auto scalarGlobals = scalarGlobalSymbols(module);
+  const auto callGraph = buildCallGraph(module);
+  std::vector<Function> snapshots;
+  snapshots.reserve(module.functions().size());
+  for (const auto& function : module.functions()) {
+    snapshots.push_back(function);
+  }
+
+  for (auto& caller : module.functions()) {
+    for (const auto& callee : snapshots) {
+      const auto& calleeName = callee.name();
+      if (calleeName == caller.name() ||
+          callGraphReaches(callGraph, calleeName, caller.name()) ||
+          !isGeneralInlineCandidate(callee)) {
+        continue;
+      }
+      const auto accessSummary =
+          stateChainAccessSummary(callee, scalarGlobals);
+      if (!accessSummary.has_value()) continue;
+      const auto calls = summarizeCallerCalls(caller, calleeName);
+      if (calls.targetCalls < 2 || calls.otherCalls != 0 ||
+          !calls.allTargetCallsHot) {
+        continue;
+      }
+      const std::size_t calleeCost = instructionCount(callee);
+      const std::size_t growth = calleeCost * calls.targetCalls;
+      if (calleeCost == 0 || calleeCost > kMaximumCalleeInstructions ||
+          instructionCount(caller) + growth > kMaximumCallerInstructions ||
+          totalGrowth + growth > kMaximumModuleGrowth) {
+        continue;
+      }
+      for (std::size_t site = 0; site < calls.targetCalls; ++site) {
+        if (!inlineNextCallTo(caller, callee)) return false;
+      }
+      totalGrowth += growth;
+      return true;
+    }
+  }
+  return false;
+}
+
+void inlineStateChains(Module& module) {
+  if (std::getenv("COMPILER_DISABLE_STATE_CHAIN_INLINING") != nullptr ||
+      std::getenv("COMPILER_DISABLE_AGGRESSIVE_STATE_CHAIN_PIPELINE") !=
+          nullptr) {
+    return;
+  }
+  constexpr std::size_t kMaximumGroups = 4;
+  std::size_t totalGrowth = 0;
+  for (std::size_t group = 0; group < kMaximumGroups; ++group) {
+    if (!inlineOneStateChain(module, totalGrowth)) break;
+  }
+}
+
 }  // namespace
 
 void FunctionInliningPass::run(compiler::ir::core::Module& module) {
@@ -751,6 +903,7 @@ void FunctionInliningPass::run(compiler::ir::core::Module& module) {
     }
   }
   inlineGeneralCFGCalls(module);
+  inlineStateChains(module);
 }
 
 }  // namespace compiler::midend::pass

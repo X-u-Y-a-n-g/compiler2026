@@ -207,6 +207,74 @@ void replaceMultiplicationDispatch(Function& function,
   function.addBlock(std::move(entry));
 }
 
+void appendSignedPowerOfTwoDivision(
+    std::vector<Instruction>& instructions, const std::string& value,
+    const std::string& shift, const std::string& result,
+    std::unordered_set<std::string>& valueNames) {
+  const auto fresh = [&](const std::string& stem) {
+    for (std::size_t suffix = 0;; ++suffix) {
+      const std::string candidate =
+          "%pow2.sdiv." + stem + "." + std::to_string(suffix);
+      if (valueNames.insert(candidate).second) return candidate;
+    }
+  };
+  const std::string power = fresh("power");
+  const std::string mask = fresh("mask");
+  const std::string sign = fresh("sign");
+  const std::string bias = fresh("bias");
+  const std::string adjusted = fresh("adjusted");
+  instructions.emplace_back("shl", std::vector<std::string>{"1", shift},
+                            power);
+  instructions.emplace_back("sub", std::vector<std::string>{power, "1"},
+                            mask);
+  instructions.emplace_back("ashr", std::vector<std::string>{value, "31"},
+                            sign);
+  instructions.emplace_back("and", std::vector<std::string>{sign, mask}, bias);
+  instructions.emplace_back("add", std::vector<std::string>{value, bias},
+                            adjusted);
+  instructions.emplace_back("ashr",
+                            std::vector<std::string>{adjusted, shift}, result);
+}
+
+void replaceDivisionDispatch(Function& function, const DispatchIdiom& idiom) {
+  const std::string entryName = function.blocks().front().name();
+  const std::string lower = freshValueName(function, "pow2.sdiv.closed.lower");
+  const std::string upper = freshValueName(function, "pow2.sdiv.closed.upper");
+  const std::string inRange =
+      freshValueName(function, "pow2.sdiv.closed.range");
+  const std::string safeShift =
+      freshValueName(function, "pow2.sdiv.closed.safe.shift");
+  const std::string result =
+      freshValueName(function, "pow2.sdiv.closed.result");
+  std::unordered_set<std::string> valueNames;
+  for (const auto& parameter : function.parameters()) {
+    valueNames.insert(parameter.name);
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) valueNames.insert(instruction.result());
+    }
+  }
+  valueNames.insert(lower);
+  valueNames.insert(upper);
+  valueNames.insert(inRange);
+  valueNames.insert(safeShift);
+  valueNames.insert(result);
+
+  BasicBlock entry{entryName};
+  entry.addInstruction(Instruction{"icmp.sge", {idiom.shift, "1"}, lower});
+  entry.addInstruction(Instruction{
+      "icmp.sle", {idiom.shift, std::to_string(idiom.maximumShift)}, upper});
+  entry.addInstruction(Instruction{"and", {lower, upper}, inRange});
+  entry.addInstruction(
+      Instruction{"select", {inRange, idiom.shift, "0"}, safeShift});
+  appendSignedPowerOfTwoDivision(entry.instructions(), idiom.value, safeShift,
+                                 result, valueNames);
+  entry.addInstruction(Instruction{"ret", {result}});
+  function.blocks().clear();
+  function.addBlock(std::move(entry));
+}
+
 ParameterRanges collectConstantParameterRanges(
     const compiler::ir::core::Module& module) {
   ParameterRanges ranges;
@@ -309,23 +377,34 @@ void rewriteConstantDispatchCalls(
               std::vector<std::string>{instruction.operands()[1],
                                        instruction.operands()[2]},
               instruction.result());
+        } else if (range->first == range->second) {
+          const std::string divisor =
+              std::to_string(std::uint32_t{1} << range->first);
+          rewritten.emplace_back(
+              "sdiv",
+              std::vector<std::string>{instruction.operands()[1], divisor},
+              instruction.result());
+        } else if (
+            std::getenv("COMPILER_DISABLE_CLOSED_SIGNED_DIVISION_DISPATCH") ==
+                nullptr &&
+            std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
+                nullptr) {
+          appendSignedPowerOfTwoDivision(
+              rewritten, instruction.operands()[1], instruction.operands()[2],
+              instruction.result(), valueNames);
         } else {
           std::string divisor;
-          if (range->first == range->second) {
-            divisor = std::to_string(std::uint32_t{1} << range->first);
-          } else {
-            for (std::size_t suffix = 0;; ++suffix) {
-              const std::string candidate =
-                  "%pow2.dispatch.divisor." + std::to_string(suffix);
-              if (valueNames.insert(candidate).second) {
-                divisor = candidate;
-                break;
-              }
+          for (std::size_t suffix = 0;; ++suffix) {
+            const std::string candidate =
+                "%pow2.dispatch.divisor." + std::to_string(suffix);
+            if (valueNames.insert(candidate).second) {
+              divisor = candidate;
+              break;
             }
-            rewritten.emplace_back(
-                "shl", std::vector<std::string>{"1", instruction.operands()[2]},
-                divisor);
           }
+          rewritten.emplace_back(
+              "shl", std::vector<std::string>{"1", instruction.operands()[2]},
+              divisor);
           rewritten.emplace_back(
               "sdiv",
               std::vector<std::string>{instruction.operands()[1], divisor},
@@ -353,11 +432,17 @@ void PowerOfTwoDispatchPass::run(compiler::ir::core::Module& module) {
   for (auto& function : module.functions()) {
     const auto idiom = idioms.find("@" + function.name());
     if (idiom == idioms.end()) continue;
-    if (idiom->second.operation == "mul" &&
-        std::getenv("COMPILER_DISABLE_CLOSED_MULTIPLY_DISPATCH") == nullptr &&
-        std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
-            nullptr) {
-      replaceMultiplicationDispatch(function, idiom->second);
+    if (std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") == nullptr) {
+      if (idiom->second.operation == "mul" &&
+          std::getenv("COMPILER_DISABLE_CLOSED_MULTIPLY_DISPATCH") == nullptr) {
+        replaceMultiplicationDispatch(function, idiom->second);
+      } else if (idiom->second.operation == "sdiv" &&
+                 std::getenv("COMPILER_DISABLE_CLOSED_SIGNED_DIVISION_DISPATCH") ==
+                     nullptr) {
+        replaceDivisionDispatch(function, idiom->second);
+      } else {
+        addDispatchFastPath(function, idiom->second);
+      }
     } else {
       addDispatchFastPath(function, idiom->second);
     }

@@ -196,9 +196,23 @@ int Pipeline::execute(const CompilerInvocation& invocation,
             nullptr) {
       passManager.add(
           std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+      if (std::getenv("COMPILER_DISABLE_AGGRESSIVE_STATE_CHAIN_PIPELINE") ==
+          nullptr) {
+        passManager.add(
+            std::make_unique<compiler::midend::pass::ConstantFoldingPass>(true));
+      }
       passManager.add(std::make_unique<
                       compiler::midend::pass::GlobalScalarLocalizationPass>());
       passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+      if (std::getenv("COMPILER_DISABLE_AGGRESSIVE_STATE_CHAIN_PIPELINE") ==
+          nullptr) {
+        passManager.add(
+            std::make_unique<compiler::midend::pass::ConstantFoldingPass>(true));
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::CommonSubexpressionEliminationPass>());
+        passManager.add(
+            std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
+      }
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
