@@ -27,6 +27,7 @@
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
+#include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
@@ -221,6 +222,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         nullptr) {
       passManager.add(
           std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    }
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
