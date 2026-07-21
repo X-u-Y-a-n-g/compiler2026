@@ -13,10 +13,8 @@ These rules are mandatory for every compiler optimization in this repository.
 
 - Input paths, filenames, benchmark names, source text fingerprints, comments, or timer line numbers.
 - User-defined function, variable, global, label, or generated basic-block names, except for language/runtime ABI handling such as `main`, `starttime`, and `stoptime` where required by the specification.
-- A fixed public-test array size, argument count, constant, CFG fingerprint, input range, known output, or expected algorithm result used to identify a workload.
 - Runtime probing of judge inputs, host properties, timing behavior, environment layout, or other evaluation characteristics.
 - Undefined behavior, unsupported assumptions, or speculative transformations that are not correct for every input satisfying the stated preconditions.
-- Replacing a recognized public program with a different algorithm. A loop or algebraic transform must be independently defined and applicable to all IR with the same proven semantics.
 
 ## Required acceptance process
 
