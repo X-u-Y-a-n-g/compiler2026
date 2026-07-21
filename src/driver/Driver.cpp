@@ -221,7 +221,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>());
+    const bool isAArch64 = invocation.options().target == "aarch64" ||
+                           invocation.options().target == "arm64";
+    // Thirty-two lanes map exactly to eight i32x4 NEON accumulators.  RV64 keeps
+    // the empirically pressure-safe ten-lane scalar factor.
+    passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>(
+        isAArch64 ? 32 : 10, isAArch64));
     passManager.add(
         std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
