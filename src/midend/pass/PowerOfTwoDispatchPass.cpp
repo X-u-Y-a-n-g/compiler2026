@@ -156,8 +156,12 @@ void addDispatchFastPath(Function& function, const DispatchIdiom& idiom) {
   const std::string eligible = freshValueName(function, "pow2.dispatch.eligible");
   const std::string result = freshValueName(function, "pow2.dispatch.result");
 
+  const bool includeZeroShift =
+      idiom.operation == "mul" &&
+      std::getenv("COMPILER_DISABLE_ZERO_POWER_DISPATCH") == nullptr;
   BasicBlock guard{guardName};
-  guard.addInstruction(Instruction{"icmp.sge", {idiom.shift, "1"}, lower});
+  guard.addInstruction(Instruction{
+      "icmp.sge", {idiom.shift, includeZeroShift ? "0" : "1"}, lower});
   guard.addInstruction(Instruction{"icmp.sle",
                                    {idiom.shift,
                                     std::to_string(idiom.maximumShift)},
