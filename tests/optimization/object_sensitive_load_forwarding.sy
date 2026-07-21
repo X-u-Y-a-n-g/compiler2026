@@ -1,0 +1,79 @@
+int g = 7;
+int h = 3;
+int a[8];
+int b[8];
+
+int pure_calc(int x) {
+  return x * 3 + 1;
+}
+
+void write_global() {
+  g = g + 5;
+}
+
+int unknown_store(int p[], int idx) {
+  int before = p[idx];
+  p[idx + 1] = 9;
+  return before + p[idx];
+}
+
+int local_store_between_unknown_loads(int p[]) {
+  int temporary = 1;
+  int before = p[0];
+  temporary = 2;
+  return before + p[0] + temporary;
+}
+
+int main() {
+  int x;
+  int y;
+  int local_a;
+  int local_b;
+
+  x = g;
+  h = 10;
+  y = g;
+  putint(x + y);
+  putch(10);
+
+  a[0] = 4;
+  a[1] = 5;
+  x = a[0];
+  b[0] = 8;
+  y = a[0];
+  putint(x + y);
+  putch(10);
+
+  x = g;
+  y = pure_calc(2);
+  putint(x + y + g);
+  putch(10);
+
+  x = g;
+  write_global();
+  y = g;
+  putint(x + y);
+  putch(10);
+
+  local_a = 2;
+  local_b = 3;
+  x = local_a;
+  local_b = 4;
+  y = local_a;
+  putint(x + y);
+  putch(10);
+
+  putint(unknown_store(a, 0));
+  putch(10);
+
+  a[0] = 6;
+  putint(local_store_between_unknown_loads(a));
+  putch(10);
+
+  x = g;
+  g = 20;
+  y = g;
+  putint(x + y);
+  putch(10);
+  return local_b - 4;
+}

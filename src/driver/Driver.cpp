@@ -1,5 +1,6 @@
 #include "../../include/compiler/driver/Driver.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -216,6 +217,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
+    if (std::getenv("COMPILER_DISABLE_OBJECT_SENSITIVE_LOAD_FORWARDING") ==
+        nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
     passManager.add(
