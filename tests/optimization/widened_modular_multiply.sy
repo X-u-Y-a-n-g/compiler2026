@@ -1,0 +1,35 @@
+int modular97(int a, int b) {
+    if (b == 0) return 0;
+    if (b == 1) return a % 97;
+    int current = modular97(a, b / 2);
+    current = (current + current) % 97;
+    if (b % 2 == 1) return (current + a) % 97;
+    return current;
+}
+
+int large_modulus(int a, int b) {
+    if (b == 0) return 0;
+    if (b == 1) return a % 1500000000;
+    int current = large_modulus(a, b / 2);
+    current = (current + current) % 1500000000;
+    if (b % 2 == 1) return (current + a) % 1500000000;
+    return current;
+}
+
+int main() {
+    putint(modular97(0, 0));
+    putch(10);
+    putint(modular97(5, 1));
+    putch(10);
+    putint(modular97(96, 2147483647));
+    putch(10);
+    putint(modular97(-5, 13));
+    putch(10);
+    putint(modular97(100, 13));
+    putch(10);
+    putint(modular97(5, -13));
+    putch(10);
+    putint(large_modulus(1000000000, 3));
+    putch(10);
+    return 0;
+}

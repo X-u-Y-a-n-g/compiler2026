@@ -51,6 +51,7 @@
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
+#include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 
 namespace compiler::driver {
@@ -182,6 +183,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::TailRecursionEliminationPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::WidenedModularMultiplyPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
     passManager.add(

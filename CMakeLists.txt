@@ -46,6 +46,7 @@ add_library(compiler_lib
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
+  src/midend/pass/WidenedModularMultiplyPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
   src/backend/target/TargetBackend.cpp

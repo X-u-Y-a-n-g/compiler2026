@@ -470,6 +470,20 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.widened.mul.lhs.i32" ||
+        opcode == "aarch64.widened.mul.rhs.i32") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.widened.mod.i32") {
+      emit(block, opcode,
+           bindVirtualResult(instruction.result(), ValueType::int32Type()),
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
     if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
         opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi") {
       const ObjectType targetObjectType = parseObjectType(operands[1]);

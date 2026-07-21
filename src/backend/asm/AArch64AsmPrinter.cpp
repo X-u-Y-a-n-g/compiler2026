@@ -2396,6 +2396,33 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q26, q27, [" << address << ", #96]\n";
     return;
   }
+  if (opcode == "aarch64.widened.mul.lhs.i32" &&
+      instruction.operands.size() == 1) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  mov w16, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.widened.mul.rhs.i32" &&
+      instruction.operands.size() == 1) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  smull x16, w16, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.widened.mod.i32" &&
+      instruction.hasResult && instruction.operands.size() == 1) {
+    const auto modulus =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  sdiv x18, x16, "
+       << integerRegister(modulus, ValueType::int64Type()) << '\n';
+    os << "  msub x16, x18, "
+       << integerRegister(modulus, ValueType::int64Type()) << ", x16\n";
+    storeResult(os, function, instruction.result, "x16");
+    return;
+  }
   if (opcode == "fneg") {
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
