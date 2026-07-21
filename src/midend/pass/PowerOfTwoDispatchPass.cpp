@@ -1,11 +1,14 @@
 #include "../../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace compiler::midend::pass {
 namespace {
@@ -20,6 +23,16 @@ struct DispatchIdiom {
   std::string shift;
   unsigned maximumShift = 0;
 };
+
+struct ParameterRange {
+  bool seen = false;
+  bool valid = true;
+  unsigned lower = 0;
+  unsigned upper = 0;
+};
+
+using ParameterRanges =
+    std::unordered_map<std::string, std::vector<ParameterRange>>;
 
 bool isI32(const std::string& type) { return type == "int" || type == "i32"; }
 
@@ -167,12 +180,152 @@ void addDispatchFastPath(Function& function, const DispatchIdiom& idiom) {
   function.blocks().push_front(std::move(guard));
 }
 
+ParameterRanges collectConstantParameterRanges(
+    const compiler::ir::core::Module& module) {
+  ParameterRanges ranges;
+  std::unordered_map<std::string, const Function*> functions;
+  for (const auto& function : module.functions()) {
+    const std::string symbol = "@" + function.name();
+    functions.emplace(symbol, &function);
+    ranges.emplace(symbol,
+                   std::vector<ParameterRange>(function.parameters().size()));
+  }
+  for (const auto& caller : module.functions()) {
+    for (const auto& block : caller.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.opcode() != "call" || instruction.operands().empty()) {
+          continue;
+        }
+        const auto function = functions.find(instruction.operands().front());
+        if (function == functions.end() ||
+            instruction.operands().size() !=
+                function->second->parameters().size() + 1) {
+          continue;
+        }
+        auto& parameters = ranges.at(instruction.operands().front());
+        for (std::size_t index = 0; index < parameters.size(); ++index) {
+          auto& range = parameters[index];
+          const auto value = parsePositive(instruction.operands()[index + 1]);
+          if (!value.has_value()) {
+            range.valid = false;
+            continue;
+          }
+          if (!range.seen) {
+            range.seen = true;
+            range.lower = *value;
+            range.upper = *value;
+          } else {
+            range.lower = std::min(range.lower, *value);
+            range.upper = std::max(range.upper, *value);
+          }
+        }
+      }
+    }
+  }
+  return ranges;
+}
+
+std::optional<std::pair<unsigned, unsigned>> shiftRange(
+    const Function& caller, const std::string& operand,
+    const ParameterRanges& ranges) {
+  if (const auto literal = parsePositive(operand); literal.has_value()) {
+    return std::pair<unsigned, unsigned>{*literal, *literal};
+  }
+  const auto functionRanges = ranges.find("@" + caller.name());
+  if (functionRanges == ranges.end()) return std::nullopt;
+  for (std::size_t index = 0; index < caller.parameters().size(); ++index) {
+    if (caller.parameters()[index].name != operand) continue;
+    const auto& range = functionRanges->second[index];
+    if (!range.seen || !range.valid) return std::nullopt;
+    return std::pair<unsigned, unsigned>{range.lower, range.upper};
+  }
+  return std::nullopt;
+}
+
+void rewriteConstantDispatchCalls(
+    compiler::ir::core::Module& module,
+    const std::unordered_map<std::string, DispatchIdiom>& idioms,
+    const ParameterRanges& ranges) {
+  for (auto& function : module.functions()) {
+    std::unordered_set<std::string> valueNames;
+    for (const auto& parameter : function.parameters()) {
+      valueNames.insert(parameter.name);
+    }
+    for (const auto& block : function.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.hasResult()) valueNames.insert(instruction.result());
+      }
+    }
+    for (auto& block : function.blocks()) {
+      std::vector<Instruction> rewritten;
+      rewritten.reserve(block.instructions().size());
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.opcode() != "call" || !instruction.hasResult() ||
+            instruction.operands().size() != 3) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        const auto idiom = idioms.find(instruction.operands()[0]);
+        if (idiom == idioms.end()) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        const auto range = shiftRange(function, instruction.operands()[2], ranges);
+        if (!range.has_value() || range->first < 1 ||
+            range->second > idiom->second.maximumShift) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        if (idiom->second.operation == "mul") {
+          rewritten.emplace_back(
+              "shl",
+              std::vector<std::string>{instruction.operands()[1],
+                                       instruction.operands()[2]},
+              instruction.result());
+        } else {
+          std::string divisor;
+          if (range->first == range->second) {
+            divisor = std::to_string(std::uint32_t{1} << range->first);
+          } else {
+            for (std::size_t suffix = 0;; ++suffix) {
+              const std::string candidate =
+                  "%pow2.dispatch.divisor." + std::to_string(suffix);
+              if (valueNames.insert(candidate).second) {
+                divisor = candidate;
+                break;
+              }
+            }
+            rewritten.emplace_back(
+                "shl", std::vector<std::string>{"1", instruction.operands()[2]},
+                divisor);
+          }
+          rewritten.emplace_back(
+              "sdiv",
+              std::vector<std::string>{instruction.operands()[1], divisor},
+              instruction.result());
+        }
+      }
+      block.instructions() = std::move(rewritten);
+    }
+  }
+}
+
 }  // namespace
 
 void PowerOfTwoDispatchPass::run(compiler::ir::core::Module& module) {
-  for (auto& function : module.functions()) {
+  std::unordered_map<std::string, DispatchIdiom> idioms;
+  for (const auto& function : module.functions()) {
     const auto idiom = matchPowerOfTwoDispatch(function);
-    if (idiom.has_value()) addDispatchFastPath(function, *idiom);
+    if (idiom.has_value()) idioms.emplace("@" + function.name(), *idiom);
+  }
+  if (std::getenv("COMPILER_DISABLE_CONSTANT_ARGUMENT_SPECIALIZATION") ==
+      nullptr) {
+    rewriteConstantDispatchCalls(module, idioms,
+                                 collectConstantParameterRanges(module));
+  }
+  for (auto& function : module.functions()) {
+    const auto idiom = idioms.find("@" + function.name());
+    if (idiom != idioms.end()) addDispatchFastPath(function, idiom->second);
   }
 }
 
