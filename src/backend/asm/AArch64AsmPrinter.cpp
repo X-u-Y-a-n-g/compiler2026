@@ -987,14 +987,16 @@ std::optional<std::string> matchingXRegister(const std::string& reg) {
   return "x" + reg.substr(1);
 }
 
-// Vectorize a contiguous i32 recurrence of the form
+// Vectorize and two-way unroll a contiguous i32 recurrence of the form
 //   destination[index] = destination[index] * factor + source[index].
-// The scalar loop remains as the exact fallback and tail. A runtime range
-// guard proves that the source and destination spans do not overlap and that
-// the broadcast factor cannot be changed by a destination store.
+// A runtime range guard proves that the source and destination spans do not
+// overlap and that the broadcast factor cannot be changed by a destination
+// store. Each vector iteration handles two independent q-register chunks; the
+// scalar loop remains the exact fallback and tail for short or non-multiple-of-
+// eight trip counts.
 std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
   static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](24|25|26)([^A-Za-z0-9_]|$))"};
+      R"((^|[^A-Za-z0-9_])[svdq](24|25|26|27|28)([^A-Za-z0-9_]|$))"};
   static const std::regex addressPattern{
       R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
   static const std::regex indexedLoadPattern{
@@ -1132,10 +1134,10 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     }
     if (!zeroInitialized) continue;
 
-    const std::string vectorBody = *bodyLabel + ".vector4";
-    const std::string vectorHeader = *headerLabel + ".vector4";
-    const std::string vectorSetup = *bodyLabel + ".vector4_setup";
-    const std::string aliasSafe = *bodyLabel + ".vector4_alias_safe";
+    const std::string vectorBody = *bodyLabel + ".vector8";
+    const std::string vectorHeader = *headerLabel + ".vector8";
+    const std::string vectorSetup = *bodyLabel + ".vector8_setup";
+    const std::string aliasSafe = *bodyLabel + ".vector8_alias_safe";
     if (assembly.find(vectorBody + ":") != std::string::npos ||
         assembly.find(vectorHeader + ":") != std::string::npos ||
         assembly.find(vectorSetup + ":") != std::string::npos ||
@@ -1144,7 +1146,7 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     }
 
     lines[*entryBranch] =
-        "  cmp " + *boundW + ", #4\n  b.lt " + *headerLabel +
+        "  cmp " + *boundW + ", #8\n  b.lt " + *headerLabel +
         "\n  add x17, " + destinationBase + ", " + *boundX +
         ", lsl #2\n  add x18, " + sourceBase + ", " + *boundX +
         ", lsl #2\n  cmp x17, " + sourceBase + "\n  b.ls " + aliasSafe +
@@ -1160,11 +1162,12 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
         vectorBody + ":\n  add " + destinationAddress + ", " +
         destinationBase + ", " + indexX +
         ", lsl #2\n  add x16, " + sourceBase + ", " + indexX +
-        ", lsl #2\n  ldr q24, [" + destinationAddress +
-        "]\n  ldr q26, [x16]\n  mla v26.4s, v24.4s, v25.4s\n  str q26, [" +
+        ", lsl #2\n  ldp q24, q27, [" + destinationAddress +
+        "]\n  ldp q26, q28, [x16]\n  mla v26.4s, v24.4s, v25.4s\n"
+        "  mla v28.4s, v27.4s, v25.4s\n  stp q26, q28, [" +
         destinationAddress + "]\n  add " + indexW + ", " + indexW +
-        ", #4\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
-        indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody + "\n  b " +
+        ", #8\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
+        indexW + "\n  cmp w17, #8\n  b.ge " + vectorBody + "\n  b " +
         *headerLabel;
     lines[bodyBounds.first - 1] =
         vectorBlocks + "\n" + lines[bodyBounds.first - 1];
