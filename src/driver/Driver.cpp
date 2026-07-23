@@ -1,5 +1,6 @@
 #include "../../include/compiler/driver/Driver.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -26,6 +27,7 @@
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
+#include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
@@ -34,6 +36,7 @@
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopScalarPromotionPass.h"
 #include "../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
@@ -48,6 +51,7 @@
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
+#include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
 #include "../../include/compiler/support/FileSystem.h"
 
 namespace compiler::driver {
@@ -179,6 +183,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::TailRecursionEliminationPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::WidenedModularMultiplyPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
     passManager.add(
@@ -188,6 +197,29 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::BitwiseIdiomRecognitionPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::PowerOfTwoDispatchPass>());
+    if (std::getenv("COMPILER_DISABLE_LATE_HELPER_INLINE_CACHE") == nullptr &&
+        std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
+            nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+      if (std::getenv("COMPILER_DISABLE_AGGRESSIVE_STATE_CHAIN_PIPELINE") ==
+          nullptr) {
+        passManager.add(
+            std::make_unique<compiler::midend::pass::ConstantFoldingPass>(true));
+      }
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::GlobalScalarLocalizationPass>());
+      passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+      if (std::getenv("COMPILER_DISABLE_AGGRESSIVE_STATE_CHAIN_PIPELINE") ==
+          nullptr) {
+        passManager.add(
+            std::make_unique<compiler::midend::pass::ConstantFoldingPass>(true));
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::CommonSubexpressionEliminationPass>());
+        passManager.add(
+            std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
+      }
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
     passManager.add(
@@ -195,7 +227,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>());
+    const bool isAArch64 = invocation.options().target == "aarch64" ||
+                           invocation.options().target == "arm64";
+    // Thirty-two lanes map exactly to eight i32x4 NEON accumulators.  RV64 keeps
+    // the empirically pressure-safe ten-lane scalar factor.
+    passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>(
+        isAArch64 ? 32 : 10, isAArch64));
     passManager.add(
         std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
@@ -216,6 +253,18 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RedundantLoadEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::RedundantStoreEliminationPass>());
+    if (std::getenv("COMPILER_DISABLE_OBJECT_SENSITIVE_LOAD_FORWARDING") ==
+        nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
+    }
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::LoopInterchangeRowUpdatePass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
     passManager.add(

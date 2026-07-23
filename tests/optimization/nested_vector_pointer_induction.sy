@@ -1,0 +1,48 @@
+int matrix[5][1025];
+int result[25];
+
+void update_rows(int n, int values[][1025]) {
+    int i;
+    int j;
+    int k;
+    int current;
+    i = 0;
+    while (i < n) {
+        j = i;
+        while (j < n) {
+            current = values[i][j];
+            k = 0;
+            while (k < i) {
+                current = current - values[i][k] * values[k][j];
+                k = k + 1;
+            }
+            values[i][j] = current;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+int main() {
+    int i = 0;
+    while (i < 5) {
+        int j = 0;
+        while (j < 5) {
+            matrix[i][j] = 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    update_rows(5, matrix);
+    i = 0;
+    while (i < 5) {
+        int j = 0;
+        while (j < 5) {
+            result[i * 5 + j] = matrix[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putarray(25, result);
+    return 0;
+}

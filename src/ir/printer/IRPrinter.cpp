@@ -569,6 +569,54 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     return os.str();
   }
 
+  if (opcode == "aarch64.neon.dup.i32x4") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.mls.i32x4") {
+    os << opcode << " ptr " << operands[0] << ", ptr " << operands[1];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.load.acc.i32x4" ||
+      opcode == "aarch64.neon.store.acc.i32x4") {
+    os << opcode << " ptr " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.mls.acc.i32x4") {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.zero.acc.i32x32") {
+    os << opcode;
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.dup.acc.i32x32") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.mla.acc.i32x32" ||
+      opcode == "aarch64.neon.store.acc.i32x32") {
+    os << opcode << " ptr " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.widened.mul.lhs.i32" ||
+      opcode == "aarch64.widened.mul.rhs.i32") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.widened.mod.i32") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
   if (opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi" || opcode == "cast") {
     const ValueType sourceType = inferValueType(operands[0], state, globals);
     const ValueType targetType = scalarValueTypeFromObject(parseObjectType(operands[1]));

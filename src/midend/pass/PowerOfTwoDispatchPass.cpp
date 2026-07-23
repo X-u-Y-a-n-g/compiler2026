@@ -1,11 +1,14 @@
 #include "../../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace compiler::midend::pass {
 namespace {
@@ -20,6 +23,16 @@ struct DispatchIdiom {
   std::string shift;
   unsigned maximumShift = 0;
 };
+
+struct ParameterRange {
+  bool seen = false;
+  bool valid = true;
+  unsigned lower = 0;
+  unsigned upper = 0;
+};
+
+using ParameterRanges =
+    std::unordered_map<std::string, std::vector<ParameterRange>>;
 
 bool isI32(const std::string& type) { return type == "int" || type == "i32"; }
 
@@ -143,8 +156,12 @@ void addDispatchFastPath(Function& function, const DispatchIdiom& idiom) {
   const std::string eligible = freshValueName(function, "pow2.dispatch.eligible");
   const std::string result = freshValueName(function, "pow2.dispatch.result");
 
+  const bool includeZeroShift =
+      idiom.operation == "mul" &&
+      std::getenv("COMPILER_DISABLE_ZERO_POWER_DISPATCH") == nullptr;
   BasicBlock guard{guardName};
-  guard.addInstruction(Instruction{"icmp.sge", {idiom.shift, "1"}, lower});
+  guard.addInstruction(Instruction{
+      "icmp.sge", {idiom.shift, includeZeroShift ? "0" : "1"}, lower});
   guard.addInstruction(Instruction{"icmp.sle",
                                    {idiom.shift,
                                     std::to_string(idiom.maximumShift)},
@@ -167,12 +184,268 @@ void addDispatchFastPath(Function& function, const DispatchIdiom& idiom) {
   function.blocks().push_front(std::move(guard));
 }
 
+void replaceMultiplicationDispatch(Function& function,
+                                   const DispatchIdiom& idiom) {
+  const std::string entryName = function.blocks().front().name();
+  const std::string lower = freshValueName(function, "pow2.closed.lower");
+  const std::string upper = freshValueName(function, "pow2.closed.upper");
+  const std::string inRange = freshValueName(function, "pow2.closed.range");
+  const std::string safeShift =
+      freshValueName(function, "pow2.closed.safe.shift");
+  const std::string result = freshValueName(function, "pow2.closed.result");
+  BasicBlock entry{entryName};
+  entry.addInstruction(Instruction{"icmp.sge", {idiom.shift, "0"}, lower});
+  entry.addInstruction(Instruction{
+      "icmp.sle", {idiom.shift, std::to_string(idiom.maximumShift)}, upper});
+  entry.addInstruction(Instruction{"and", {lower, upper}, inRange});
+  entry.addInstruction(
+      Instruction{"select", {inRange, idiom.shift, "0"}, safeShift});
+  entry.addInstruction(
+      Instruction{"shl", {idiom.value, safeShift}, result});
+  entry.addInstruction(Instruction{"ret", {result}});
+  function.blocks().clear();
+  function.addBlock(std::move(entry));
+}
+
+void appendSignedPowerOfTwoDivision(
+    std::vector<Instruction>& instructions, const std::string& value,
+    const std::string& shift, const std::string& result,
+    std::unordered_set<std::string>& valueNames) {
+  const auto fresh = [&](const std::string& stem) {
+    for (std::size_t suffix = 0;; ++suffix) {
+      const std::string candidate =
+          "%pow2.sdiv." + stem + "." + std::to_string(suffix);
+      if (valueNames.insert(candidate).second) return candidate;
+    }
+  };
+  const std::string power = fresh("power");
+  const std::string mask = fresh("mask");
+  const std::string sign = fresh("sign");
+  const std::string bias = fresh("bias");
+  const std::string adjusted = fresh("adjusted");
+  instructions.emplace_back("shl", std::vector<std::string>{"1", shift},
+                            power);
+  instructions.emplace_back("sub", std::vector<std::string>{power, "1"},
+                            mask);
+  instructions.emplace_back("ashr", std::vector<std::string>{value, "31"},
+                            sign);
+  instructions.emplace_back("and", std::vector<std::string>{sign, mask}, bias);
+  instructions.emplace_back("add", std::vector<std::string>{value, bias},
+                            adjusted);
+  instructions.emplace_back("ashr",
+                            std::vector<std::string>{adjusted, shift}, result);
+}
+
+void replaceDivisionDispatch(Function& function, const DispatchIdiom& idiom) {
+  const std::string entryName = function.blocks().front().name();
+  const std::string lower = freshValueName(function, "pow2.sdiv.closed.lower");
+  const std::string upper = freshValueName(function, "pow2.sdiv.closed.upper");
+  const std::string inRange =
+      freshValueName(function, "pow2.sdiv.closed.range");
+  const std::string safeShift =
+      freshValueName(function, "pow2.sdiv.closed.safe.shift");
+  const std::string result =
+      freshValueName(function, "pow2.sdiv.closed.result");
+  std::unordered_set<std::string> valueNames;
+  for (const auto& parameter : function.parameters()) {
+    valueNames.insert(parameter.name);
+  }
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) valueNames.insert(instruction.result());
+    }
+  }
+  valueNames.insert(lower);
+  valueNames.insert(upper);
+  valueNames.insert(inRange);
+  valueNames.insert(safeShift);
+  valueNames.insert(result);
+
+  BasicBlock entry{entryName};
+  entry.addInstruction(Instruction{"icmp.sge", {idiom.shift, "1"}, lower});
+  entry.addInstruction(Instruction{
+      "icmp.sle", {idiom.shift, std::to_string(idiom.maximumShift)}, upper});
+  entry.addInstruction(Instruction{"and", {lower, upper}, inRange});
+  entry.addInstruction(
+      Instruction{"select", {inRange, idiom.shift, "0"}, safeShift});
+  appendSignedPowerOfTwoDivision(entry.instructions(), idiom.value, safeShift,
+                                 result, valueNames);
+  entry.addInstruction(Instruction{"ret", {result}});
+  function.blocks().clear();
+  function.addBlock(std::move(entry));
+}
+
+ParameterRanges collectConstantParameterRanges(
+    const compiler::ir::core::Module& module) {
+  ParameterRanges ranges;
+  std::unordered_map<std::string, const Function*> functions;
+  for (const auto& function : module.functions()) {
+    const std::string symbol = "@" + function.name();
+    functions.emplace(symbol, &function);
+    ranges.emplace(symbol,
+                   std::vector<ParameterRange>(function.parameters().size()));
+  }
+  for (const auto& caller : module.functions()) {
+    for (const auto& block : caller.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.opcode() != "call" || instruction.operands().empty()) {
+          continue;
+        }
+        const auto function = functions.find(instruction.operands().front());
+        if (function == functions.end() ||
+            instruction.operands().size() !=
+                function->second->parameters().size() + 1) {
+          continue;
+        }
+        auto& parameters = ranges.at(instruction.operands().front());
+        for (std::size_t index = 0; index < parameters.size(); ++index) {
+          auto& range = parameters[index];
+          const auto value = parsePositive(instruction.operands()[index + 1]);
+          if (!value.has_value()) {
+            range.valid = false;
+            continue;
+          }
+          if (!range.seen) {
+            range.seen = true;
+            range.lower = *value;
+            range.upper = *value;
+          } else {
+            range.lower = std::min(range.lower, *value);
+            range.upper = std::max(range.upper, *value);
+          }
+        }
+      }
+    }
+  }
+  return ranges;
+}
+
+std::optional<std::pair<unsigned, unsigned>> shiftRange(
+    const Function& caller, const std::string& operand,
+    const ParameterRanges& ranges) {
+  if (const auto literal = parsePositive(operand); literal.has_value()) {
+    return std::pair<unsigned, unsigned>{*literal, *literal};
+  }
+  const auto functionRanges = ranges.find("@" + caller.name());
+  if (functionRanges == ranges.end()) return std::nullopt;
+  for (std::size_t index = 0; index < caller.parameters().size(); ++index) {
+    if (caller.parameters()[index].name != operand) continue;
+    const auto& range = functionRanges->second[index];
+    if (!range.seen || !range.valid) return std::nullopt;
+    return std::pair<unsigned, unsigned>{range.lower, range.upper};
+  }
+  return std::nullopt;
+}
+
+void rewriteConstantDispatchCalls(
+    compiler::ir::core::Module& module,
+    const std::unordered_map<std::string, DispatchIdiom>& idioms,
+    const ParameterRanges& ranges) {
+  for (auto& function : module.functions()) {
+    std::unordered_set<std::string> valueNames;
+    for (const auto& parameter : function.parameters()) {
+      valueNames.insert(parameter.name);
+    }
+    for (const auto& block : function.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.hasResult()) valueNames.insert(instruction.result());
+      }
+    }
+    for (auto& block : function.blocks()) {
+      std::vector<Instruction> rewritten;
+      rewritten.reserve(block.instructions().size());
+      for (const auto& instruction : block.instructions()) {
+        if (instruction.opcode() != "call" || !instruction.hasResult() ||
+            instruction.operands().size() != 3) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        const auto idiom = idioms.find(instruction.operands()[0]);
+        if (idiom == idioms.end()) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        const auto range = shiftRange(function, instruction.operands()[2], ranges);
+        if (!range.has_value() || range->first < 1 ||
+            range->second > idiom->second.maximumShift) {
+          rewritten.push_back(instruction);
+          continue;
+        }
+        if (idiom->second.operation == "mul") {
+          rewritten.emplace_back(
+              "shl",
+              std::vector<std::string>{instruction.operands()[1],
+                                       instruction.operands()[2]},
+              instruction.result());
+        } else if (range->first == range->second) {
+          const std::string divisor =
+              std::to_string(std::uint32_t{1} << range->first);
+          rewritten.emplace_back(
+              "sdiv",
+              std::vector<std::string>{instruction.operands()[1], divisor},
+              instruction.result());
+        } else if (
+            std::getenv("COMPILER_DISABLE_CLOSED_SIGNED_DIVISION_DISPATCH") ==
+                nullptr &&
+            std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") ==
+                nullptr) {
+          appendSignedPowerOfTwoDivision(
+              rewritten, instruction.operands()[1], instruction.operands()[2],
+              instruction.result(), valueNames);
+        } else {
+          std::string divisor;
+          for (std::size_t suffix = 0;; ++suffix) {
+            const std::string candidate =
+                "%pow2.dispatch.divisor." + std::to_string(suffix);
+            if (valueNames.insert(candidate).second) {
+              divisor = candidate;
+              break;
+            }
+          }
+          rewritten.emplace_back(
+              "shl", std::vector<std::string>{"1", instruction.operands()[2]},
+              divisor);
+          rewritten.emplace_back(
+              "sdiv",
+              std::vector<std::string>{instruction.operands()[1], divisor},
+              instruction.result());
+        }
+      }
+      block.instructions() = std::move(rewritten);
+    }
+  }
+}
+
 }  // namespace
 
 void PowerOfTwoDispatchPass::run(compiler::ir::core::Module& module) {
-  for (auto& function : module.functions()) {
+  std::unordered_map<std::string, DispatchIdiom> idioms;
+  for (const auto& function : module.functions()) {
     const auto idiom = matchPowerOfTwoDispatch(function);
-    if (idiom.has_value()) addDispatchFastPath(function, *idiom);
+    if (idiom.has_value()) idioms.emplace("@" + function.name(), *idiom);
+  }
+  if (std::getenv("COMPILER_DISABLE_CONSTANT_ARGUMENT_SPECIALIZATION") ==
+      nullptr) {
+    rewriteConstantDispatchCalls(module, idioms,
+                                 collectConstantParameterRanges(module));
+  }
+  for (auto& function : module.functions()) {
+    const auto idiom = idioms.find("@" + function.name());
+    if (idiom == idioms.end()) continue;
+    if (std::getenv("COMPILER_DISABLE_CLOSED_HELPER_STATE_PIPELINE") == nullptr) {
+      if (idiom->second.operation == "mul" &&
+          std::getenv("COMPILER_DISABLE_CLOSED_MULTIPLY_DISPATCH") == nullptr) {
+        replaceMultiplicationDispatch(function, idiom->second);
+      } else if (idiom->second.operation == "sdiv" &&
+                 std::getenv("COMPILER_DISABLE_CLOSED_SIGNED_DIVISION_DISPATCH") ==
+                     nullptr) {
+        replaceDivisionDispatch(function, idiom->second);
+      } else {
+        addDispatchFastPath(function, idiom->second);
+      }
+    } else {
+      addDispatchFastPath(function, idiom->second);
+    }
   }
 }
 

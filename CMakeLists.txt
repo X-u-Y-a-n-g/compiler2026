@@ -22,6 +22,7 @@ add_library(compiler_lib
   src/midend/pass/AffineModularRecurrencePass.cpp
   src/midend/pass/ArrayDimensionLayoutPass.cpp
   src/midend/pass/BitwiseIdiomRecognitionPass.cpp
+  src/midend/pass/BoundedModuloReductionPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
@@ -30,6 +31,7 @@ add_library(compiler_lib
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopScalarPromotionPass.cpp
   src/midend/pass/LoopUnrollAndJamPass.cpp
   src/midend/pass/Mem2RegPass.cpp
@@ -44,6 +46,7 @@ add_library(compiler_lib
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
+  src/midend/pass/WidenedModularMultiplyPass.cpp
   src/backend/common/CFGBuilder.cpp
   src/backend/target/TargetInfo.cpp
   src/backend/target/TargetBackend.cpp

@@ -1,0 +1,91 @@
+int bit_and_5(int a, int b) {
+    int lhs;
+    int rhs;
+    int count = 5;
+    int result = 0;
+    int weight = 1;
+    while (count != 0) {
+        lhs = a % 2;
+        rhs = b % 2;
+        a = a / 2;
+        b = b / 2;
+        if (lhs == 1 && rhs == 1) result = result + weight;
+        weight = weight * 2;
+        count = count - 1;
+    }
+    return result;
+}
+
+int bit_or_5(int a, int b) {
+    int lhs;
+    int rhs;
+    int count = 5;
+    int result = 0;
+    int weight = 1;
+    while (count != 0) {
+        lhs = a % 2;
+        rhs = b % 2;
+        a = a / 2;
+        b = b / 2;
+        if (lhs == 1 || rhs == 1) result = result + weight;
+        weight = weight * 2;
+        count = count - 1;
+    }
+    return result;
+}
+
+int bit_xor_32(int a, int b) {
+    int lhs;
+    int rhs;
+    int count = 32;
+    int result = 0;
+    int weight = 1;
+    while (count != 0) {
+        lhs = a % 2;
+        rhs = b % 2;
+        a = a / 2;
+        b = b / 2;
+        if (lhs != rhs) result = result + weight;
+        weight = weight * 2;
+        count = count - 1;
+    }
+    return result;
+}
+
+int bit_nand_5(int a, int b) {
+    int lhs;
+    int rhs;
+    int count = 5;
+    int result = 0;
+    int weight = 1;
+    while (count != 0) {
+        lhs = a % 2;
+        rhs = b % 2;
+        a = a / 2;
+        b = b / 2;
+        if (!(lhs == 1 && rhs == 1)) result = result + weight;
+        weight = weight * 2;
+        count = count - 1;
+    }
+    return result;
+}
+
+void print_line(int value) {
+    putint(value);
+    putch(10);
+}
+
+int main() {
+    int int_min = -2147483647 - 1;
+    print_line(bit_and_5(29, 23));
+    print_line(bit_and_5(-7, 23));
+    print_line(bit_and_5(int_min, 31));
+    print_line(bit_or_5(29, 2));
+    print_line(bit_or_5(-7, 5));
+    print_line(bit_xor_32(29, 23));
+    print_line(bit_xor_32(-7, -5));
+    print_line(bit_xor_32(-7, 5));
+    print_line(bit_xor_32(int_min, 0));
+    print_line(bit_nand_5(29, 23));
+    return 0;
+}

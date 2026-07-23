@@ -1,0 +1,37 @@
+int multiply_pow2(int value, int shift) {
+    if (shift == 1) return value * 2;
+    if (shift == 2) return value * 4;
+    if (shift == 3) return value * 8;
+    return value;
+}
+
+int divide_pow2(int value, int shift) {
+    if (shift == 1) return value / 2;
+    if (shift == 2) return value / 4;
+    if (shift == 3) return value / 8;
+    return value;
+}
+
+int constant_range_user(int value, int shift) {
+    return multiply_pow2(value, shift) + divide_pow2(value, shift);
+}
+
+int dynamic_user(int value, int shift) {
+    return multiply_pow2(value, shift) + divide_pow2(value, shift);
+}
+
+int main() {
+    int value = getint();
+    int dynamic_shift = getint();
+    putint(constant_range_user(value, 1));
+    putch(10);
+    putint(constant_range_user(value, 3));
+    putch(10);
+    putint(constant_range_user(-value, 1));
+    putch(10);
+    putint(constant_range_user(-value, 3));
+    putch(10);
+    putint(dynamic_user(value, dynamic_shift));
+    putch(10);
+    return 0;
+}

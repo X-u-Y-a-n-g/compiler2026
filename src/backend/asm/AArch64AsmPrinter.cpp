@@ -987,14 +987,16 @@ std::optional<std::string> matchingXRegister(const std::string& reg) {
   return "x" + reg.substr(1);
 }
 
-// Vectorize a contiguous i32 recurrence of the form
+// Vectorize and two-way unroll a contiguous i32 recurrence of the form
 //   destination[index] = destination[index] * factor + source[index].
-// The scalar loop remains as the exact fallback and tail. A runtime range
-// guard proves that the source and destination spans do not overlap and that
-// the broadcast factor cannot be changed by a destination store.
+// A runtime range guard proves that the source and destination spans do not
+// overlap and that the broadcast factor cannot be changed by a destination
+// store. Each vector iteration handles two independent q-register chunks; the
+// scalar loop remains the exact fallback and tail for short or non-multiple-of-
+// eight trip counts.
 std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
   static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](24|25|26)([^A-Za-z0-9_]|$))"};
+      R"((^|[^A-Za-z0-9_])[svdq](24|25|26|27|28)([^A-Za-z0-9_]|$))"};
   static const std::regex addressPattern{
       R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
   static const std::regex indexedLoadPattern{
@@ -1132,10 +1134,10 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     }
     if (!zeroInitialized) continue;
 
-    const std::string vectorBody = *bodyLabel + ".vector4";
-    const std::string vectorHeader = *headerLabel + ".vector4";
-    const std::string vectorSetup = *bodyLabel + ".vector4_setup";
-    const std::string aliasSafe = *bodyLabel + ".vector4_alias_safe";
+    const std::string vectorBody = *bodyLabel + ".vector8";
+    const std::string vectorHeader = *headerLabel + ".vector8";
+    const std::string vectorSetup = *bodyLabel + ".vector8_setup";
+    const std::string aliasSafe = *bodyLabel + ".vector8_alias_safe";
     if (assembly.find(vectorBody + ":") != std::string::npos ||
         assembly.find(vectorHeader + ":") != std::string::npos ||
         assembly.find(vectorSetup + ":") != std::string::npos ||
@@ -1144,7 +1146,7 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     }
 
     lines[*entryBranch] =
-        "  cmp " + *boundW + ", #4\n  b.lt " + *headerLabel +
+        "  cmp " + *boundW + ", #8\n  b.lt " + *headerLabel +
         "\n  add x17, " + destinationBase + ", " + *boundX +
         ", lsl #2\n  add x18, " + sourceBase + ", " + *boundX +
         ", lsl #2\n  cmp x17, " + sourceBase + "\n  b.ls " + aliasSafe +
@@ -1160,11 +1162,12 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
         vectorBody + ":\n  add " + destinationAddress + ", " +
         destinationBase + ", " + indexX +
         ", lsl #2\n  add x16, " + sourceBase + ", " + indexX +
-        ", lsl #2\n  ldr q24, [" + destinationAddress +
-        "]\n  ldr q26, [x16]\n  mla v26.4s, v24.4s, v25.4s\n  str q26, [" +
+        ", lsl #2\n  ldp q24, q27, [" + destinationAddress +
+        "]\n  ldp q26, q28, [x16]\n  mla v26.4s, v24.4s, v25.4s\n"
+        "  mla v28.4s, v27.4s, v25.4s\n  stp q26, q28, [" +
         destinationAddress + "]\n  add " + indexW + ", " + indexW +
-        ", #4\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
-        indexW + "\n  cmp w17, #4\n  b.ge " + vectorBody + "\n  b " +
+        ", #8\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
+        indexW + "\n  cmp w17, #8\n  b.ge " + vectorBody + "\n  b " +
         *headerLabel;
     lines[bodyBounds.first - 1] =
         vectorBlocks + "\n" + lines[bodyBounds.first - 1];
@@ -1586,51 +1589,6 @@ unsigned log2PowerOfTwo(std::uint64_t value) {
     ++shift;
   }
   return shift;
-}
-
-struct SignedMagic32 {
-  std::int32_t multiplier = 0;
-  unsigned shift = 0;
-};
-
-std::optional<SignedMagic32> signedMagic32(std::int32_t divisor) {
-  if (divisor == 0 || divisor == 1 || divisor == -1) return std::nullopt;
-
-  const std::uint64_t magnitude =
-      divisor < 0 ? static_cast<std::uint64_t>(-(static_cast<std::int64_t>(divisor)))
-                  : static_cast<std::uint64_t>(divisor);
-  constexpr std::uint64_t signedMinimum = UINT64_C(1) << 31U;
-  const std::uint64_t threshold = signedMinimum + (divisor < 0 ? 1U : 0U);
-  const std::uint64_t adjusted = threshold - 1U - threshold % magnitude;
-
-  unsigned precision = 31;
-  std::uint64_t quotient1 = signedMinimum / adjusted;
-  std::uint64_t remainder1 = signedMinimum % adjusted;
-  std::uint64_t quotient2 = signedMinimum / magnitude;
-  std::uint64_t remainder2 = signedMinimum % magnitude;
-  std::uint64_t delta = 0;
-  do {
-    ++precision;
-    quotient1 <<= 1U;
-    remainder1 <<= 1U;
-    if (remainder1 >= adjusted) {
-      ++quotient1;
-      remainder1 -= adjusted;
-    }
-    quotient2 <<= 1U;
-    remainder2 <<= 1U;
-    if (remainder2 >= magnitude) {
-      ++quotient2;
-      remainder2 -= magnitude;
-    }
-    delta = magnitude - remainder2;
-  } while (quotient1 < delta || (quotient1 == delta && remainder1 == 0));
-
-  std::uint32_t multiplierBits = static_cast<std::uint32_t>(quotient2 + 1U);
-  if (divisor < 0) multiplierBits = 0U - multiplierBits;
-  std::int32_t multiplier = 0;
-  std::memcpy(&multiplier, &multiplierBits, sizeof(multiplier));
-  return SignedMagic32{multiplier, precision - 32U};
 }
 
 std::string integerRegister(const std::string& reg, const ValueType& type) {
@@ -2347,6 +2305,127 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     storeResult(os, function, instruction.result, dst);
     return;
   }
+  if (opcode == "aarch64.neon.dup.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto source = integerOperand(os, function, instruction.operands[0],
+                                       kImmScratch);
+    os << "  dup v16.4s, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.i32x4" &&
+      instruction.operands.size() == 2) {
+    const auto destination =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto source =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  ldr q17, [" << destination << "]\n";
+    os << "  ldr q18, [" << source << "]\n";
+    os << "  mls v17.4s, v18.4s, v16.4s\n";
+    os << "  str q17, [" << destination << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.load.acc.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldr q17, [" << address << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.acc.i32x4" &&
+      instruction.operands.size() == 2) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  dup v16.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    os << "  ldr q18, [" << address << "]\n";
+    os << "  mls v17.4s, v18.4s, v16.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.store.acc.i32x4" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  str q17, [" << address << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.zero.acc.i32x32" &&
+      instruction.operands.empty()) {
+    os << "  movi v20.4s, #0\n";
+    os << "  movi v21.4s, #0\n";
+    os << "  movi v22.4s, #0\n";
+    os << "  movi v23.4s, #0\n";
+    os << "  movi v24.4s, #0\n";
+    os << "  movi v25.4s, #0\n";
+    os << "  movi v26.4s, #0\n";
+    os << "  movi v27.4s, #0\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.dup.acc.i32x32" &&
+      instruction.operands.size() == 1) {
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  dup v29.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.mla.acc.i32x32" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q28, q30, [" << address << "]\n";
+    os << "  mla v20.4s, v28.4s, v29.4s\n";
+    os << "  mla v21.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #32]\n";
+    os << "  mla v22.4s, v28.4s, v29.4s\n";
+    os << "  mla v23.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #64]\n";
+    os << "  mla v24.4s, v28.4s, v29.4s\n";
+    os << "  mla v25.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #96]\n";
+    os << "  mla v26.4s, v28.4s, v29.4s\n";
+    os << "  mla v27.4s, v30.4s, v29.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.store.acc.i32x32" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  stp q20, q21, [" << address << "]\n";
+    os << "  stp q22, q23, [" << address << ", #32]\n";
+    os << "  stp q24, q25, [" << address << ", #64]\n";
+    os << "  stp q26, q27, [" << address << ", #96]\n";
+    return;
+  }
+  if (opcode == "aarch64.widened.mul.lhs.i32" &&
+      instruction.operands.size() == 1) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  mov w16, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.widened.mul.rhs.i32" &&
+      instruction.operands.size() == 1) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  smull x16, w16, "
+       << integerRegister(source, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.widened.mod.i32" &&
+      instruction.hasResult && instruction.operands.size() == 1) {
+    const auto modulus =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  sdiv x18, x16, "
+       << integerRegister(modulus, ValueType::int64Type()) << '\n';
+    os << "  msub x16, x18, "
+       << integerRegister(modulus, ValueType::int64Type()) << ", x16\n";
+    storeResult(os, function, instruction.result, "x16");
+    return;
+  }
   if (opcode == "fneg") {
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
@@ -2440,29 +2519,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
           os << "  asr " << d << ", " << d << ", #" << shift << '\n';
           if (rhsOp.intValue < 0) os << "  neg " << d << ", " << d << '\n';
         }
-        storeResult(os, function, instruction.result, dst);
-        return;
-      }
-    }
-    if (isDivision && isNarrow(instruction.result.type) &&
-        rhsOp.kind == MachineOperandKind::ImmediateInt &&
-        rhsOp.intValue >= std::numeric_limits<std::int32_t>::min() &&
-        rhsOp.intValue <= std::numeric_limits<std::int32_t>::max()) {
-      const auto divisor = static_cast<std::int32_t>(rhsOp.intValue);
-      if (const auto magic = signedMagic32(divisor)) {
-        emitImmediate(os, kImmScratch, magic->multiplier,
-                      ValueType::int32Type());
-        os << "  smull x18, " << l << ", w17\n";
-        os << "  asr x18, x18, #32\n";
-        if (divisor > 0 && magic->multiplier < 0) {
-          os << "  add w18, w18, " << l << '\n';
-        } else if (divisor < 0 && magic->multiplier > 0) {
-          os << "  sub w18, w18, " << l << '\n';
-        }
-        if (magic->shift != 0) {
-          os << "  asr w18, w18, #" << magic->shift << '\n';
-        }
-        os << "  add " << d << ", w18, w18, lsr #31\n";
         storeResult(os, function, instruction.result, dst);
         return;
       }

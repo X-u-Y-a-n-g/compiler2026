@@ -1,6 +1,7 @@
 #include "../../../include/compiler/backend/opt/MachineLoopStrengthReduction.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <deque>
 #include <optional>
 #include <string>
@@ -49,6 +50,7 @@ struct Candidate {
   std::size_t instruction = 0;
   MachineInstruction gep;
   unsigned estimatedSaving = 0;
+  bool hoistStride = false;
 };
 
 struct Plan {
@@ -57,36 +59,36 @@ struct Plan {
   std::vector<Candidate> candidates;
 };
 
-bool isVirtualRegister(const MachineOperand& operand) {
+bool isVirtualRegister(const MachineOperand &operand) {
   return operand.kind == MachineOperandKind::VirtualRegister;
 }
 
-bool sameOperand(const MachineOperand& lhs, const MachineOperand& rhs) {
+bool sameOperand(const MachineOperand &lhs, const MachineOperand &rhs) {
   if (lhs.kind != rhs.kind || lhs.type.kind != rhs.type.kind) {
     return false;
   }
   switch (lhs.kind) {
-    case MachineOperandKind::VirtualRegister:
-    case MachineOperandKind::PhysicalRegister:
-    case MachineOperandKind::GlobalAddress:
-    case MachineOperandKind::FunctionSymbol:
-    case MachineOperandKind::Label:
-      return lhs.text == rhs.text;
-    case MachineOperandKind::ImmediateInt:
-      return lhs.intValue == rhs.intValue;
-    case MachineOperandKind::ImmediateFloat:
-      return lhs.floatValue == rhs.floatValue;
-    case MachineOperandKind::FrameIndex:
-    case MachineOperandKind::StackSlot:
-    case MachineOperandKind::StackObject:
-      return lhs.index == rhs.index;
-    case MachineOperandKind::None:
-      return true;
+  case MachineOperandKind::VirtualRegister:
+  case MachineOperandKind::PhysicalRegister:
+  case MachineOperandKind::GlobalAddress:
+  case MachineOperandKind::FunctionSymbol:
+  case MachineOperandKind::Label:
+    return lhs.text == rhs.text;
+  case MachineOperandKind::ImmediateInt:
+    return lhs.intValue == rhs.intValue;
+  case MachineOperandKind::ImmediateFloat:
+    return lhs.floatValue == rhs.floatValue;
+  case MachineOperandKind::FrameIndex:
+  case MachineOperandKind::StackSlot:
+  case MachineOperandKind::StackObject:
+    return lhs.index == rhs.index;
+  case MachineOperandKind::None:
+    return true;
   }
   return false;
 }
 
-bool isGep(const MachineInstruction& instruction) {
+bool isGep(const MachineInstruction &instruction) {
   return (instruction.opcode == "gep" || instruction.opcode == "gep.linear" ||
           instruction.opcode == "getelementptr" ||
           instruction.opcode == "getelementptr.linear") &&
@@ -94,7 +96,7 @@ bool isGep(const MachineInstruction& instruction) {
          instruction.operands[2].kind == MachineOperandKind::ImmediateInt;
 }
 
-std::vector<bool> computeReachable(const ControlFlowGraph& cfg) {
+std::vector<bool> computeReachable(const ControlFlowGraph &cfg) {
   std::vector<bool> reachable(cfg.blocks.size(), false);
   if (cfg.blocks.empty()) {
     return reachable;
@@ -115,8 +117,9 @@ std::vector<bool> computeReachable(const ControlFlowGraph& cfg) {
   return reachable;
 }
 
-std::vector<std::unordered_set<std::size_t>> computeDominators(
-    const ControlFlowGraph& cfg, const std::vector<bool>& reachable) {
+std::vector<std::unordered_set<std::size_t>>
+computeDominators(const ControlFlowGraph &cfg,
+                  const std::vector<bool> &reachable) {
   std::unordered_set<std::size_t> allReachable;
   for (std::size_t block = 0; block < reachable.size(); ++block) {
     if (reachable[block]) {
@@ -169,9 +172,9 @@ std::vector<std::unordered_set<std::size_t>> computeDominators(
   return dominators;
 }
 
-std::vector<LoopInfo> findLoops(
-    const ControlFlowGraph& cfg, const std::vector<bool>& reachable,
-    const std::vector<std::unordered_set<std::size_t>>& dominators) {
+std::vector<LoopInfo>
+findLoops(const ControlFlowGraph &cfg, const std::vector<bool> &reachable,
+          const std::vector<std::unordered_set<std::size_t>> &dominators) {
   std::unordered_map<std::size_t, LoopInfo> byHeader;
   for (std::size_t latch = 0; latch < cfg.blocks.size(); ++latch) {
     if (!reachable[latch]) {
@@ -195,7 +198,7 @@ std::vector<LoopInfo> findLoops(
           }
         }
       }
-      auto& loop = byHeader[header];
+      auto &loop = byHeader[header];
       loop.header = header;
       loop.blocks.insert(naturalLoop.begin(), naturalLoop.end());
       if (std::find(loop.latches.begin(), loop.latches.end(), latch) ==
@@ -206,7 +209,7 @@ std::vector<LoopInfo> findLoops(
   }
 
   std::vector<LoopInfo> loops;
-  for (auto& [header, loop] : byHeader) {
+  for (auto &[header, loop] : byHeader) {
     std::optional<std::size_t> preheader;
     bool unique = true;
     for (const auto predecessor : cfg.predecessors[header]) {
@@ -228,20 +231,20 @@ std::vector<LoopInfo> findLoops(
     loops.push_back(std::move(loop));
   }
   std::sort(loops.begin(), loops.end(),
-            [](const LoopInfo& lhs, const LoopInfo& rhs) {
+            [](const LoopInfo &lhs, const LoopInfo &rhs) {
               return lhs.blocks.size() < rhs.blocks.size();
             });
   return loops;
 }
 
-std::unordered_map<std::string, Definition> buildDefinitions(
-    const MachineFunction& function) {
+std::unordered_map<std::string, Definition>
+buildDefinitions(const MachineFunction &function) {
   std::unordered_map<std::string, Definition> definitions;
   for (std::size_t block = 0; block < function.blocks.size(); ++block) {
     for (std::size_t instruction = 0;
          instruction < function.blocks[block].instructions.size();
          ++instruction) {
-      const auto& current = function.blocks[block].instructions[instruction];
+      const auto &current = function.blocks[block].instructions[instruction];
       if (current.hasResult && isVirtualRegister(current.result)) {
         definitions.emplace(current.result.text,
                             Definition{block, instruction});
@@ -251,15 +254,15 @@ std::unordered_map<std::string, Definition> buildDefinitions(
   return definitions;
 }
 
-std::unordered_map<std::string, std::vector<std::size_t>> buildUses(
-    const MachineFunction& function,
-    const compiler::backend::target::TargetInstrAdapter& adapter) {
+std::unordered_map<std::string, std::vector<std::size_t>>
+buildUses(const MachineFunction &function,
+          const compiler::backend::target::TargetInstrAdapter &adapter) {
   std::unordered_map<std::string, std::vector<std::size_t>> uses;
   std::vector<MachineOperand> operands;
   for (std::size_t block = 0; block < function.blocks.size(); ++block) {
-    for (const auto& instruction : function.blocks[block].instructions) {
+    for (const auto &instruction : function.blocks[block].instructions) {
       adapter.enumerateUses(instruction, operands);
-      for (const auto& operand : operands) {
+      for (const auto &operand : operands) {
         if (isVirtualRegister(operand)) {
           uses[operand.text].push_back(block);
         }
@@ -270,8 +273,8 @@ std::unordered_map<std::string, std::vector<std::size_t>> buildUses(
 }
 
 bool isLoopInvariant(
-    const MachineOperand& operand, const LoopInfo& loop,
-    const std::unordered_map<std::string, Definition>& definitions) {
+    const MachineOperand &operand, const LoopInfo &loop,
+    const std::unordered_map<std::string, Definition> &definitions) {
   if (!isVirtualRegister(operand)) {
     return true;
   }
@@ -280,10 +283,10 @@ bool isLoopInvariant(
          loop.blocks.find(definition->second.block) == loop.blocks.end();
 }
 
-std::optional<MachineOperand> phiIncoming(const MachineInstruction& phi,
-                                          const std::string& block) {
+std::optional<MachineOperand> phiIncoming(const MachineInstruction &phi,
+                                          const std::string &block) {
   std::optional<MachineOperand> result;
-  for (const auto& incoming : phi.phiInputs) {
+  for (const auto &incoming : phi.phiInputs) {
     if (incoming.block != block) {
       continue;
     }
@@ -295,10 +298,10 @@ std::optional<MachineOperand> phiIncoming(const MachineInstruction& phi,
   return result;
 }
 
-std::optional<Induction> matchInduction(
-    const MachineFunction& function, const LoopInfo& loop,
-    const MachineInstruction& phi,
-    const std::unordered_map<std::string, Definition>& definitions) {
+std::optional<Induction>
+matchInduction(const MachineFunction &function, const LoopInfo &loop,
+               const MachineInstruction &phi,
+               const std::unordered_map<std::string, Definition> &definitions) {
   if (phi.kind != MachineInstructionKind::Phi || !phi.hasResult ||
       !isVirtualRegister(phi.result) || !phi.result.type.isInt32()) {
     return std::nullopt;
@@ -312,7 +315,7 @@ std::optional<Induction> matchInduction(
     expectedIncoming.insert(function.blocks[latch].name);
   }
   std::unordered_set<std::string> actualIncoming;
-  for (const auto& incoming : phi.phiInputs) {
+  for (const auto &incoming : phi.phiInputs) {
     actualIncoming.insert(incoming.block);
   }
   if (actualIncoming != expectedIncoming) {
@@ -331,13 +334,13 @@ std::optional<Induction> matchInduction(
     if (definition == definitions.end() || definition->second.block != latch) {
       return std::nullopt;
     }
-    const auto& update = function.blocks[definition->second.block]
+    const auto &update = function.blocks[definition->second.block]
                              .instructions[definition->second.instruction];
     if (update.opcode != "add" || update.operands.size() != 2) {
       return std::nullopt;
     }
-    const auto isUnitStep = [&](const MachineOperand& value,
-                                const MachineOperand& step) {
+    const auto isUnitStep = [&](const MachineOperand &value,
+                                const MachineOperand &step) {
       return sameOperand(value, phi.result) &&
              step.kind == MachineOperandKind::ImmediateInt &&
              step.intValue == 1;
@@ -369,10 +372,40 @@ unsigned immediateGepCost(long long scale) {
   return scale >= -2048 && scale <= 2047 ? 1 : 2;
 }
 
-std::optional<Plan> findPlan(
-    const MachineFunction& function,
-    const compiler::backend::target::TargetInstrAdapter& adapter,
-    const std::unordered_set<std::string>& transformedHeaders) {
+bool isNonPowerOfTwoScale(long long scale) {
+  const auto magnitude = static_cast<unsigned long long>(
+      scale < 0 ? -static_cast<__int128>(scale) : scale);
+  return magnitude > 1 && (magnitude & (magnitude - 1)) != 0;
+}
+
+bool isNestedLoop(const LoopInfo &loop, const std::vector<LoopInfo> &loops) {
+  return std::any_of(loops.begin(), loops.end(), [&](const auto &outer) {
+    if (loop.blocks.size() >= outer.blocks.size())
+      return false;
+    return std::all_of(loop.blocks.begin(), loop.blocks.end(),
+                       [&](const auto block) {
+                         return outer.blocks.find(block) != outer.blocks.end();
+                       });
+  });
+}
+
+bool containsVectorMemoryOperation(const MachineFunction &function,
+                                   const LoopInfo &loop) {
+  return std::any_of(
+      loop.blocks.begin(), loop.blocks.end(), [&](const auto block) {
+        return std::any_of(function.blocks[block].instructions.begin(),
+                           function.blocks[block].instructions.end(),
+                           [](const auto &instruction) {
+                             return instruction.opcode.rfind("aarch64.neon.",
+                                                             0) == 0;
+                           });
+      });
+}
+
+std::optional<Plan>
+findPlan(const MachineFunction &function,
+         const compiler::backend::target::TargetInstrAdapter &adapter,
+         const std::unordered_set<std::string> &transformedHeaders) {
   const auto cfg = CFGBuilder{}.build(function, adapter);
   const auto reachable = computeReachable(cfg);
   const auto dominators = computeDominators(cfg, reachable);
@@ -380,12 +413,14 @@ std::optional<Plan> findPlan(
   const auto definitions = buildDefinitions(function);
   const auto uses = buildUses(function, adapter);
 
-  for (const auto& loop : loops) {
-    const auto& headerName = function.blocks[loop.header].name;
+  for (const auto &loop : loops) {
+    const bool nested = isNestedLoop(loop, loops);
+    const bool vectorMemoryLoop = containsVectorMemoryOperation(function, loop);
+    const auto &headerName = function.blocks[loop.header].name;
     if (transformedHeaders.find(headerName) != transformedHeaders.end()) {
       continue;
     }
-    for (const auto& phi : function.blocks[loop.header].instructions) {
+    for (const auto &phi : function.blocks[loop.header].instructions) {
       const auto induction = matchInduction(function, loop, phi, definitions);
       if (!induction.has_value()) {
         continue;
@@ -405,7 +440,7 @@ std::optional<Plan> findPlan(
         for (std::size_t instruction = 0;
              instruction < function.blocks[block].instructions.size();
              ++instruction) {
-          const auto& current =
+          const auto &current =
               function.blocks[block].instructions[instruction];
           if (!isGep(current) ||
               !sameOperand(current.operands[1], induction->phi) ||
@@ -424,18 +459,25 @@ std::optional<Plan> findPlan(
           const auto scale = current.operands[2].intValue;
           const auto oldCost = dynamicGepCost(scale);
           const auto newCost = immediateGepCost(scale);
-          if (oldCost < newCost + 2) {
+          const bool allowNestedLargeStride =
+              std::getenv(
+                  "COMPILER_DISABLE_NESTED_NON_POWER_OF_TWO_POINTER_IV") ==
+                  nullptr &&
+              nested && vectorMemoryLoop && isNonPowerOfTwoScale(scale) &&
+              oldCost == newCost + 1;
+          if (oldCost < newCost + 2 && !allowNestedLargeStride) {
             continue;
           }
-          candidates.push_back(
-              Candidate{block, instruction, current, oldCost - newCost});
+          candidates.push_back(Candidate{block, instruction, current,
+                                         oldCost - newCost,
+                                         allowNestedLargeStride});
         }
       }
       if (candidates.empty()) {
         continue;
       }
       std::sort(candidates.begin(), candidates.end(),
-                [](const Candidate& lhs, const Candidate& rhs) {
+                [](const Candidate &lhs, const Candidate &rhs) {
                   return lhs.estimatedSaving > rhs.estimatedSaving;
                 });
       if (candidates.size() > 2) {
@@ -447,14 +489,14 @@ std::optional<Plan> findPlan(
   return std::nullopt;
 }
 
-std::unordered_set<std::string> collectVirtualNames(
-    const MachineFunction& function) {
+std::unordered_set<std::string>
+collectVirtualNames(const MachineFunction &function) {
   std::unordered_set<std::string> names;
-  for (const auto& parameter : function.parameters) {
+  for (const auto &parameter : function.parameters) {
     names.insert(parameter.name);
   }
-  for (const auto& block : function.blocks) {
-    for (const auto& instruction : block.instructions) {
+  for (const auto &block : function.blocks) {
+    for (const auto &instruction : block.instructions) {
       if (instruction.hasResult && isVirtualRegister(instruction.result)) {
         names.insert(instruction.result.text);
       }
@@ -463,9 +505,9 @@ std::unordered_set<std::string> collectVirtualNames(
   return names;
 }
 
-MachineOperand freshVirtual(std::unordered_set<std::string>& names,
-                            const std::string& stem,
-                            const compiler::backend::mir::ValueType& type) {
+MachineOperand freshVirtual(std::unordered_set<std::string> &names,
+                            const std::string &stem,
+                            const compiler::backend::mir::ValueType &type) {
   for (std::size_t suffix = 0;; ++suffix) {
     const auto name = stem + "." + std::to_string(suffix);
     if (names.insert(name).second) {
@@ -474,7 +516,7 @@ MachineOperand freshVirtual(std::unordered_set<std::string>& names,
   }
 }
 
-std::size_t insertionPoint(const MachineBlock& block) {
+std::size_t insertionPoint(const MachineBlock &block) {
   std::size_t index = block.instructions.size();
   while (index > 0 && (block.instructions[index - 1].opcode == "br" ||
                        block.instructions[index - 1].opcode == "ret")) {
@@ -483,25 +525,27 @@ std::size_t insertionPoint(const MachineBlock& block) {
   return index;
 }
 
-bool isStrictSubset(const std::unordered_set<std::size_t>& lhs,
-                    const std::unordered_set<std::size_t>& rhs) {
-  if (lhs.size() >= rhs.size()) return false;
+bool isStrictSubset(const std::unordered_set<std::size_t> &lhs,
+                    const std::unordered_set<std::size_t> &rhs) {
+  if (lhs.size() >= rhs.size())
+    return false;
   return std::all_of(lhs.begin(), lhs.end(), [&](const auto block) {
     return rhs.find(block) != rhs.end();
   });
 }
 
 void hoistInnermostBranchConstants(
-    MachineFunction& function,
-    const compiler::backend::target::TargetInstrAdapter& adapter) {
+    MachineFunction &function,
+    const compiler::backend::target::TargetInstrAdapter &adapter) {
   const bool functionHasCall = std::any_of(
-      function.blocks.begin(), function.blocks.end(), [](const auto& block) {
+      function.blocks.begin(), function.blocks.end(), [](const auto &block) {
         return std::any_of(block.instructions.begin(), block.instructions.end(),
-                           [](const auto& instruction) {
+                           [](const auto &instruction) {
                              return instruction.opcode == "call";
                            });
       });
-  if (!functionHasCall) return;
+  if (!functionHasCall)
+    return;
 
   const auto cfg = CFGBuilder{}.build(function, adapter);
   const auto reachable = computeReachable(cfg);
@@ -509,27 +553,28 @@ void hoistInnermostBranchConstants(
   const auto loops = findLoops(cfg, reachable, dominators);
   auto names = collectVirtualNames(function);
 
-  for (const auto& loop : loops) {
-    const bool containsNestedLoop = std::any_of(
-        loops.begin(), loops.end(), [&](const auto& candidate) {
+  for (const auto &loop : loops) {
+    const bool containsNestedLoop =
+        std::any_of(loops.begin(), loops.end(), [&](const auto &candidate) {
           return isStrictSubset(candidate.blocks, loop.blocks);
         });
-    if (containsNestedLoop) continue;
+    if (containsNestedLoop)
+      continue;
 
     bool hasCall = false;
     std::unordered_map<long long, std::size_t> frequencies;
     std::unordered_map<long long, compiler::backend::mir::ValueType> types;
     for (const auto blockIndex : loop.blocks) {
-      for (const auto& instruction : function.blocks[blockIndex].instructions) {
-        if (instruction.opcode == "call") hasCall = true;
+      for (const auto &instruction : function.blocks[blockIndex].instructions) {
+        if (instruction.opcode == "call")
+          hasCall = true;
         const bool isCompare = instruction.opcode.rfind("icmp.", 0) == 0 ||
                                instruction.opcode.rfind("br.icmp.", 0) == 0;
-        if (!isCompare ||
-            instruction.operands.size() < 2) {
+        if (!isCompare || instruction.operands.size() < 2) {
           continue;
         }
         for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
-          const auto& operand = instruction.operands[operandIndex];
+          const auto &operand = instruction.operands[operandIndex];
           if (operand.kind != MachineOperandKind::ImmediateInt ||
               !operand.type.isInt32() || operand.intValue == 0) {
             continue;
@@ -539,35 +584,36 @@ void hoistInnermostBranchConstants(
         }
       }
     }
-    if (hasCall || frequencies.empty()) continue;
+    if (hasCall || frequencies.empty())
+      continue;
 
-    const auto best = std::max_element(
-        frequencies.begin(), frequencies.end(), [](const auto& lhs, const auto& rhs) {
-          if (lhs.second != rhs.second) return lhs.second < rhs.second;
-          return lhs.first < rhs.first;
-        });
-    const auto constant = freshVirtual(names, "%loop.branch.constant", types.at(best->first));
-    auto& preheader = function.blocks[loop.preheader];
+    const auto best = std::max_element(frequencies.begin(), frequencies.end(),
+                                       [](const auto &lhs, const auto &rhs) {
+                                         if (lhs.second != rhs.second)
+                                           return lhs.second < rhs.second;
+                                         return lhs.first < rhs.first;
+                                       });
+    const auto constant =
+        freshVirtual(names, "%loop.branch.constant", types.at(best->first));
+    auto &preheader = function.blocks[loop.preheader];
     const auto position = insertionPoint(preheader);
     preheader.instructions.insert(
         preheader.instructions.begin() + position,
-        MachineInstruction::target(
-            "copy", constant,
-            {MachineOperand::immediateInt(best->first, types.at(best->first))}));
+        MachineInstruction::target("copy", constant,
+                                   {MachineOperand::immediateInt(
+                                       best->first, types.at(best->first))}));
 
     for (const auto blockIndex : loop.blocks) {
-      for (auto& instruction : function.blocks[blockIndex].instructions) {
+      for (auto &instruction : function.blocks[blockIndex].instructions) {
         const bool isCompare = instruction.opcode.rfind("icmp.", 0) == 0 ||
                                instruction.opcode.rfind("br.icmp.", 0) == 0;
-        if (!isCompare ||
-            instruction.operands.size() < 2) {
+        if (!isCompare || instruction.operands.size() < 2) {
           continue;
         }
         for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
-          auto& operand = instruction.operands[operandIndex];
+          auto &operand = instruction.operands[operandIndex];
           if (operand.kind == MachineOperandKind::ImmediateInt &&
-              operand.type.isInt32() &&
-              operand.intValue == best->first) {
+              operand.type.isInt32() && operand.intValue == best->first) {
             operand = constant;
           }
         }
@@ -576,7 +622,7 @@ void hoistInnermostBranchConstants(
   }
 }
 
-bool transform(MachineFunction& function, const Plan& plan) {
+bool transform(MachineFunction &function, const Plan &plan) {
   auto names = collectVirtualNames(function);
   std::vector<MachineInstruction> preheaderInitializers;
   std::vector<MachineInstruction> headerPhis;
@@ -584,7 +630,7 @@ bool transform(MachineFunction& function, const Plan& plan) {
   std::unordered_map<std::string, MachineOperand> replacements;
   std::unordered_map<std::size_t, std::unordered_set<std::size_t>> removals;
 
-  for (const auto& candidate : plan.candidates) {
+  for (const auto &candidate : plan.candidates) {
     const auto initialPointer =
         freshVirtual(names, "%loop.pointer.initial", candidate.gep.result.type);
     preheaderInitializers.push_back(MachineInstruction::target(
@@ -594,18 +640,32 @@ bool transform(MachineFunction& function, const Plan& plan) {
 
     const auto pointerPhi =
         freshVirtual(names, "%loop.pointer", candidate.gep.result.type);
+    std::optional<MachineOperand> hoistedStride;
+    if (candidate.hoistStride) {
+      hoistedStride = freshVirtual(names, "%loop.pointer.stride",
+                                   candidate.gep.result.type);
+      preheaderInitializers.push_back(MachineInstruction::copy(
+          *hoistedStride,
+          MachineOperand::immediateInt(candidate.gep.operands[2].intValue,
+                                       candidate.gep.result.type)));
+    }
     std::vector<compiler::backend::mir::MachinePhiIncoming> incoming;
     incoming.push_back(
         {function.blocks[plan.loop.preheader].name, initialPointer});
     for (const auto latch : plan.loop.latches) {
       const auto nextPointer =
           freshVirtual(names, "%loop.pointer.next", candidate.gep.result.type);
-      latchUpdates[latch].push_back(MachineInstruction::target(
-          candidate.gep.opcode, nextPointer,
-          {pointerPhi,
-           MachineOperand::immediateInt(
-               1, compiler::backend::mir::ValueType::int32Type()),
-           candidate.gep.operands[2]}));
+      if (hoistedStride.has_value()) {
+        latchUpdates[latch].push_back(MachineInstruction::target(
+            "add", nextPointer, {pointerPhi, *hoistedStride}));
+      } else {
+        latchUpdates[latch].push_back(MachineInstruction::target(
+            candidate.gep.opcode, nextPointer,
+            {pointerPhi,
+             MachineOperand::immediateInt(
+                 1, compiler::backend::mir::ValueType::int32Type()),
+             candidate.gep.operands[2]}));
+      }
       incoming.push_back({function.blocks[latch].name, nextPointer});
     }
     headerPhis.push_back(
@@ -614,16 +674,16 @@ bool transform(MachineFunction& function, const Plan& plan) {
     removals[candidate.block].insert(candidate.instruction);
   }
 
-  auto& preheader = function.blocks[plan.loop.preheader];
+  auto &preheader = function.blocks[plan.loop.preheader];
   const auto preheaderPosition = insertionPoint(preheader);
   preheader.instructions.insert(
       preheader.instructions.begin() + preheaderPosition,
       preheaderInitializers.begin(), preheaderInitializers.end());
 
-  auto& header = function.blocks[plan.loop.header].instructions;
+  auto &header = function.blocks[plan.loop.header].instructions;
   header.insert(header.begin(), headerPhis.begin(), headerPhis.end());
-  for (auto& [latch, updates] : latchUpdates) {
-    auto& block = function.blocks[latch];
+  for (auto &[latch, updates] : latchUpdates) {
+    auto &block = function.blocks[latch];
     const auto position = insertionPoint(block);
     block.instructions.insert(block.instructions.begin() + position,
                               updates.begin(), updates.end());
@@ -648,7 +708,7 @@ bool transform(MachineFunction& function, const Plan& plan) {
         continue;
       }
       auto current = function.blocks[block].instructions[instruction];
-      for (auto& operand : current.operands) {
+      for (auto &operand : current.operands) {
         if (isVirtualRegister(operand)) {
           const auto replacement = replacements.find(operand.text);
           if (replacement != replacements.end()) {
@@ -656,7 +716,7 @@ bool transform(MachineFunction& function, const Plan& plan) {
           }
         }
       }
-      for (auto& incoming : current.phiInputs) {
+      for (auto &incoming : current.phiInputs) {
         if (isVirtualRegister(incoming.value)) {
           const auto replacement = replacements.find(incoming.value.text);
           if (replacement != replacements.end()) {
@@ -671,15 +731,15 @@ bool transform(MachineFunction& function, const Plan& plan) {
   return !replacements.empty();
 }
 
-}  // namespace
+} // namespace
 
 void MachineLoopStrengthReduction::run(
-    compiler::backend::mir::MachineModule& module) const {
-  const auto& adapter =
+    compiler::backend::mir::MachineModule &module) const {
+  const auto &adapter =
       compiler::backend::target::instrAdapterFor(module.target);
-  for (auto& function : module.functions) {
+  for (auto &function : module.functions) {
     std::size_t instructionCount = 0;
-    for (const auto& block : function.blocks) {
+    for (const auto &block : function.blocks) {
       instructionCount += block.instructions.size();
     }
     if (instructionCount > kMaxAnalyzedInstructions) {
@@ -696,4 +756,4 @@ void MachineLoopStrengthReduction::run(
   }
 }
 
-}  // namespace compiler::backend::opt
+} // namespace compiler::backend::opt

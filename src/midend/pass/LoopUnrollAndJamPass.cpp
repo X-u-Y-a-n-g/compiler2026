@@ -1,6 +1,7 @@
 #include "../../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -17,10 +18,6 @@ namespace {
 using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
-
-// Ten independent accumulators fit the RV64 integer register budget for the
-// supported loop shape; twelve lanes introduced a hot-loop stack reload.
-constexpr int kJamFactor = 10;
 
 bool isGepOpcode(const std::string& opcode) {
   return opcode == "getelementptr" || opcode == "getelementptr.linear" ||
@@ -732,7 +729,304 @@ std::vector<Instruction> cloneLane(
   return cloned;
 }
 
-bool transform(Function& function, const Candidate& candidate) {
+bool collapseJammedAddReductionToNeon(
+    Function& function, BasicBlock& outerBody, BasicBlock& innerBody,
+    BasicBlock& innerExit, const std::vector<std::string>& reductionSlots) {
+  const auto fail = [](const char* reason) {
+    (void)reason;
+    return false;
+  };
+  if (reductionSlots.size() != 32) return fail("lane count");
+
+  // Fixed vector registers are an implicit state of the three pseudos below.
+  // Conservatively reject functions that already contain floating-point or
+  // target-vector operations so their live ranges can never overlap it.
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if ((!instruction.opcode().empty() && instruction.opcode()[0] == 'f') ||
+          instruction.opcode().rfind("aarch64.neon.", 0) == 0 ||
+          std::find(instruction.operands().begin(), instruction.operands().end(),
+                    "float") != instruction.operands().end()) {
+        return fail("preexisting vector or float");
+      }
+    }
+  }
+
+  const auto analyzeDefinitions = [](const std::vector<Instruction>& code) {
+    std::unordered_map<std::string, std::size_t> definitions;
+    for (std::size_t index = 0; index < code.size(); ++index) {
+      if (code[index].hasResult()) definitions.emplace(code[index].result(), index);
+    }
+    return definitions;
+  };
+  const auto bodyDefinitions = analyzeDefinitions(innerBody.instructions());
+
+  struct LaneRecurrence {
+    std::size_t reductionLoad = 0;
+    std::size_t sourceAddress = 0;
+    std::size_t sourceLoad = 0;
+    std::size_t multiply = 0;
+    std::size_t add = 0;
+    std::size_t reductionStore = 0;
+    std::string coefficient;
+    std::string sourceAddressValue;
+  };
+  std::vector<LaneRecurrence> lanes(32);
+
+  for (std::size_t lane = 0; lane < lanes.size(); ++lane) {
+    std::optional<std::size_t> loadIndex;
+    std::optional<std::size_t> storeIndex;
+    for (std::size_t index = 0; index < innerBody.instructions().size(); ++index) {
+      const auto& instruction = innerBody.instructions()[index];
+      if (isLoadFrom(instruction, reductionSlots[lane])) {
+        if (loadIndex.has_value()) return false;
+        loadIndex = index;
+      }
+      if (isStoreTo(instruction, reductionSlots[lane])) {
+        if (storeIndex.has_value()) return false;
+        storeIndex = index;
+      }
+    }
+    if (!loadIndex.has_value() || !storeIndex.has_value()) return fail("body reduction access");
+    const auto& store = innerBody.instructions()[*storeIndex];
+    const auto addFound = bodyDefinitions.find(store.operands()[1]);
+    if (addFound == bodyDefinitions.end()) return fail("body add definition");
+    const auto& add = innerBody.instructions()[addFound->second];
+    if (add.opcode() != "add" || add.operands().size() != 2) return fail("body add shape");
+    const auto& reductionValue = innerBody.instructions()[*loadIndex].result();
+    std::string productValue;
+    if (add.operands()[0] == reductionValue) productValue = add.operands()[1];
+    if (add.operands()[1] == reductionValue) productValue = add.operands()[0];
+    const auto multiplyFound = bodyDefinitions.find(productValue);
+    if (multiplyFound == bodyDefinitions.end()) return fail("body multiply definition");
+    const auto& multiply = innerBody.instructions()[multiplyFound->second];
+    if (multiply.opcode() != "mul" || multiply.operands().size() != 2) return fail("body multiply shape");
+
+    lanes[lane].reductionLoad = *loadIndex;
+    lanes[lane].multiply = multiplyFound->second;
+    lanes[lane].add = addFound->second;
+    lanes[lane].reductionStore = *storeIndex;
+  }
+
+  // Lane one establishes which multiply operand is the consecutive source;
+  // the other must be one common loop-invariant/broadcast coefficient.
+  bool foundSource = false;
+  std::string sourceBase;
+  std::string coefficient;
+  const auto& laneOneMultiply = innerBody.instructions()[lanes[1].multiply];
+  for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
+    const auto loadFound = bodyDefinitions.find(laneOneMultiply.operands()[operandIndex]);
+    if (loadFound == bodyDefinitions.end()) continue;
+    const auto& load = innerBody.instructions()[loadFound->second];
+    if (load.opcode() != "load" || load.operands().size() != 2) continue;
+    const auto addressFound = bodyDefinitions.find(load.operands()[1]);
+    if (addressFound == bodyDefinitions.end()) continue;
+    const auto& address = innerBody.instructions()[addressFound->second];
+    long long offset = 0;
+    if (address.opcode() != "gep.linear" || address.operands().size() != 2 ||
+        !detail::parseIntegerLiteral(address.operands()[1], offset) || offset != 1) {
+      continue;
+    }
+    sourceBase = address.operands()[0];
+    foundSource = true;
+    break;
+  }
+  if (!foundSource) return fail("lane one source");
+
+  std::function<bool(const std::string&, const std::string&,
+                     std::unordered_set<std::string>&)>
+      equivalentValue;
+  equivalentValue = [&](const std::string& lhs, const std::string& rhs,
+                        std::unordered_set<std::string>& visiting) {
+    if (lhs == rhs) return true;
+    if (!visiting.insert(lhs + "\n" + rhs).second) return false;
+    const auto lhsFound = bodyDefinitions.find(lhs);
+    const auto rhsFound = bodyDefinitions.find(rhs);
+    if (lhsFound == bodyDefinitions.end() || rhsFound == bodyDefinitions.end()) {
+      return false;
+    }
+    const auto& lhsInstruction = innerBody.instructions()[lhsFound->second];
+    const auto& rhsInstruction = innerBody.instructions()[rhsFound->second];
+    if (lhsInstruction.opcode() != rhsInstruction.opcode() ||
+        lhsInstruction.operands().size() != rhsInstruction.operands().size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < lhsInstruction.operands().size(); ++index) {
+      if (!equivalentValue(lhsInstruction.operands()[index],
+                           rhsInstruction.operands()[index], visiting)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  std::unordered_set<std::size_t> bodyRemovals;
+  std::size_t bodyInsert = innerBody.instructions().size();
+  std::string coefficientAddress;
+  for (std::size_t lane = 0; lane < lanes.size(); ++lane) {
+    const auto& multiply = innerBody.instructions()[lanes[lane].multiply];
+    std::optional<std::size_t> sourceLoad;
+    std::optional<std::size_t> sourceAddress;
+    std::string laneCoefficient;
+    for (std::size_t operandIndex = 0; operandIndex < 2; ++operandIndex) {
+      const auto loadFound = bodyDefinitions.find(multiply.operands()[operandIndex]);
+      if (loadFound == bodyDefinitions.end()) continue;
+      const auto& load = innerBody.instructions()[loadFound->second];
+      if (load.opcode() != "load" || load.operands().size() != 2) continue;
+      if (lane == 0 && load.operands()[1] == sourceBase) {
+        sourceLoad = loadFound->second;
+        laneCoefficient = multiply.operands()[1 - operandIndex];
+      } else if (lane != 0) {
+        const auto addressFound = bodyDefinitions.find(load.operands()[1]);
+        if (addressFound == bodyDefinitions.end()) continue;
+        const auto& address = innerBody.instructions()[addressFound->second];
+        long long offset = 0;
+        if (address.opcode() == "gep.linear" && address.operands().size() == 2 &&
+            address.operands()[0] == sourceBase &&
+            detail::parseIntegerLiteral(address.operands()[1], offset) &&
+            offset == static_cast<long long>(lane)) {
+          sourceLoad = loadFound->second;
+          sourceAddress = addressFound->second;
+          laneCoefficient = multiply.operands()[1 - operandIndex];
+        }
+      }
+    }
+    if (!sourceLoad.has_value() || (lane != 0 && !sourceAddress.has_value())) {
+      return fail("lane source consistency");
+    }
+    const auto coefficientFound = bodyDefinitions.find(laneCoefficient);
+    if (coefficientFound == bodyDefinitions.end()) {
+      return fail("coefficient definition");
+    }
+    const auto& coefficientLoad =
+        innerBody.instructions()[coefficientFound->second];
+    if (coefficientLoad.opcode() != "load" ||
+        coefficientLoad.operands().size() != 2) {
+      return fail("coefficient load");
+    }
+    if (lane == 0) {
+      coefficient = laneCoefficient;
+      coefficientAddress = coefficientLoad.operands()[1];
+    } else {
+      std::unordered_set<std::string> visiting;
+      if (!equivalentValue(coefficientAddress,
+                           coefficientLoad.operands()[1], visiting)) {
+        return fail("coefficient address consistency");
+      }
+    }
+    lanes[lane].sourceLoad = *sourceLoad;
+    lanes[lane].sourceAddress = sourceAddress.value_or(0);
+    bodyInsert = std::min(bodyInsert, *sourceLoad);
+    bodyRemovals.insert(lanes[lane].reductionLoad);
+    bodyRemovals.insert(*sourceLoad);
+    if (sourceAddress.has_value()) bodyRemovals.insert(*sourceAddress);
+    bodyRemovals.insert(lanes[lane].multiply);
+    bodyRemovals.insert(lanes[lane].add);
+    bodyRemovals.insert(lanes[lane].reductionStore);
+  }
+
+  const auto exitDefinitions = analyzeDefinitions(innerExit.instructions());
+  std::unordered_set<std::size_t> exitRemovals;
+  std::string destinationBase;
+  std::size_t exitInsert = innerExit.instructions().size();
+  for (std::size_t lane = 0; lane < reductionSlots.size(); ++lane) {
+    std::optional<std::size_t> loadIndex;
+    std::optional<std::size_t> storeIndex;
+    for (std::size_t index = 0; index < innerExit.instructions().size(); ++index) {
+      const auto& instruction = innerExit.instructions()[index];
+      if (isLoadFrom(instruction, reductionSlots[lane])) loadIndex = index;
+      if (instruction.opcode() == "store" && instruction.operands().size() == 3 &&
+          loadIndex.has_value() &&
+          instruction.operands()[1] == innerExit.instructions()[*loadIndex].result()) {
+        storeIndex = index;
+      }
+    }
+    if (!loadIndex.has_value() || !storeIndex.has_value()) return fail("exit load/store");
+    const std::string addressValue = innerExit.instructions()[*storeIndex].operands()[2];
+    const auto addressFound = exitDefinitions.find(addressValue);
+    if (addressFound == exitDefinitions.end()) return fail("exit address definition");
+    const auto& address = innerExit.instructions()[addressFound->second];
+    if (lane == 0) {
+      destinationBase = addressValue;
+      exitInsert = *storeIndex;
+    } else {
+      long long offset = 0;
+      if (address.opcode() != "gep.linear" || address.operands().size() != 2 ||
+          address.operands()[0] != destinationBase ||
+          !detail::parseIntegerLiteral(address.operands()[1], offset) ||
+          offset != static_cast<long long>(lane)) {
+        return fail("exit address consistency");
+      }
+      exitRemovals.insert(addressFound->second);
+    }
+    exitRemovals.insert(*loadIndex);
+    exitRemovals.insert(*storeIndex);
+  }
+
+  std::vector<Instruction> vectorBody;
+  for (std::size_t index = 0; index < innerBody.instructions().size(); ++index) {
+    if (index == bodyInsert) {
+      vectorBody.emplace_back("aarch64.neon.dup.acc.i32x32",
+                              std::vector<std::string>{coefficient});
+      vectorBody.emplace_back("aarch64.neon.mla.acc.i32x32",
+                              std::vector<std::string>{sourceBase});
+    }
+    if (bodyRemovals.find(index) == bodyRemovals.end()) {
+      vectorBody.push_back(std::move(innerBody.instructions()[index]));
+    }
+  }
+  innerBody.instructions() = std::move(vectorBody);
+
+  std::vector<Instruction> vectorExit;
+  for (std::size_t index = 0; index < innerExit.instructions().size(); ++index) {
+    if (index == exitInsert) {
+      vectorExit.emplace_back("aarch64.neon.store.acc.i32x32",
+                              std::vector<std::string>{destinationBase});
+    }
+    if (exitRemovals.find(index) == exitRemovals.end()) {
+      vectorExit.push_back(std::move(innerExit.instructions()[index]));
+    }
+  }
+  innerExit.instructions() = std::move(vectorExit);
+
+  auto& outerInstructions = outerBody.instructions();
+  std::vector<Instruction> vectorOuter;
+  for (auto& instruction : outerInstructions) {
+    if (isStoreTo(instruction, reductionSlots[0]) ||
+        std::any_of(reductionSlots.begin() + 1, reductionSlots.end(),
+                    [&](const auto& slot) {
+                      return isStoreTo(instruction, slot) ||
+                             (instruction.opcode() == "alloca" &&
+                              instruction.result() == slot);
+                    })) {
+      continue;
+    }
+    if (instruction.isTerminator()) {
+      vectorOuter.emplace_back("aarch64.neon.zero.acc.i32x32",
+                               std::vector<std::string>{});
+    }
+    vectorOuter.push_back(std::move(instruction));
+  }
+  outerInstructions = std::move(vectorOuter);
+
+  for (auto& block : function.blocks()) {
+    auto& instructions = block.instructions();
+    instructions.erase(
+        std::remove_if(instructions.begin(), instructions.end(),
+                       [&](const Instruction& instruction) {
+                         return instruction.opcode() == "alloca" &&
+                                std::find(reductionSlots.begin(),
+                                          reductionSlots.end(),
+                                          instruction.result()) !=
+                                    reductionSlots.end();
+                       }),
+        instructions.end());
+  }
+  return true;
+}
+
+bool transform(Function& function, const Candidate& candidate, int jamFactor,
+               bool useAArch64VectorAccumulator) {
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
   std::string tailHeader;
@@ -755,7 +1049,7 @@ bool transform(Function& function, const Candidate& candidate) {
 
   auto& outerBodyInstructions = outerBody->instructions();
   auto insert = outerBodyInstructions.end() - 1;
-  for (int lane = 1; lane < kJamFactor; ++lane) {
+  for (int lane = 1; lane < jamFactor; ++lane) {
     const auto laneSlot = freshName(valueNames, "%unrolljam.reduction");
     laneReductionSlots.push_back(laneSlot);
     insert = outerBodyInstructions.insert(
@@ -777,10 +1071,10 @@ bool transform(Function& function, const Candidate& candidate) {
 
   std::vector<Instruction> jammedBody;
   std::unordered_map<std::string, std::string> bodyLaneZeroAddresses;
-  for (int lane = 0; lane < kJamFactor; ++lane) {
+  for (int lane = 0; lane < jamFactor; ++lane) {
     auto cloned =
         cloneLane(originalInnerBody, lane, candidate, laneValues[lane],
-                  laneReductionSlots[lane], lane == kJamFactor - 1, valueNames,
+                  laneReductionSlots[lane], lane == jamFactor - 1, valueNames,
                   bodyLaneZeroAddresses);
     jammedBody.insert(jammedBody.end(), cloned.begin(), cloned.end());
   }
@@ -790,7 +1084,7 @@ bool transform(Function& function, const Candidate& candidate) {
 
   std::vector<Instruction> jammedExit;
   std::unordered_map<std::string, std::string> exitLaneZeroAddresses;
-  for (int lane = 0; lane < kJamFactor; ++lane) {
+  for (int lane = 0; lane < jamFactor; ++lane) {
     auto cloned = cloneLane(originalInnerExit, lane, candidate,
                             laneValues[lane], laneReductionSlots[lane], true,
                             valueNames, exitLaneZeroAddresses);
@@ -799,7 +1093,7 @@ bool transform(Function& function, const Candidate& candidate) {
   const auto nextOuter = freshName(valueNames, "%unrolljam.next");
   jammedExit.emplace_back("add",
                           std::vector<std::string>{candidate.outerValue,
-                                                   std::to_string(kJamFactor)},
+                                                   std::to_string(jamFactor)},
                           nextOuter);
   jammedExit.emplace_back(
       "store", std::vector<std::string>{candidate.reductionType, nextOuter,
@@ -808,6 +1102,11 @@ bool transform(Function& function, const Candidate& candidate) {
                           std::vector<std::string>{candidate.outerHeader});
   innerExit->instructions() = std::move(jammedExit);
 
+  if (useAArch64VectorAccumulator && jamFactor == 32) {
+    collapseJammedAddReductionToNeon(function, *outerBody, *innerBody,
+                                     *innerExit, laneReductionSlots);
+  }
+
   const auto guardName = freshName(blockNames, "unrolljam.guard");
   const auto remaining = freshName(valueNames, "%unrolljam.remaining");
   const auto enough = freshName(valueNames, "%unrolljam.enough");
@@ -815,7 +1114,7 @@ bool transform(Function& function, const Candidate& candidate) {
   guard.addInstruction(Instruction{
       "sub", {candidate.outerBound, candidate.outerValue}, remaining});
   guard.addInstruction(Instruction{
-      "icmp.sgt", {remaining, std::to_string(kJamFactor - 1)}, enough});
+      "icmp.sgt", {remaining, std::to_string(jamFactor - 1)}, enough});
   guard.addInstruction(
       Instruction{"br", {enough, candidate.outerBody, tailHeader}});
 
@@ -834,10 +1133,12 @@ bool transform(Function& function, const Candidate& candidate) {
 }  // namespace
 
 void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
+  if (jamFactor_ < 2) return;
   for (auto& function : module.functions()) {
     const auto candidate = findCandidate(function);
     if (candidate.has_value()) {
-      transform(function, *candidate);
+      transform(function, *candidate, jamFactor_,
+                useAArch64VectorAccumulator_);
     }
   }
 }

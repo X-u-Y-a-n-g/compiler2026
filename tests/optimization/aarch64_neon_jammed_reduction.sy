@@ -1,0 +1,46 @@
+int left[40][40];
+int state[40][40];
+
+int main() {
+    int n = getint();
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            left[i][j] = i * 17 - j * 5 + 3;
+            state[i][j] = i * 7 + j * 11 - 9;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int k = 0;
+            int sum = 0;
+            while (k < n) {
+                sum = sum + left[i][k] * state[k][j];
+                k = k + 1;
+            }
+            state[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    int checksum = 0;
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            checksum = checksum + state[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(checksum);
+    putch(10);
+    return 0;
+}

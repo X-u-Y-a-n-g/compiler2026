@@ -1,5 +1,7 @@
 #include "../../../include/compiler/backend/opt/AArch64InstructionCombining.h"
 
+#include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <limits>
 #include <unordered_map>
@@ -24,6 +26,47 @@ struct Definition {
 
 bool isVirtualRegister(const MachineOperand& operand) {
   return operand.kind == MachineOperandKind::VirtualRegister;
+}
+
+bool sameVirtualRegister(const MachineOperand& lhs, const MachineOperand& rhs) {
+  return isVirtualRegister(lhs) && isVirtualRegister(rhs) &&
+         lhs.text == rhs.text && lhs.type.kind == rhs.type.kind;
+}
+
+bool isAddSubImmediateEncodable(std::int64_t value) {
+  const std::uint64_t magnitude =
+      value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                : static_cast<std::uint64_t>(value);
+  return magnitude <= 4095U ||
+         (magnitude % 4096U == 0 && magnitude / 4096U <= 4095U);
+}
+
+std::unordered_set<std::string> collectVirtualRegisterNames(
+    const MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  std::unordered_set<std::string> names;
+  std::vector<MachineOperand> uses;
+  for (const auto& parameter : function.parameters) names.insert(parameter.name);
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      if (instruction.hasResult && isVirtualRegister(instruction.result)) {
+        names.insert(instruction.result.text);
+      }
+      adapter.enumerateUses(instruction, uses);
+      for (const auto& operand : uses) {
+        if (isVirtualRegister(operand)) names.insert(operand.text);
+      }
+    }
+  }
+  return names;
+}
+
+std::string freshVirtualRegisterName(std::unordered_set<std::string>& names,
+                                     const std::string& prefix) {
+  for (std::size_t suffix = 0;; ++suffix) {
+    const std::string candidate = prefix + "." + std::to_string(suffix);
+    if (names.insert(candidate).second) return candidate;
+  }
 }
 
 bool isAddressCalculation(const MachineInstruction& instruction) {
@@ -186,6 +229,52 @@ void combineCompareSelects(
   }
 }
 
+void shareBoundedModuloConstant(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  auto names = collectVirtualRegisterNames(function, adapter);
+  for (auto& block : function.blocks) {
+    auto& instructions = block.instructions;
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(instructions.size());
+    for (std::size_t index = 0; index < instructions.size();) {
+      if (index + 1 < instructions.size()) {
+        auto& subtract = instructions[index];
+        auto& select = instructions[index + 1];
+        const bool positiveCorrection =
+            subtract.opcode == "sub" && subtract.hasResult &&
+            subtract.operands.size() == 2 &&
+            subtract.operands[1].kind == MachineOperandKind::ImmediateInt &&
+            subtract.operands[1].intValue > 1 &&
+            !isAddSubImmediateEncodable(subtract.operands[1].intValue) &&
+            select.opcode == "select.icmp.sge" && select.hasResult &&
+            select.operands.size() == 4 &&
+            sameVirtualRegister(select.operands[0], subtract.operands[0]) &&
+            select.operands[1].kind == MachineOperandKind::ImmediateInt &&
+            select.operands[1].intValue == subtract.operands[1].intValue &&
+            sameVirtualRegister(select.operands[2], subtract.result) &&
+            sameVirtualRegister(select.operands[3], subtract.operands[0]);
+        if (positiveCorrection) {
+          const auto constant = MachineOperand::virtualRegister(
+              freshVirtualRegisterName(names,
+                                       "%aarch64.bounded.mod.constant"),
+              subtract.operands[1].type);
+          rewritten.push_back(
+              MachineInstruction::copy(constant, subtract.operands[1]));
+          subtract.operands[1] = constant;
+          select.operands[1] = constant;
+          rewritten.push_back(std::move(subtract));
+          rewritten.push_back(std::move(select));
+          index += 2;
+          continue;
+        }
+      }
+      rewritten.push_back(std::move(instructions[index++]));
+    }
+    instructions = std::move(rewritten);
+  }
+}
+
 void foldIndexedAddresses(
     MachineFunction& function,
     const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -288,6 +377,9 @@ void AArch64InstructionCombining::run(
   for (auto& function : module.functions) {
     combineMultiplyAdds(function, adapter);
     combineCompareSelects(function, adapter);
+    if (std::getenv("COMPILER_DISABLE_BOUNDED_MODULO_REDUCTION") == nullptr) {
+      shareBoundedModuloConstant(function, adapter);
+    }
     foldIndexedAddresses(function, adapter);
   }
 }

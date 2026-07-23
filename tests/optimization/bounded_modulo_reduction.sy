@@ -1,0 +1,53 @@
+int signed_bounded(int x) {
+    if (x >= -13) {
+        if (x <= 13) {
+            return x % 7;
+        }
+    }
+    return x % 7;
+}
+
+int nonnegative_bounded(int x) {
+    if (x >= 0) {
+        if (x < 14) {
+            return x % 7;
+        }
+    }
+    return x % 7;
+}
+
+int reduced_twice(int x) {
+    int reduced = x % 7;
+    return (reduced + reduced) % 7;
+}
+
+int recursive_reduction(int value, int depth) {
+    if (depth == 0) {
+        return value % 7;
+    }
+    int reduced = recursive_reduction(value, depth - 1);
+    return (reduced + reduced) % 7;
+}
+
+int main() {
+    int x = getint();
+    int y = getint();
+    int z = getint();
+    putint(signed_bounded(x));
+    putch(10);
+    putint(nonnegative_bounded(y));
+    putch(10);
+    putint(reduced_twice(x));
+    putch(10);
+    putint(z % 7);
+    putch(10);
+    putint((z + 2147483647) % 7);
+    putch(10);
+    putint(recursive_reduction(x, 3));
+    putch(10);
+    putint(recursive_reduction(y % 7, 3));
+    putch(10);
+    putint(recursive_reduction(z, 2));
+    putch(10);
+    return 0;
+}

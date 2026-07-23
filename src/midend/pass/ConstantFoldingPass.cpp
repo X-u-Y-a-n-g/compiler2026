@@ -62,6 +62,50 @@ std::optional<std::string> foldIntegerIdentity(const std::string& opcode,
   return std::nullopt;
 }
 
+std::string formatI32Bits(std::uint32_t bits) {
+  if (bits <= static_cast<std::uint32_t>(
+                  std::numeric_limits<std::int32_t>::max())) {
+    return std::to_string(bits);
+  }
+  return std::to_string(static_cast<std::int64_t>(bits) -
+                        (std::int64_t{1} << 32));
+}
+
+std::optional<std::string> foldIntegerBinary(
+    const std::string& opcode, const std::vector<std::string>& operands) {
+  if (operands.size() != 2) return std::nullopt;
+  const auto lhs = parseI32(operands[0]);
+  const auto rhs = parseI32(operands[1]);
+  if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+  const auto lhsBits = static_cast<std::uint32_t>(*lhs);
+  const auto rhsBits = static_cast<std::uint32_t>(*rhs);
+  if (opcode == "add") return formatI32Bits(lhsBits + rhsBits);
+  if (opcode == "sub") return formatI32Bits(lhsBits - rhsBits);
+  if (opcode == "mul") return formatI32Bits(lhsBits * rhsBits);
+  if (opcode == "and") return formatI32Bits(lhsBits & rhsBits);
+  if (opcode == "or") return formatI32Bits(lhsBits | rhsBits);
+  if (opcode == "xor") return formatI32Bits(lhsBits ^ rhsBits);
+  if ((opcode == "sdiv" || opcode == "div") && *rhs != 0 &&
+      !(*lhs == std::numeric_limits<std::int32_t>::min() && *rhs == -1)) {
+    return std::to_string(*lhs / *rhs);
+  }
+  if ((opcode == "srem" || opcode == "mod") && *rhs != 0 &&
+      !(*lhs == std::numeric_limits<std::int32_t>::min() && *rhs == -1)) {
+    return std::to_string(*lhs % *rhs);
+  }
+  if ((opcode == "shl" || opcode == "lshr" || opcode == "ashr") &&
+      *rhs >= 0 && *rhs < 32) {
+    const unsigned shift = static_cast<unsigned>(*rhs);
+    if (opcode == "shl") return formatI32Bits(lhsBits << shift);
+    if (opcode == "lshr") return formatI32Bits(lhsBits >> shift);
+    if (shift == 0) return formatI32Bits(lhsBits);
+    std::uint32_t result = lhsBits >> shift;
+    if (*lhs < 0) result |= ~std::uint32_t{0} << (32U - shift);
+    return formatI32Bits(result);
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> foldIntegerCompare(const std::string& opcode,
                                               const std::vector<std::string>& operands) {
   if (operands.size() != 2 || opcode.rfind("icmp.", 0) != 0) {
@@ -96,7 +140,8 @@ std::optional<std::string> foldIntegerCompare(const std::string& opcode,
   return std::nullopt;
 }
 
-std::optional<std::string> foldInstruction(const Instruction& instruction) {
+std::optional<std::string> foldInstruction(const Instruction& instruction,
+                                           bool foldAllIntegerConstants) {
   const auto& opcode = instruction.opcode();
   const auto& operands = instruction.operands();
   if (!instruction.hasResult()) {
@@ -110,6 +155,12 @@ std::optional<std::string> foldInstruction(const Instruction& instruction) {
     if (auto folded = foldIntegerIdentity(opcode, operands); folded.has_value()) {
       return folded;
     }
+    if (foldAllIntegerConstants) {
+      if (auto folded = foldIntegerBinary(opcode, operands);
+          folded.has_value()) {
+        return folded;
+      }
+    }
   }
   if (opcode.rfind("icmp.", 0) == 0 && operands.size() == 2 && operands[0] == operands[1]) {
     const std::string predicate = opcode.substr(5);
@@ -119,11 +170,18 @@ std::optional<std::string> foldInstruction(const Instruction& instruction) {
   if (auto folded = foldIntegerCompare(opcode, operands); folded.has_value()) {
     return folded;
   }
+  if (foldAllIntegerConstants && opcode == "select" && operands.size() == 3) {
+    long long condition = 0;
+    if (detail::parseIntegerLiteral(operands[0], condition)) {
+      return condition != 0 ? operands[1] : operands[2];
+    }
+    if (operands[1] == operands[2]) return operands[1];
+  }
 
   return std::nullopt;
 }
 
-void foldFunction(Function& function) {
+void foldFunction(Function& function, bool foldAllIntegerConstants) {
   std::unordered_map<std::string, std::string> constants;
 
   // Discover folded definitions to a fixed point first.  Loop-header phi nodes
@@ -139,7 +197,8 @@ void foldFunction(Function& function) {
         }
         const auto operands = detail::rewriteOperands(instruction.operands(), constants);
         const Instruction rewritten{instruction.opcode(), operands, instruction.result()};
-        const auto folded = foldInstruction(rewritten);
+        const auto folded =
+            foldInstruction(rewritten, foldAllIntegerConstants);
         if (!folded.has_value()) {
           continue;
         }
@@ -184,7 +243,7 @@ void foldFunction(Function& function) {
 
 void ConstantFoldingPass::run(compiler::ir::core::Module& module) {
   for (auto& function : module.functions()) {
-    foldFunction(function);
+    foldFunction(function, foldAllIntegerConstants_);
   }
 }
 

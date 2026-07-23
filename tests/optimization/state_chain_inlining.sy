@@ -1,0 +1,57 @@
+int state_a;
+int state_b;
+int state_limit;
+int values[8];
+
+int consume_state(int amount) {
+    while (state_b < amount && state_a < state_limit) {
+        state_a = state_a + values[state_a];
+        state_b = state_b + 1;
+    }
+    state_b = state_b - amount;
+    return state_a + state_b;
+}
+
+int process_state() {
+    int total = 0;
+    int iteration = 0;
+    while (iteration < 3) {
+        total = total + consume_state(1);
+        total = total + consume_state(2);
+        iteration = iteration + 1;
+    }
+    return total;
+}
+
+int process_state_with_observer() {
+    int total = 0;
+    int iteration = 0;
+    while (iteration < 2) {
+        total = total + consume_state(1);
+        putint(0);
+        total = total + consume_state(2);
+        iteration = iteration + 1;
+    }
+    return total;
+}
+
+int main() {
+    state_a = 0;
+    state_b = 0;
+    state_limit = 8;
+    values[0] = 1;
+    values[1] = 1;
+    values[2] = 1;
+    values[3] = 1;
+    values[4] = 1;
+    values[5] = 1;
+    values[6] = 1;
+    values[7] = 1;
+    putint(process_state());
+    putch(10);
+    putint(state_a);
+    putch(10);
+    putint(state_b);
+    putch(10);
+    return 0;
+}
