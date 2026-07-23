@@ -1,0 +1,64 @@
+int source[64];
+int destination[64];
+int factor[2];
+
+void apply_recurrence(int count, int target[], int input[], int scale[]) {
+    int index = 0;
+    while (index < count) {
+        target[index] = target[index] * scale[0] + input[index];
+        index = index + 1;
+    }
+}
+
+void initialize_arrays() {
+    int index = 0;
+    while (index < 64) {
+        source[index] = index * 17 - 91;
+        destination[index] = index * index - 37;
+        index = index + 1;
+    }
+}
+
+int checksum_arrays() {
+    int index = 0;
+    int checksum = 0;
+    while (index < 64) {
+        checksum = checksum + destination[index] * (index + 3);
+        index = index + 1;
+    }
+    return checksum;
+}
+
+int main() {
+    initialize_arrays();
+
+    factor[0] = 0;
+    apply_recurrence(0, destination, source, factor);
+    apply_recurrence(1, destination, source, factor);
+    apply_recurrence(7, destination, source, factor);
+    apply_recurrence(8, destination, source, factor);
+    apply_recurrence(9, destination, source, factor);
+    apply_recurrence(15, destination, source, factor);
+    apply_recurrence(16, destination, source, factor);
+    apply_recurrence(17, destination, source, factor);
+    apply_recurrence(31, destination, source, factor);
+    apply_recurrence(32, destination, source, factor);
+    apply_recurrence(33, destination, source, factor);
+
+    factor[0] = 1;
+    apply_recurrence(17, destination, source, factor);
+    factor[0] = -1;
+    apply_recurrence(17, destination, source, factor);
+    factor[0] = 2147483647;
+    apply_recurrence(17, destination, source, factor);
+    factor[0] = -2147483647 - 1;
+    apply_recurrence(17, destination, source, factor);
+
+    factor[0] = 3;
+    apply_recurrence(17, destination, destination, factor);
+    apply_recurrence(17, destination, source, destination);
+
+    putint(checksum_arrays());
+    putch(10);
+    return 0;
+}

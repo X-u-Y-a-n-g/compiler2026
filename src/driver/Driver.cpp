@@ -49,7 +49,6 @@
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
-#include "../../include/compiler/midend/pass/SequentialLoopUnrollPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
@@ -234,10 +233,6 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     // the empirically pressure-safe ten-lane scalar factor.
     passManager.add(std::make_unique<compiler::midend::pass::LoopUnrollAndJamPass>(
         isAArch64 ? 32 : 10, isAArch64));
-    if (isAArch64) {
-      passManager.add(
-          std::make_unique<compiler::midend::pass::SequentialLoopUnrollPass>(4));
-    }
     passManager.add(
         std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());

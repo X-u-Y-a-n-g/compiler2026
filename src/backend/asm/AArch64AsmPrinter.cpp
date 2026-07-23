@@ -991,9 +991,13 @@ std::optional<std::string> matchingXRegister(const std::string& reg) {
 //   destination[index] = destination[index] * factor + source[index].
 // A runtime range guard proves that the source and destination spans do not
 // overlap and that the broadcast factor cannot be changed by a destination
-// store. Each vector iteration handles two independent q-register chunks; the
-// scalar loop remains the exact fallback and tail for short or non-multiple-of-
-// eight trip counts.
+// store. Each vector iteration handles two independent q-register chunks.
+// Source and destination pointers are formed once in the guarded setup and
+// advanced by the pair load/store writeback forms, rather than being rebuilt
+// from the scalar index on every vector iteration. A zero invariant factor
+// selects an exact vector-copy version that omits the dead destination loads
+// and multiply-adds. The scalar loop remains the exact fallback and tail for
+// short or non-multiple-of-eight trip counts.
 std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
   static const std::regex reservedVectorPattern{
       R"((^|[^A-Za-z0-9_])[svdq](24|25|26|27|28)([^A-Za-z0-9_]|$))"};
@@ -1138,10 +1142,14 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     const std::string vectorHeader = *headerLabel + ".vector8";
     const std::string vectorSetup = *bodyLabel + ".vector8_setup";
     const std::string aliasSafe = *bodyLabel + ".vector8_alias_safe";
+    const std::string zeroBody = *bodyLabel + ".vector8_zero";
+    const std::string zeroHeader = *headerLabel + ".vector8_zero";
     if (assembly.find(vectorBody + ":") != std::string::npos ||
         assembly.find(vectorHeader + ":") != std::string::npos ||
         assembly.find(vectorSetup + ":") != std::string::npos ||
-        assembly.find(aliasSafe + ":") != std::string::npos) {
+        assembly.find(aliasSafe + ":") != std::string::npos ||
+        assembly.find(zeroBody + ":") != std::string::npos ||
+        assembly.find(zeroHeader + ":") != std::string::npos) {
       continue;
     }
 
@@ -1158,17 +1166,22 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
 
     const std::string vectorBlocks =
         vectorSetup + ":\n  ldr " + factor + ", [" + factorAddress +
-        "]\n  dup v25.4s, " + factor + "\n  b " + vectorHeader + "\n" +
-        vectorBody + ":\n  add " + destinationAddress + ", " +
+        "]\n  add x16, " + sourceBase + ", " + indexX +
+        ", lsl #2\n  add " + destinationAddress + ", " +
         destinationBase + ", " + indexX +
-        ", lsl #2\n  add x16, " + sourceBase + ", " + indexX +
-        ", lsl #2\n  ldp q24, q27, [" + destinationAddress +
-        "]\n  ldp q26, q28, [x16]\n  mla v26.4s, v24.4s, v25.4s\n"
+        ", lsl #2\n  cbz " + factor + ", " + zeroHeader +
+        "\n  dup v25.4s, " + factor + "\n  b " + vectorHeader + "\n" +
+        vectorBody + ":\n  ldp q24, q27, [" + destinationAddress +
+        "]\n  ldp q26, q28, [x16], #32\n  mla v26.4s, v24.4s, v25.4s\n"
         "  mla v28.4s, v27.4s, v25.4s\n  stp q26, q28, [" +
-        destinationAddress + "]\n  add " + indexW + ", " + indexW +
+        destinationAddress + "], #32\n  add " + indexW + ", " + indexW +
         ", #8\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
         indexW + "\n  cmp w17, #8\n  b.ge " + vectorBody + "\n  b " +
-        *headerLabel;
+        *headerLabel + "\n" + zeroBody + ":\n  ldp q24, q27, [x16], #32\n"
+        "  stp q24, q27, [" + destinationAddress + "], #32\n  add " +
+        indexW + ", " + indexW + ", #8\n" + zeroHeader +
+        ":\n  sub w17, " + *boundW + ", " + indexW +
+        "\n  cmp w17, #8\n  b.ge " + zeroBody + "\n  b " + *headerLabel;
     lines[bodyBounds.first - 1] =
         vectorBlocks + "\n" + lines[bodyBounds.first - 1];
     changed = true;
