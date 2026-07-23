@@ -1,0 +1,37 @@
+int stable_limit = 5;
+int mutable_value = 3;
+
+int sum_to(int limit) {
+    int index = 0;
+    int sum = 0;
+    while (index < limit) {
+        sum = sum + index + 1;
+        index = index + 1;
+    }
+    return sum;
+}
+
+int scale(int value) {
+    return value * 7;
+}
+
+int negative_trip(int limit) {
+    int count = 0;
+    while (count < limit) {
+        count = count + 1;
+    }
+    return count;
+}
+
+int main() {
+    int input = getint();
+    mutable_value = input;
+
+    int result = sum_to(stable_limit);
+    result = result + scale(mutable_value);
+    result = result + scale(2);
+    result = result + negative_trip(-3);
+    putint(result);
+    putch(10);
+    return 0;
+}

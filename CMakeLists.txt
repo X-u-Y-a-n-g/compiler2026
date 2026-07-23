@@ -24,6 +24,7 @@ add_library(compiler_lib
   src/midend/pass/BitwiseIdiomRecognitionPass.cpp
   src/midend/pass/BoundedModuloReductionPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
+  src/midend/pass/ConstantArgumentPropagationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
   src/midend/pass/DivRemPairStrengthReductionPass.cpp

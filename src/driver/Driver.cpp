@@ -29,6 +29,7 @@
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
+#include "../../include/compiler/midend/pass/ConstantArgumentPropagationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
@@ -181,6 +182,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
     passManager.add(std::make_unique<compiler::midend::pass::ConstantFoldingPass>());
     passManager.add(std::make_unique<compiler::midend::pass::FunctionInliningPass>());
+    passManager.add(std::make_unique<
+                    compiler::midend::pass::ConstantArgumentPropagationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::TailRecursionEliminationPass>());
     if (invocation.options().target == "aarch64" ||
