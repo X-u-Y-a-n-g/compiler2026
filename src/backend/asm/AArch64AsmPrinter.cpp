@@ -987,20 +987,20 @@ std::optional<std::string> matchingXRegister(const std::string& reg) {
   return "x" + reg.substr(1);
 }
 
-// Vectorize and two-way unroll a contiguous i32 recurrence of the form
+// Vectorize and four-way unroll a contiguous i32 recurrence of the form
 //   destination[index] = destination[index] * factor + source[index].
 // A runtime range guard proves that the source and destination spans do not
 // overlap and that the broadcast factor cannot be changed by a destination
-// store. Each vector iteration handles two independent q-register chunks.
+// store. The main vector iteration handles four independent q-register chunks;
+// an eight-element vector cleanup and the scalar loop handle the remainder.
 // Source and destination pointers are formed once in the guarded setup and
-// advanced by the pair load/store writeback forms, rather than being rebuilt
+// advanced by paired load/store writeback forms, rather than being rebuilt
 // from the scalar index on every vector iteration. A zero invariant factor
 // selects an exact vector-copy version that omits the dead destination loads
-// and multiply-adds. The scalar loop remains the exact fallback and tail for
-// short or non-multiple-of-eight trip counts.
+// and multiply-adds. The scalar loop remains the exact fallback and final tail.
 std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
   static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](24|25|26|27|28)([^A-Za-z0-9_]|$))"};
+      R"((^|[^A-Za-z0-9_])[svdq](23|24|25|26|27|28|29|30|31)([^A-Za-z0-9_]|$))"};
   static const std::regex addressPattern{
       R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
   static const std::regex indexedLoadPattern{
@@ -1144,12 +1144,20 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
     const std::string aliasSafe = *bodyLabel + ".vector8_alias_safe";
     const std::string zeroBody = *bodyLabel + ".vector8_zero";
     const std::string zeroHeader = *headerLabel + ".vector8_zero";
+    const std::string vector16Body = *bodyLabel + ".vector16";
+    const std::string vector16Header = *headerLabel + ".vector16";
+    const std::string zero16Body = *bodyLabel + ".vector16_zero";
+    const std::string zero16Header = *headerLabel + ".vector16_zero";
     if (assembly.find(vectorBody + ":") != std::string::npos ||
         assembly.find(vectorHeader + ":") != std::string::npos ||
         assembly.find(vectorSetup + ":") != std::string::npos ||
         assembly.find(aliasSafe + ":") != std::string::npos ||
         assembly.find(zeroBody + ":") != std::string::npos ||
-        assembly.find(zeroHeader + ":") != std::string::npos) {
+        assembly.find(zeroHeader + ":") != std::string::npos ||
+        assembly.find(vector16Body + ":") != std::string::npos ||
+        assembly.find(vector16Header + ":") != std::string::npos ||
+        assembly.find(zero16Body + ":") != std::string::npos ||
+        assembly.find(zero16Header + ":") != std::string::npos) {
       continue;
     }
 
@@ -1169,15 +1177,38 @@ std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
         "]\n  add x16, " + sourceBase + ", " + indexX +
         ", lsl #2\n  add " + destinationAddress + ", " +
         destinationBase + ", " + indexX +
-        ", lsl #2\n  cbz " + factor + ", " + zeroHeader +
-        "\n  dup v25.4s, " + factor + "\n  b " + vectorHeader + "\n" +
+        ", lsl #2\n  cbz " + factor + ", " + zero16Header +
+        "\n  dup v25.4s, " + factor + "\n  b " + vector16Header + "\n" +
+        vector16Body + ":\n  ldp q24, q27, [" + destinationAddress +
+        "]\n  ldp q29, q30, [" + destinationAddress +
+        ", #32]\n  ldp q26, q28, [x16], #32\n"
+        "  ldp q31, q23, [x16], #32\n"
+        "  mla v26.4s, v24.4s, v25.4s\n"
+        "  mla v28.4s, v27.4s, v25.4s\n"
+        "  mla v31.4s, v29.4s, v25.4s\n"
+        "  mla v23.4s, v30.4s, v25.4s\n"
+        "  stp q26, q28, [" + destinationAddress +
+        "], #32\n  stp q31, q23, [" + destinationAddress +
+        "], #32\n  add " + indexW + ", " + indexW + ", #16\n" +
+        vector16Header + ":\n  sub w17, " + *boundW + ", " + indexW +
+        "\n  cmp w17, #16\n  b.ge " + vector16Body + "\n  b " +
+        vectorHeader + "\n" +
         vectorBody + ":\n  ldp q24, q27, [" + destinationAddress +
         "]\n  ldp q26, q28, [x16], #32\n  mla v26.4s, v24.4s, v25.4s\n"
         "  mla v28.4s, v27.4s, v25.4s\n  stp q26, q28, [" +
         destinationAddress + "], #32\n  add " + indexW + ", " + indexW +
         ", #8\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
         indexW + "\n  cmp w17, #8\n  b.ge " + vectorBody + "\n  b " +
-        *headerLabel + "\n" + zeroBody + ":\n  ldp q24, q27, [x16], #32\n"
+        *headerLabel + "\n" + zero16Body +
+        ":\n  ldp q24, q27, [x16], #32\n"
+        "  ldp q29, q30, [x16], #32\n"
+        "  stp q24, q27, [" + destinationAddress +
+        "], #32\n  stp q29, q30, [" + destinationAddress +
+        "], #32\n  add " + indexW + ", " + indexW + ", #16\n" +
+        zero16Header + ":\n  sub w17, " + *boundW + ", " + indexW +
+        "\n  cmp w17, #16\n  b.ge " + zero16Body + "\n  b " +
+        zeroHeader + "\n" + zeroBody +
+        ":\n  ldp q24, q27, [x16], #32\n"
         "  stp q24, q27, [" + destinationAddress + "], #32\n  add " +
         indexW + ", " + indexW + ", #8\n" + zeroHeader +
         ":\n  sub w17, " + *boundW + ", " + indexW +
