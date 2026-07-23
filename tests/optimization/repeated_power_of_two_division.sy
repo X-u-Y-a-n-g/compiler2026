@@ -1,0 +1,32 @@
+int reduce_by_sixteen(int value, int rounds) {
+    int iteration = 0;
+    while (iteration < rounds) {
+        value = value / 16;
+        iteration = iteration + 1;
+    }
+    return value % 16;
+}
+
+int reduce_by_eight(int value, int rounds) {
+    int iteration = 0;
+    while (iteration < rounds) {
+        value = value / 8;
+        iteration = iteration + 1;
+    }
+    return value % 8;
+}
+
+int main() {
+    int checksum = 0;
+    checksum = checksum + reduce_by_sixteen(2147483647, -1);
+    checksum = checksum + reduce_by_sixteen(-2147483647 - 1, 0);
+    checksum = checksum + reduce_by_sixteen(-2147483647 - 1, 1);
+    checksum = checksum + reduce_by_sixteen(2147483647, 7);
+    checksum = checksum + reduce_by_sixteen(-2147483647 - 1, 8);
+    checksum = checksum + reduce_by_eight(2147483647, 1);
+    checksum = checksum + reduce_by_eight(-2147483647 - 1, 10);
+    checksum = checksum + reduce_by_eight(-2147483647 - 1, 11);
+    putint(checksum);
+    putch(10);
+    return 0;
+}
