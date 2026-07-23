@@ -2364,6 +2364,33 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  str q17, [" << address << "]\n";
     return;
   }
+  if (opcode == "aarch64.neon.load.acc.i32x8" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q17, q19, [" << address << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.acc.i32x8" &&
+      instruction.operands.size() == 2) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  dup v16.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    os << "  ldp q18, q20, [" << address << "]\n";
+    os << "  mls v17.4s, v18.4s, v16.4s\n";
+    os << "  mls v19.4s, v20.4s, v16.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.store.acc.i32x8" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  stp q17, q19, [" << address << "]\n";
+    return;
+  }
   if (opcode == "aarch64.neon.zero.acc.i32x32" &&
       instruction.operands.empty()) {
     os << "  movi v20.4s, #0\n";

@@ -134,6 +134,22 @@ bool blockHasPhi(const BasicBlock &block) {
          block.instructions().front().opcode() == "phi";
 }
 
+bool functionHasFloatOrVectorState(const Function &function) {
+  for (const auto &block : function.blocks()) {
+    for (const auto &instruction : block.instructions()) {
+      if ((!instruction.opcode().empty() &&
+           instruction.opcode().front() == 'f') ||
+          instruction.opcode().rfind("aarch64.neon.", 0) == 0 ||
+          std::find(instruction.operands().begin(),
+                    instruction.operands().end(),
+                    "float") != instruction.operands().end()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 std::optional<Candidate> matchHeader(const Function &function,
                                      const BasicBlock &header) {
   const auto &headerInstructions = header.instructions();
@@ -450,7 +466,7 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   BasicBlock prepare{prepareName};
   prepare.addInstruction(
       Instruction{"sub", {candidate.bound, candidate.rowIndex}, remaining});
-  prepare.addInstruction(Instruction{"and", {remaining, "-4"}, vectorColumns});
+  prepare.addInstruction(Instruction{"and", {remaining, "-8"}, vectorColumns});
   prepare.addInstruction(
       Instruction{"add", {candidate.rowIndex, vectorColumns}, vectorEnd});
   prepare.addInstruction(Instruction{"br", {jHeaderName}});
@@ -466,7 +482,7 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   initialize.addInstruction(
       Instruction{"getelementptr", {candidate.rowBase, j}, destination});
   initialize.addInstruction(
-      Instruction{"aarch64.neon.load.acc.i32x4", {destination}});
+      Instruction{"aarch64.neon.load.acc.i32x8", {destination}});
   initialize.addInstruction(Instruction{"br", {kHeaderName}});
 
   BasicBlock kHeader{kHeaderName};
@@ -485,14 +501,14 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
       Instruction{"getelementptr", {candidate.matrixBase, k}, sourceRow});
   kBody.addInstruction(Instruction{"getelementptr", {sourceRow, j}, source});
   kBody.addInstruction(
-      Instruction{"aarch64.neon.mls.acc.i32x4", {source, coefficient}});
+      Instruction{"aarch64.neon.mls.acc.i32x8", {source, coefficient}});
   kBody.addInstruction(Instruction{"add", {k, "1"}, kNext});
   kBody.addInstruction(Instruction{"br", {kHeaderName}});
 
   BasicBlock store{storeName};
   store.addInstruction(
-      Instruction{"aarch64.neon.store.acc.i32x4", {destination}});
-  store.addInstruction(Instruction{"add", {j, "4"}, jNext});
+      Instruction{"aarch64.neon.store.acc.i32x8", {destination}});
+  store.addInstruction(Instruction{"add", {j, "8"}, jNext});
   store.addInstruction(Instruction{"br", {jHeaderName}});
 
   auto insertion = header;
@@ -518,6 +534,8 @@ void LoopInterchangeRowUpdatePass::run(Module &module) {
     return;
   }
   for (auto &function : module.functions()) {
+    if (functionHasFloatOrVectorState(function))
+      continue;
     std::optional<Candidate> candidate;
     for (const auto &block : function.blocks()) {
       candidate = matchHeader(function, block);

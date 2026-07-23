@@ -1,0 +1,52 @@
+int matrix[18][18];
+
+void update_upper_rows(int count, int values[][18]) {
+    int row = 0;
+    while (row < count) {
+        int column = row;
+        while (column < count) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < row) {
+                current = current -
+                          values[row][reduction] *
+                              values[reduction][column];
+                reduction = reduction + 1;
+            }
+            values[row][column] = current;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+int main() {
+    int count = getint();
+    int row = 0;
+    while (row < 18) {
+        int column = 0;
+        while (column < 18) {
+            matrix[row][column] =
+                (row * 13 + column * 7 + 5) % 19 - 9;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    update_upper_rows(count, matrix);
+
+    int checksum = 0;
+    row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            checksum = checksum +
+                       matrix[row][column] * (row + column + 1);
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    putint(checksum);
+    putch(10);
+    return 0;
+}

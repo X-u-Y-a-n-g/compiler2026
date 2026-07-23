@@ -590,6 +590,17 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     return os.str();
   }
 
+  if (opcode == "aarch64.neon.load.acc.i32x8" ||
+      opcode == "aarch64.neon.store.acc.i32x8") {
+    os << opcode << " ptr " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.mls.acc.i32x8") {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
+
   if (opcode == "aarch64.neon.zero.acc.i32x32") {
     os << opcode;
     return os.str();
