@@ -19,12 +19,4 @@ class LoopUnrollAndJamPass final : public ModulePass {
   bool useAArch64VectorAccumulator_;
 };
 
-class ScalarSubReductionInterleavingPass final : public ModulePass {
- public:
-  std::string name() const override {
-    return "scalar-sub-reduction-interleaving";
-  }
-  void run(compiler::ir::core::Module& module) override;
-};
-
 }  // namespace compiler::midend::pass
