@@ -402,10 +402,36 @@ bool containsVectorMemoryOperation(const MachineFunction &function,
       });
 }
 
+bool isSimpleReadOnlyMultiplySubReduction(const MachineFunction &function,
+                                          const LoopInfo &loop) {
+  unsigned loads = 0;
+  unsigned multiplies = 0;
+  unsigned subtracts = 0;
+  for (const auto block : loop.blocks) {
+    for (const auto &instruction : function.blocks[block].instructions) {
+      if (instruction.opcode == "call" || instruction.opcode == "store" ||
+          instruction.opcode == "fstore" ||
+          instruction.opcode.rfind("aarch64.neon.", 0) == 0) {
+        return false;
+      }
+      if (instruction.opcode == "load") {
+        ++loads;
+      } else if (instruction.opcode == "mul") {
+        ++multiplies;
+      } else if (instruction.opcode == "sub") {
+        ++subtracts;
+      }
+    }
+  }
+  return loop.blocks.size() == 2 && loads == 2 && multiplies == 1 &&
+         subtracts == 1;
+}
+
 std::optional<Plan>
 findPlan(const MachineFunction &function,
          const compiler::backend::target::TargetInstrAdapter &adapter,
-         const std::unordered_set<std::string> &transformedHeaders) {
+         const std::unordered_set<std::string> &transformedHeaders,
+         bool enableNestedScalarLargeStride) {
   const auto cfg = CFGBuilder{}.build(function, adapter);
   const auto reachable = computeReachable(cfg);
   const auto dominators = computeDominators(cfg, reachable);
@@ -416,6 +442,8 @@ findPlan(const MachineFunction &function,
   for (const auto &loop : loops) {
     const bool nested = isNestedLoop(loop, loops);
     const bool vectorMemoryLoop = containsVectorMemoryOperation(function, loop);
+    const bool scalarMultiplySubReduction =
+        isSimpleReadOnlyMultiplySubReduction(function, loop);
     const auto &headerName = function.blocks[loop.header].name;
     if (transformedHeaders.find(headerName) != transformedHeaders.end()) {
       continue;
@@ -459,12 +487,22 @@ findPlan(const MachineFunction &function,
           const auto scale = current.operands[2].intValue;
           const auto oldCost = dynamicGepCost(scale);
           const auto newCost = immediateGepCost(scale);
-          const bool allowNestedLargeStride =
+          const bool allowNestedVectorLargeStride =
               std::getenv(
                   "COMPILER_DISABLE_NESTED_NON_POWER_OF_TWO_POINTER_IV") ==
                   nullptr &&
               nested && vectorMemoryLoop && isNonPowerOfTwoScale(scale) &&
               oldCost == newCost + 1;
+          const bool allowNestedScalarLargeStride =
+              enableNestedScalarLargeStride &&
+              std::getenv(
+                  "COMPILER_DISABLE_NESTED_SCALAR_NON_POWER_OF_TWO_POINTER_IV") ==
+                  nullptr &&
+              nested && scalarMultiplySubReduction &&
+              isNonPowerOfTwoScale(scale) &&
+              oldCost == newCost + 1;
+          const bool allowNestedLargeStride =
+              allowNestedVectorLargeStride || allowNestedScalarLargeStride;
           if (oldCost < newCost + 2 && !allowNestedLargeStride) {
             continue;
           }
@@ -746,7 +784,9 @@ void MachineLoopStrengthReduction::run(
       continue;
     }
     std::unordered_set<std::string> transformedHeaders;
-    while (const auto plan = findPlan(function, adapter, transformedHeaders)) {
+    while (const auto plan =
+               findPlan(function, adapter, transformedHeaders,
+                        module.target.name() == "aarch64")) {
       transformedHeaders.insert(function.blocks[plan->loop.header].name);
       if (!transform(function, *plan)) {
         break;

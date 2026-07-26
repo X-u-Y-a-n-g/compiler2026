@@ -1,0 +1,93 @@
+int matrix[12][513];
+int row[12];
+
+int triangular_reduce(int n, int initial) {
+  int checksum, outer, column, value, inner;
+  checksum = initial;
+  outer = 0;
+  while (outer < n) {
+    column = 0;
+    while (column < outer) {
+      value = matrix[outer][column];
+      inner = 0;
+      while (inner < column) {
+        value = value - matrix[outer][inner] * matrix[inner][column];
+        inner = inner + 1;
+      }
+      checksum = checksum + value;
+      column = column + 1;
+    }
+    outer = outer + 1;
+  }
+  return checksum;
+}
+
+int reduce_prefixes(int n, int column, int initial, int matrix[][513],
+                    int row[]) {
+  int result, outer, inner;
+  result = initial;
+  outer = 0;
+  while (outer < n) {
+    inner = 0;
+    while (inner < outer) {
+      result = result - row[inner] * matrix[inner][column];
+      inner = inner + 1;
+    }
+    outer = outer + 1;
+  }
+  return result;
+}
+
+int conditional_fallback(int n, int column, int initial, int matrix[][513],
+                         int row[]) {
+  int result, outer, inner;
+  result = initial;
+  outer = 0;
+  while (outer < n) {
+    inner = 0;
+    while (inner < outer) {
+      if (row[inner] < 0) {
+        result = result - row[inner] * matrix[inner][column];
+      }
+      inner = inner + 1;
+    }
+    outer = outer + 1;
+  }
+  return result;
+}
+
+int main() {
+  int i, j;
+  i = 0;
+  while (i < 12) {
+    row[i] = i * 17 - 53;
+    j = 0;
+    while (j < 15) {
+      matrix[i][j] = i * 31 - j * 19 + 7;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  row[9] = 2147483647;
+  matrix[9][11] = -2147483647;
+  row[10] = -2147483647 - 1;
+  matrix[10][11] = -1;
+
+  putint(triangular_reduce(0, 77));
+  putch(10);
+  putint(triangular_reduce(1, -13));
+  putch(10);
+  putint(triangular_reduce(12, -991));
+  putch(10);
+  putint(reduce_prefixes(0, 0, 123, matrix, row));
+  putch(10);
+  putint(reduce_prefixes(1, 3, -7, matrix, row));
+  putch(10);
+  putint(reduce_prefixes(4, 7, 99, matrix, row));
+  putch(10);
+  putint(reduce_prefixes(12, 11, -2147483647 - 1, matrix, row));
+  putch(10);
+  putint(conditional_fallback(12, 11, 2147483647, matrix, row));
+  putch(10);
+  return 0;
+}
