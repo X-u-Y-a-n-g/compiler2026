@@ -1,0 +1,80 @@
+int data0[40][40];
+int data1[40][40];
+
+int different_bound(int rows, int columns) {
+    int i = 0;
+    while (i < rows) {
+        int j = 0;
+        while (j < columns) {
+            int k = 0;
+            int sum = 0;
+            while (k < rows) {
+                sum = sum + data1[i][k] * data0[k][j];
+                k = k + 1;
+            }
+            data0[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return data0[0][0];
+}
+
+int subtract_recurrence(int n) {
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int k = 0;
+            int sum = 0;
+            while (k < n) {
+                sum = sum - data1[i][k] * data0[k][j];
+                k = k + 1;
+            }
+            data0[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return data0[0][0];
+}
+
+int same_object_sources(int n) {
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int k = 0;
+            int sum = 0;
+            while (k < n) {
+                sum = sum + data0[i][k] * data0[k][j];
+                k = k + 1;
+            }
+            data0[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return data0[0][0];
+}
+
+int main() {
+    int n = getint();
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            data0[i][j] = i + j + 1;
+            data1[i][j] = i * 2 - j + 3;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(different_bound(n, n - 1));
+    putch(10);
+    putint(same_object_sources(n));
+    putch(10);
+    putint(subtract_recurrence(n));
+    putch(10);
+    return 0;
+}
