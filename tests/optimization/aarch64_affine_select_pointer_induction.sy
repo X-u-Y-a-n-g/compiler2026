@@ -1,0 +1,100 @@
+int grid[10][513];
+int symbols[10];
+
+void affine_select_reduce(int n, int matrix[][513], int seq[]) {
+  int i, j, k, temp;
+  i = n - 1;
+  while (i >= 0) {
+    j = i + 1;
+    while (j < n) {
+      if (matrix[i][j] < matrix[i][j - 1]) {
+        matrix[i][j] = matrix[i][j - 1];
+      }
+      if (i + 1 < n) {
+        if (matrix[i][j] < matrix[i + 1][j]) {
+          matrix[i][j] = matrix[i + 1][j] * 2;
+        }
+      }
+      if (i + 1 < n && i < j - 1) {
+        temp = 0;
+        if (seq[i] + seq[j] == 3) {
+          temp = 3;
+        }
+        if (matrix[i][j] < matrix[i + 1][j - 1] + temp) {
+          matrix[i][j] = matrix[i + 1][j - 1] + temp;
+        }
+      }
+      k = i + 1;
+      while (k < j) {
+        if (matrix[i][j] < matrix[i][k] + matrix[k + 1][j]) {
+          matrix[i][j] = matrix[i][k] * 2 + matrix[k + 1][j];
+        }
+        k = k + 1;
+      }
+      j = j + 1;
+    }
+    i = i - 1;
+  }
+}
+
+int conditional_fallback(int n, int seed, int matrix[][513]) {
+  int checksum, i, j, k, best, left, right;
+  checksum = seed;
+  i = 0;
+  while (i < n) {
+    j = i + 1;
+    while (j < n) {
+      best = matrix[i][j];
+      k = 0;
+      while (k < j) {
+        left = matrix[i][k];
+        right = matrix[k + 1][j];
+        if ((left % 2) == 0) {
+          if (best < left + right) {
+            best = left * 2 + right;
+          }
+        }
+        k = k + 1;
+      }
+      checksum = checksum + best;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return checksum;
+}
+
+int main() {
+  int i, j, checksum, n;
+  n = getint();
+  i = 0;
+  while (i < 10) {
+    symbols[i] = i % 6;
+    j = 0;
+    while (j < 16) {
+      grid[i][j] = i * 37 - j * 23 + 11;
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  grid[2][7] = 2147483647;
+  grid[3][7] = -2147483647 - 1;
+  grid[6][9] = 2147483647;
+
+  affine_select_reduce(n, grid, symbols);
+  checksum = 0;
+  i = 0;
+  while (i < n) {
+    j = 0;
+    while (j < n) {
+      checksum = checksum + grid[i][j];
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  putint(checksum);
+  putch(10);
+  putint(conditional_fallback(n, -54321, grid));
+  putch(10);
+  return 0;
+}

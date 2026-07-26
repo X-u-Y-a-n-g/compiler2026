@@ -49,6 +49,7 @@ struct Candidate {
   std::size_t block = 0;
   std::size_t instruction = 0;
   MachineInstruction gep;
+  long long inductionOffset = 0;
   unsigned estimatedSaving = 0;
   bool hoistStride = false;
 };
@@ -283,6 +284,39 @@ bool isLoopInvariant(
          loop.blocks.find(definition->second.block) == loop.blocks.end();
 }
 
+std::optional<long long> inductionOffsetForIndex(
+    const MachineOperand &index, const MachineOperand &induction,
+    const LoopInfo &loop,
+    const std::unordered_map<std::string, Definition> &definitions,
+    const MachineFunction &function) {
+  if (sameOperand(index, induction)) {
+    return 0;
+  }
+  if (!isVirtualRegister(index)) {
+    return std::nullopt;
+  }
+  const auto definition = definitions.find(index.text);
+  if (definition == definitions.end() ||
+      loop.blocks.find(definition->second.block) == loop.blocks.end()) {
+    return std::nullopt;
+  }
+  const auto &instruction =
+      function.blocks[definition->second.block]
+          .instructions[definition->second.instruction];
+  if (instruction.opcode != "add" || instruction.operands.size() != 2) {
+    return std::nullopt;
+  }
+  for (std::size_t immediateIndex = 0; immediateIndex < 2; ++immediateIndex) {
+    const auto valueIndex = 1 - immediateIndex;
+    const auto &immediate = instruction.operands[immediateIndex];
+    if (sameOperand(instruction.operands[valueIndex], induction) &&
+        immediate.kind == MachineOperandKind::ImmediateInt) {
+      return immediate.intValue;
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<MachineOperand> phiIncoming(const MachineInstruction &phi,
                                           const std::string &block) {
   std::optional<MachineOperand> result;
@@ -427,6 +461,31 @@ bool isSimpleReadOnlyMultiplySubReduction(const MachineFunction &function,
          subtracts == 1;
 }
 
+bool isSimpleReadOnlyIntegerSelectReduction(const MachineFunction &function,
+                                            const LoopInfo &loop) {
+  unsigned loads = 0;
+  unsigned multiplies = 0;
+  unsigned selects = 0;
+  for (const auto block : loop.blocks) {
+    for (const auto &instruction : function.blocks[block].instructions) {
+      if (instruction.opcode == "call" || instruction.opcode == "store" ||
+          instruction.opcode == "fstore" ||
+          instruction.opcode.rfind("aarch64.neon.", 0) == 0) {
+        return false;
+      }
+      if (instruction.opcode == "load") {
+        ++loads;
+      } else if (instruction.opcode == "mul") {
+        ++multiplies;
+      } else if (instruction.opcode == "select") {
+        ++selects;
+      }
+    }
+  }
+  return loop.blocks.size() == 2 && loads == 2 && multiplies == 1 &&
+         selects == 1;
+}
+
 std::optional<Plan>
 findPlan(const MachineFunction &function,
          const compiler::backend::target::TargetInstrAdapter &adapter,
@@ -444,6 +503,8 @@ findPlan(const MachineFunction &function,
     const bool vectorMemoryLoop = containsVectorMemoryOperation(function, loop);
     const bool scalarMultiplySubReduction =
         isSimpleReadOnlyMultiplySubReduction(function, loop);
+    const bool scalarIntegerSelectReduction =
+        isSimpleReadOnlyIntegerSelectReduction(function, loop);
     const auto &headerName = function.blocks[loop.header].name;
     if (transformedHeaders.find(headerName) != transformedHeaders.end()) {
       continue;
@@ -471,8 +532,15 @@ findPlan(const MachineFunction &function,
           const auto &current =
               function.blocks[block].instructions[instruction];
           if (!isGep(current) ||
-              !sameOperand(current.operands[1], induction->phi) ||
               !isLoopInvariant(current.operands[0], loop, definitions)) {
+            continue;
+          }
+          const auto inductionOffset = inductionOffsetForIndex(
+              current.operands[1], induction->phi, loop, definitions, function);
+          if (!inductionOffset.has_value() ||
+              (*inductionOffset != 0 &&
+               !(enableNestedScalarLargeStride &&
+                 scalarIntegerSelectReduction))) {
             continue;
           }
           const auto resultUses = uses.find(current.result.text);
@@ -501,13 +569,22 @@ findPlan(const MachineFunction &function,
               nested && scalarMultiplySubReduction &&
               isNonPowerOfTwoScale(scale) &&
               oldCost == newCost + 1;
+          const bool allowNestedAffineSelectLargeStride =
+              enableNestedScalarLargeStride &&
+              std::getenv(
+                  "COMPILER_DISABLE_NESTED_AFFINE_SELECT_POINTER_IV") ==
+                  nullptr &&
+              nested && scalarIntegerSelectReduction &&
+              isNonPowerOfTwoScale(scale) &&
+              oldCost == newCost + 1;
           const bool allowNestedLargeStride =
-              allowNestedVectorLargeStride || allowNestedScalarLargeStride;
+              allowNestedVectorLargeStride || allowNestedScalarLargeStride ||
+              allowNestedAffineSelectLargeStride;
           if (oldCost < newCost + 2 && !allowNestedLargeStride) {
             continue;
           }
           candidates.push_back(Candidate{block, instruction, current,
-                                         oldCost - newCost,
+                                         *inductionOffset, oldCost - newCost,
                                          allowNestedLargeStride});
         }
       }
@@ -669,12 +746,23 @@ bool transform(MachineFunction &function, const Plan &plan) {
   std::unordered_map<std::size_t, std::unordered_set<std::size_t>> removals;
 
   for (const auto &candidate : plan.candidates) {
+    auto initialIndex = plan.induction.initial;
+    if (candidate.inductionOffset != 0) {
+      initialIndex =
+          freshVirtual(names, "%loop.pointer.index.initial",
+                       compiler::backend::mir::ValueType::int32Type());
+      preheaderInitializers.push_back(MachineInstruction::target(
+          "add", initialIndex,
+          {plan.induction.initial,
+           MachineOperand::immediateInt(
+               candidate.inductionOffset,
+               compiler::backend::mir::ValueType::int32Type())}));
+    }
     const auto initialPointer =
         freshVirtual(names, "%loop.pointer.initial", candidate.gep.result.type);
     preheaderInitializers.push_back(MachineInstruction::target(
         candidate.gep.opcode, initialPointer,
-        {candidate.gep.operands[0], plan.induction.initial,
-         candidate.gep.operands[2]}));
+        {candidate.gep.operands[0], initialIndex, candidate.gep.operands[2]}));
 
     const auto pointerPhi =
         freshVirtual(names, "%loop.pointer", candidate.gep.result.type);
