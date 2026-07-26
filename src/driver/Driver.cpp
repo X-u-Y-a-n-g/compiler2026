@@ -267,6 +267,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
           std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::LoopInterchangeRowUpdatePass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::ScalarSubReductionInterleavingPass>());
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
