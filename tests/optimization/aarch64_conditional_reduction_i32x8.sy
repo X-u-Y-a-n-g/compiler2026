@@ -1,0 +1,97 @@
+int left8[8][8];
+int right8[8][8];
+int output8[8][8];
+int left4[4][4];
+int right4[4][4];
+int output4[4][4];
+
+void initialize() {
+    int i = 0;
+    while (i < 8) {
+        int j = 0;
+        while (j < 8) {
+            left8[i][j] = i * 7 - j * 5 - 9;
+            right8[i][j] = i * 3 + j * 11 - 17;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 4) {
+        int j = 0;
+        while (j < 4) {
+            left4[i][j] = i * 5 - j * 2 - 4;
+            right4[i][j] = i * 9 + j * 3 - 12;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+void reduce8() {
+    int i = 0;
+    while (i < 8) {
+        int j = 0;
+        while (j < 8) {
+            int k = 0;
+            int sum = 0;
+            while (k < 8) {
+                if (left8[i][k] * right8[k][j] % 2 == 0) {
+                    sum = sum + right8[i][k] * left8[k][j];
+                }
+                k = k + 1;
+            }
+            output8[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+void reduce4() {
+    int i = 0;
+    while (i < 4) {
+        int j = 0;
+        while (j < 4) {
+            int k = 0;
+            int sum = 0;
+            while (k < 4) {
+                if (left4[i][k] * right4[k][j] % 2 == 0) {
+                    sum = sum + right4[i][k] * left4[k][j];
+                }
+                k = k + 1;
+            }
+            output4[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+int main() {
+    initialize();
+    reduce8();
+    reduce4();
+    int checksum = 0;
+    int i = 0;
+    while (i < 8) {
+        int j = 0;
+        while (j < 8) {
+            checksum = checksum + output8[i][j] * (i + j + 1);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 4) {
+        int j = 0;
+        while (j < 4) {
+            checksum = checksum + output4[i][j] * (i + 2 * j + 3);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(checksum);
+    putch(10);
+    return 0;
+}

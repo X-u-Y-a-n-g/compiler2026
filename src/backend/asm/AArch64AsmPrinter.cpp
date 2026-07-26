@@ -1245,13 +1245,15 @@ std::optional<std::string> globalSymbolForRegister(
 }
 
 // Interchange an i-j-k conditional integer reduction into i-k-j and vectorize
-// the now-contiguous j dimension. The matcher proves three distinct global
-// objects, a single output store, identical static extents, and the exact
-// parity predicate before changing the store schedule.
+// the now-contiguous j dimension. Extents divisible by eight use two vector
+// accumulators; other extents divisible by four retain the single-vector form.
+// The matcher proves three distinct global objects, a single output store,
+// identical static extents, and the exact parity predicate before changing the
+// store schedule.
 std::string vectorizeConditionalMatrixReduction(
     const std::string& assembly) {
   static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](20|21|22|23|24)([^A-Za-z0-9_]|$))"};
+      R"((^|[^A-Za-z0-9_])[svdq](20|21|22|23|24|25|26|27)([^A-Za-z0-9_]|$))"};
   static const std::regex indexedLoadPattern{
       R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
   static const std::regex indexedStorePattern{
@@ -1567,7 +1569,11 @@ std::string vectorizeConditionalMatrixReduction(
       continue;
     }
 
-    const std::string prefix = middleBodyLabel + ".interchanged4";
+    const bool useEightColumns = extent >= 8 && extent % 8 == 0;
+    const long long vectorWidth = useEightColumns ? 8 : 4;
+    const std::string prefix = middleBodyLabel +
+                               (useEightColumns ? ".interchanged8"
+                                                : ".interchanged4");
     if (assembly.find(prefix + ".init:") != std::string::npos) continue;
     const std::string init = prefix + ".init";
     const std::string clearBody = prefix + ".clear_body";
@@ -1577,29 +1583,62 @@ std::string vectorizeConditionalMatrixReduction(
     const std::string jBodyLabel = prefix + ".j_body";
     const std::string jHeaderLabel = prefix + ".j_header";
 
+    const std::string clearStore =
+        useEightColumns ? "  stp q24, q24, [x16]\n"
+                        : "  str q24, [x16]\n";
+    const std::string vectorUpdate =
+        useEightColumns
+            ? "  add x16, " + secondColumnBase + ", " + jX +
+                  ", lsl #2\n  ldp q22, q25, [x16]\n"
+                  "  and v22.16b, v22.16b, v20.16b\n"
+                  "  and v25.16b, v25.16b, v20.16b\n"
+                  "  shl v22.4s, v22.4s, #31\n"
+                  "  shl v25.4s, v25.4s, #31\n"
+                  "  cmeq v22.4s, v22.4s, #0\n"
+                  "  cmeq v25.4s, v25.4s, #0\n"
+                  "  add x16, " + firstColumnBase + ", " + jX +
+                  ", lsl #2\n  ldp q23, q26, [x16]\n"
+                  "  and v23.16b, v23.16b, v22.16b\n"
+                  "  and v26.16b, v26.16b, v25.16b\n"
+                  "  add x16, " + outputRow + ", " + jX +
+                  ", lsl #2\n  ldp q24, q27, [x16]\n"
+                  "  mla v24.4s, v23.4s, v21.4s\n"
+                  "  mla v27.4s, v26.4s, v21.4s\n"
+                  "  stp q24, q27, [x16]\n"
+            : "  add x16, " + secondColumnBase + ", " + jX +
+                  ", lsl #2\n  ldr q22, [x16]\n"
+                  "  and v22.16b, v22.16b, v20.16b\n"
+                  "  shl v22.4s, v22.4s, #31\n"
+                  "  cmeq v22.4s, v22.4s, #0\n"
+                  "  add x16, " + firstColumnBase + ", " + jX +
+                  ", lsl #2\n  ldr q23, [x16]\n"
+                  "  and v23.16b, v23.16b, v22.16b\n"
+                  "  add x16, " + outputRow + ", " + jX +
+                  ", lsl #2\n  ldr q24, [x16]\n"
+                  "  mla v24.4s, v23.4s, v21.4s\n"
+                  "  str q24, [x16]\n";
+
     lines[*entryBranch] = "  b " + init;
     const std::string blocks =
         init + ":\n  movi v24.4s, #0\n  movz " + jW + ", #0\n  b " +
         clearHeader + "\n" + clearBody + ":\n  add x16, " + outputRow +
-        ", " + jX + ", lsl #2\n  str q24, [x16]\n  add " + jW + ", " +
-        jW + ", #4\n" + clearHeader + ":\n  cmp " + jW + ", #" +
+        ", " + jX + ", lsl #2\n" + clearStore + "  add " + jW + ", " +
+        jW + ", #" + std::to_string(vectorWidth) + "\n" + clearHeader +
+        ":\n  cmp " + jW + ", #" +
         std::to_string(extent) + "\n  b.lt " + clearBody + "\n  movz " + kW +
-        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr w17, [" +
+        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr " +
+        predicateScalar + ", [" +
         predicateRow + ", " + kX +
-        ", lsl #2]\n  ldr w9, [" + firstProductRow +
-        ", " + kX + ", lsl #2]\n  movz x18, #" + std::to_string(stride) +
+        ", lsl #2]\n  dup v20.4s, " + predicateScalar + "\n  ldr " +
+        firstProduct + ", [" + firstProductRow + ", " + kX +
+        ", lsl #2]\n  dup v21.4s, " + firstProduct + "\n  movz x18, #" +
+        std::to_string(stride) +
         "\n  mul x18, " + kX + ", x18\n  add " + firstColumnBase + ", " +
         firstBase + ", x18\n  add " + secondColumnBase + ", " + secondBase +
-        ", x18\n  dup v20.4s, w17\n  dup v21.4s, w9\n  movz " + jW +
+        ", x18\n  movz " + jW +
         ", #0\n  b " + jHeaderLabel +
-        "\n" + jBodyLabel + ":\n  add x16, " + secondColumnBase + ", " +
-        jX + ", lsl #2\n  ldr q22, [x16]\n  and v22.16b, v22.16b, v20.16b\n"
-        "  shl v22.4s, v22.4s, #31\n  cmeq v22.4s, v22.4s, #0\n  add x16, " +
-        firstColumnBase + ", " + jX +
-        ", lsl #2\n  ldr q23, [x16]\n  and v23.16b, v23.16b, v22.16b\n"
-        "  add x16, " + outputRow + ", " + jX +
-        ", lsl #2\n  ldr q24, [x16]\n  mla v24.4s, v23.4s, v21.4s\n"
-        "  str q24, [x16]\n  add " + jW + ", " + jW + ", #4\n" +
+        "\n" + jBodyLabel + ":\n" + vectorUpdate + "  add " + jW + ", " +
+        jW + ", #" + std::to_string(vectorWidth) + "\n" +
         jHeaderLabel + ":\n  cmp " + jW + ", #" + std::to_string(extent) +
         "\n  b.lt " + jBodyLabel + "\n  add " + kW + ", " + kW +
         ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
