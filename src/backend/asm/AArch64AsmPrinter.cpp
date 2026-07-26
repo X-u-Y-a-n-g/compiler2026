@@ -1244,8 +1244,9 @@ std::optional<std::string> globalSymbolForRegister(
   return std::nullopt;
 }
 
-// Interchange an i-j-k conditional integer reduction into i-k-j and vectorize
-// the now-contiguous j dimension. The matcher proves three distinct global
+// Vectorize four adjacent columns of an i-j-k conditional integer reduction.
+// The vector accumulator remains in a q register for the complete k reduction
+// and is stored once at the end. The matcher proves three distinct global
 // objects, a single output store, identical static extents, and the exact
 // parity predicate before changing the store schedule.
 std::string vectorizeConditionalMatrixReduction(
@@ -1567,11 +1568,9 @@ std::string vectorizeConditionalMatrixReduction(
       continue;
     }
 
-    const std::string prefix = middleBodyLabel + ".interchanged4";
+    const std::string prefix = middleBodyLabel + ".register4";
     if (assembly.find(prefix + ".init:") != std::string::npos) continue;
     const std::string init = prefix + ".init";
-    const std::string clearBody = prefix + ".clear_body";
-    const std::string clearHeader = prefix + ".clear_header";
     const std::string kBodyLabel = prefix + ".k_body";
     const std::string kHeaderLabel = prefix + ".k_header";
     const std::string jBodyLabel = prefix + ".j_body";
@@ -1579,31 +1578,29 @@ std::string vectorizeConditionalMatrixReduction(
 
     lines[*entryBranch] = "  b " + init;
     const std::string blocks =
-        init + ":\n  movi v24.4s, #0\n  movz " + jW + ", #0\n  b " +
-        clearHeader + "\n" + clearBody + ":\n  add x16, " + outputRow +
-        ", " + jX + ", lsl #2\n  str q24, [x16]\n  add " + jW + ", " +
-        jW + ", #4\n" + clearHeader + ":\n  cmp " + jW + ", #" +
-        std::to_string(extent) + "\n  b.lt " + clearBody + "\n  movz " + kW +
-        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr w17, [" +
+        init + ":\n  movz " + jW + ", #0\n  b " + jHeaderLabel + "\n" +
+        jBodyLabel + ":\n  movi v24.4s, #0\n  movz " + kW +
+        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr " +
+        predicateScalar + ", [" +
         predicateRow + ", " + kX +
-        ", lsl #2]\n  ldr w9, [" + firstProductRow +
-        ", " + kX + ", lsl #2]\n  movz x18, #" + std::to_string(stride) +
+        ", lsl #2]\n  dup v20.4s, " + predicateScalar + "\n  ldr " +
+        firstProduct + ", [" + firstProductRow + ", " + kX +
+        ", lsl #2]\n  dup v21.4s, " + firstProduct + "\n  movz x18, #" +
+        std::to_string(stride) +
         "\n  mul x18, " + kX + ", x18\n  add " + firstColumnBase + ", " +
         firstBase + ", x18\n  add " + secondColumnBase + ", " + secondBase +
-        ", x18\n  dup v20.4s, w17\n  dup v21.4s, w9\n  movz " + jW +
-        ", #0\n  b " + jHeaderLabel +
-        "\n" + jBodyLabel + ":\n  add x16, " + secondColumnBase + ", " +
+        ", x18\n  add x16, " + secondColumnBase + ", " +
         jX + ", lsl #2\n  ldr q22, [x16]\n  and v22.16b, v22.16b, v20.16b\n"
         "  shl v22.4s, v22.4s, #31\n  cmeq v22.4s, v22.4s, #0\n  add x16, " +
         firstColumnBase + ", " + jX +
         ", lsl #2\n  ldr q23, [x16]\n  and v23.16b, v23.16b, v22.16b\n"
-        "  add x16, " + outputRow + ", " + jX +
-        ", lsl #2\n  ldr q24, [x16]\n  mla v24.4s, v23.4s, v21.4s\n"
-        "  str q24, [x16]\n  add " + jW + ", " + jW + ", #4\n" +
-        jHeaderLabel + ":\n  cmp " + jW + ", #" + std::to_string(extent) +
-        "\n  b.lt " + jBodyLabel + "\n  add " + kW + ", " + kW +
+        "  mla v24.4s, v23.4s, v21.4s\n  add " + kW + ", " + kW +
         ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
-        std::to_string(extent) + "\n  b.lt " + kBodyLabel + "\n  b " +
+        std::to_string(extent) + "\n  b.lt " + kBodyLabel +
+        "\n  add x16, " + outputRow + ", " + jX +
+        ", lsl #2\n  str q24, [x16]\n  add " + jW + ", " + jW +
+        ", #4\n" + jHeaderLabel + ":\n  cmp " + jW + ", #" +
+        std::to_string(extent) + "\n  b.lt " + jBodyLabel + "\n  b " +
         *middleEndLabel;
     lines[middleBodyLine] = blocks + "\n" + lines[middleBodyLine];
     changed = true;
