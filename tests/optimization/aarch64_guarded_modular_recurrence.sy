@@ -1,0 +1,48 @@
+int repeat_add_mod(int initial, int increment, int count) {
+    int value = initial;
+    int index = 0;
+    while (index < count) {
+        value = (value + increment) % 97;
+        index = index + 1;
+    }
+    return value;
+}
+
+int unrelated_mod(int value) {
+    return value % 97;
+}
+
+int repeat_constant_mod(int initial, int count) {
+    int value = initial;
+    int index = 0;
+    while (index < count) {
+        value = (value + 3) % 97;
+        index = index + 1;
+    }
+    return value;
+}
+
+int main() {
+    int initial = getint();
+    int increment = getint();
+    int count = getint();
+    putint(repeat_add_mod(initial, increment, count));
+    putch(10);
+    putint(repeat_add_mod(increment, count, count));
+    putch(10);
+    putint(repeat_add_mod(increment, increment + count, count));
+    putch(10);
+    putint(repeat_add_mod(increment, increment + 2, count));
+    putch(10);
+    putint(repeat_add_mod(-5, -3, count));
+    putch(10);
+    putint(repeat_add_mod(2147483647, count, count));
+    putch(10);
+    putint(repeat_add_mod(123, increment, 0));
+    putch(10);
+    putint(unrelated_mod(initial + increment));
+    putch(10);
+    putint(repeat_constant_mod(initial, count));
+    putch(10);
+    return 0;
+}

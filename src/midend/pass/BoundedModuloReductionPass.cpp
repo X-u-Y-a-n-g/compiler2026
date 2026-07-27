@@ -904,6 +904,196 @@ void applyCandidate(Function& function, const Candidate& candidate) {
   instructions.insert(position, replacement.begin(), replacement.end());
 }
 
+struct GuardedRecurrenceCandidate {
+  std::size_t block = 0;
+  std::size_t instruction = 0;
+  std::int32_t modulus = 0;
+  std::string numerator;
+  std::string remainder;
+};
+
+std::optional<GuardedRecurrenceCandidate>
+findGuardedRecurrenceCandidate(const Function& function) {
+  const auto definitions = buildDefinitions(function);
+  std::unordered_map<std::string, std::size_t> blockByName;
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    blockByName.emplace(function.blocks()[block].name(), block);
+  }
+
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+       ++blockIndex) {
+    const auto& block = function.blocks()[blockIndex];
+    const auto* terminator = block.terminator();
+    if (terminator == nullptr || terminator->opcode() != "br" ||
+        terminator->operands().size() != 1) {
+      continue;
+    }
+    const auto successor = blockByName.find(terminator->operands()[0]);
+    if (successor == blockByName.end()) continue;
+
+    for (std::size_t instructionIndex = 0;
+         instructionIndex < block.instructions().size();
+         ++instructionIndex) {
+      const auto& instruction = block.instructions()[instructionIndex];
+      if ((instruction.opcode() != "srem" &&
+           instruction.opcode() != "mod") ||
+          !instruction.hasResult() || instruction.operands().size() != 2) {
+        continue;
+      }
+      const auto modulus = positiveSafeModulus(instruction.operands()[1]);
+      if (!modulus.has_value()) continue;
+
+      std::string recurrence;
+      for (const auto& phi :
+           function.blocks()[successor->second].instructions()) {
+        if (phi.opcode() != "phi") continue;
+        for (std::size_t incoming = 1;
+             incoming + 1 < phi.operands().size(); incoming += 2) {
+          if (phi.operands()[incoming] == instruction.result() &&
+              phi.operands()[incoming + 1] == block.name()) {
+            recurrence = phi.result();
+          }
+        }
+      }
+      if (recurrence.empty()) continue;
+
+      const auto numerator = definitions.find(instruction.operands()[0]);
+      if (numerator == definitions.end() ||
+          numerator->second->opcode() != "add" ||
+          numerator->second->operands().size() != 2) {
+        continue;
+      }
+      const auto& addOperands = numerator->second->operands();
+      std::string increment;
+      if (addOperands[0] == recurrence) {
+        increment = addOperands[1];
+      } else if (addOperands[1] == recurrence) {
+        increment = addOperands[0];
+      } else {
+        continue;
+      }
+      long long constantIncrement = 0;
+      if (detail::parseIntegerLiteral(increment, constantIncrement)) {
+        continue;
+      }
+
+      return GuardedRecurrenceCandidate{
+          blockIndex, instructionIndex, *modulus,
+          instruction.operands()[0], instruction.result()};
+    }
+  }
+  return std::nullopt;
+}
+
+void rewritePhiPredecessor(Function& function,
+                           const std::string& oldPredecessor,
+                           const std::string& newPredecessor) {
+  for (auto& block : function.blocks()) {
+    for (auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "phi") continue;
+      auto operands = instruction.operands();
+      bool changed = false;
+      for (std::size_t index = 2; index < operands.size(); index += 2) {
+        if (operands[index] == oldPredecessor) {
+          operands[index] = newPredecessor;
+          changed = true;
+        }
+      }
+      if (changed) {
+        instruction =
+            Instruction{"phi", std::move(operands), instruction.result()};
+      }
+    }
+  }
+}
+
+bool applyGuardedRecurrenceCandidate(
+    Function& function, const GuardedRecurrenceCandidate& candidate) {
+  if (candidate.block >= function.blocks().size()) return false;
+  auto valueNames = collectValueNames(function);
+  std::unordered_set<std::string> blockNames;
+  for (const auto& block : function.blocks()) {
+    blockNames.insert(block.name());
+  }
+  const std::string fastName =
+      freshName(blockNames, "guarded.mod.fast");
+  const std::string reduceName =
+      freshName(blockNames, "guarded.mod.reduce");
+  const std::string fallbackName =
+      freshName(blockNames, "guarded.mod.fallback");
+  const std::string continueName =
+      freshName(blockNames, "guarded.mod.continue");
+  const std::string alreadyReduced =
+      freshName(valueNames, "%guarded.mod.already.reduced");
+  const std::string reducibleOnce =
+      freshName(valueNames, "%guarded.mod.reducible.once");
+  const std::string reduced =
+      freshName(valueNames, "%guarded.mod.reduced");
+  const std::string fallbackValue =
+      freshName(valueNames, "%guarded.mod.fallback.value");
+  const std::string modulus = std::to_string(candidate.modulus);
+  const std::string twiceModulus =
+      std::to_string(static_cast<std::int64_t>(candidate.modulus) * 2);
+
+  auto& original = function.blocks()[candidate.block];
+  if (candidate.instruction >= original.instructions().size() ||
+      original.instructions()[candidate.instruction].result() !=
+          candidate.remainder) {
+    return false;
+  }
+  const std::string originalName = original.name();
+  std::vector<Instruction> prefix(
+      original.instructions().begin(),
+      original.instructions().begin() +
+          static_cast<std::ptrdiff_t>(candidate.instruction));
+  std::vector<Instruction> suffix(
+      original.instructions().begin() +
+          static_cast<std::ptrdiff_t>(candidate.instruction + 1),
+      original.instructions().end());
+  prefix.emplace_back(
+      "icmp.ult",
+      std::vector<std::string>{candidate.numerator, modulus},
+      alreadyReduced);
+  prefix.emplace_back(
+      "br", std::vector<std::string>{alreadyReduced, continueName, fastName});
+  original.instructions() = std::move(prefix);
+
+  BasicBlock fast{fastName};
+  fast.addInstruction(
+      Instruction{"icmp.ult",
+                  {candidate.numerator, twiceModulus},
+                  reducibleOnce});
+  fast.addInstruction(
+      Instruction{"br", {reducibleOnce, reduceName, fallbackName}});
+
+  BasicBlock reduce{reduceName};
+  reduce.addInstruction(
+      Instruction{"sub", {candidate.numerator, modulus}, reduced});
+  reduce.addInstruction(Instruction{"br", {continueName}});
+
+  BasicBlock fallback{fallbackName};
+  fallback.addInstruction(Instruction{
+      "srem", {candidate.numerator, modulus}, fallbackValue});
+  fallback.addInstruction(Instruction{"br", {continueName}});
+
+  BasicBlock continuation{continueName};
+  continuation.addInstruction(Instruction{
+      "phi",
+      {"int", candidate.numerator, originalName, reduced, reduceName,
+       fallbackValue, fallbackName},
+      candidate.remainder});
+  for (auto& instruction : suffix) {
+    continuation.addInstruction(std::move(instruction));
+  }
+
+  rewritePhiPredecessor(function, originalName, continueName);
+  function.addBlock(std::move(fast));
+  function.addBlock(std::move(reduce));
+  function.addBlock(std::move(fallback));
+  function.addBlock(std::move(continuation));
+  return true;
+}
+
 void rewriteDirectCalls(Function& function, const std::string& from,
                         const std::string& to) {
   for (auto& block : function.blocks()) {
@@ -1176,6 +1366,13 @@ void BoundedModuloReductionPass::run(compiler::ir::core::Module& module) {
               });
     for (const auto& candidate : candidates) {
       applyCandidate(function, candidate);
+    }
+    if (std::getenv("COMPILER_DISABLE_GUARDED_MODULAR_RECURRENCE") ==
+        nullptr) {
+      const auto guarded = findGuardedRecurrenceCandidate(function);
+      if (guarded.has_value()) {
+        applyGuardedRecurrenceCandidate(function, *guarded);
+      }
     }
   }
 }

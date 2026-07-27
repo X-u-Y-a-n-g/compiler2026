@@ -2111,6 +2111,7 @@ std::string conditionFor(const std::string& predicate) {
   if (predicate == "icmp.sle") return "le";
   if (predicate == "icmp.sgt") return "gt";
   if (predicate == "icmp.sge") return "ge";
+  if (predicate == "icmp.ult") return "lo";
   return "al";
 }
 
@@ -2118,6 +2119,7 @@ std::string inverseCondition(const std::string& condition) {
   if (condition == "eq") return "ne"; if (condition == "ne") return "eq";
   if (condition == "lt") return "ge"; if (condition == "ge") return "lt";
   if (condition == "le") return "gt"; if (condition == "gt") return "le";
+  if (condition == "lo") return "hs"; if (condition == "hs") return "lo";
   return "nv";
 }
 
