@@ -617,6 +617,22 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     return os.str();
   }
 
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.init") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.step") {
+    os << opcode << " ptr " << operands[0] << ", ptr " << operands[1]
+       << ", i32 " << operands[2];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.finish") {
+    os << opcode;
+    return os.str();
+  }
+
   if (opcode == "aarch64.widened.mul.lhs.i32" ||
       opcode == "aarch64.widened.mul.rhs.i32") {
     os << opcode << " i32 " << operands[0];

@@ -2509,6 +2509,44 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q26, q27, [" << address << ", #96]\n";
     return;
   }
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.init" &&
+      instruction.operands.size() == 1) {
+    const auto initial = integerOperand(os, function, instruction.operands[0],
+                                        kImmScratch);
+    os << "  movi v0.2d, #0\n";
+    os << "  movi v1.2d, #0\n";
+    os << "  mov v0.s[0], "
+       << integerRegister(initial, ValueType::int32Type()) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.step" &&
+      instruction.operands.size() == 3) {
+    const auto leftBase =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto rightBase =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    const auto index =
+        integerOperand(os, function, instruction.operands[2], kHiddenScratch);
+    os << "  add x16, " << leftBase << ", "
+       << integerRegister(index, ValueType::int32Type()) << ", sxtw #2\n";
+    os << "  add x17, " << rightBase << ", "
+       << integerRegister(index, ValueType::int32Type()) << ", sxtw #2\n";
+    os << "  ldp q2, q3, [x16]\n";
+    os << "  ldp q4, q5, [x17]\n";
+    os << "  mls v0.4s, v2.4s, v4.4s\n";
+    os << "  mls v1.4s, v3.4s, v5.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.reduce.mls.i32x8.finish" &&
+      instruction.hasResult && instruction.operands.empty()) {
+    const auto destination = resultRegister(instruction.result, kImmScratch);
+    os << "  add v0.4s, v0.4s, v1.4s\n";
+    os << "  addv s0, v0.4s\n";
+    os << "  fmov "
+       << integerRegister(destination, ValueType::int32Type()) << ", s0\n";
+    storeResult(os, function, instruction.result, destination);
+    return;
+  }
   if (opcode == "aarch64.widened.mul.lhs.i32" &&
       instruction.operands.size() == 1) {
     const auto source =

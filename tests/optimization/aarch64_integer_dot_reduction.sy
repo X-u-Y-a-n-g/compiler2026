@@ -1,0 +1,74 @@
+int left_values[48];
+int right_values[48];
+int side_effects[48];
+
+int dot_sub(int left[], int right[], int begin, int end, int initial) {
+  int index = begin;
+  int result = initial;
+  while (index < end) {
+    result = result - left[index] * right[index];
+    index = index + 1;
+  }
+  return result;
+}
+
+int step_two_fallback(int left[], int right[], int end, int initial) {
+  int index = 0;
+  int result = initial;
+  while (index < end) {
+    result = result - left[index] * right[index];
+    index = index + 2;
+  }
+  return result;
+}
+
+int store_fallback(int left[], int right[], int end, int initial) {
+  int index = 0;
+  int result = initial;
+  while (index < end) {
+    result = result - left[index] * right[index];
+    side_effects[index] = result;
+    index = index + 1;
+  }
+  return result;
+}
+
+int main() {
+  int index = 0;
+  while (index < 48) {
+    left_values[index] = index * 65537 - 700000;
+    right_values[index] = index * 31337 + 900001;
+    index = index + 1;
+  }
+  left_values[3] = 2147483647;
+  right_values[3] = 2147483647;
+  left_values[11] = -2147483647 - 1;
+  right_values[11] = -1;
+
+  putint(dot_sub(left_values, right_values, 0, 0, 123));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 0, 1, -77));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 0, 7, 19));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 0, 8, 19));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 0, 9, 19));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 1, 16, -2147483647 - 1));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 3, 19, 2147483647));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 5, 22, -123456789));
+  putch(10);
+  putint(dot_sub(left_values, left_values, 0, 17, 7));
+  putch(10);
+  putint(dot_sub(left_values, right_values, 2147483647, 2147483647,
+                 -999));
+  putch(10);
+  putint(step_two_fallback(left_values, right_values, 17, 33));
+  putch(10);
+  putint(store_fallback(left_values, right_values, 9, -44));
+  putch(10);
+  return 0;
+}

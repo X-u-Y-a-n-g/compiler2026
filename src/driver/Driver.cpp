@@ -26,6 +26,7 @@
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
+#include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
@@ -267,6 +268,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
           std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::LoopInterchangeRowUpdatePass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::AArch64IntegerDotReductionPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::ConstantFoldingPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::CommonSubexpressionEliminationPass>());
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());

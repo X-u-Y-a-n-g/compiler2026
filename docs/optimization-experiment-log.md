@@ -466,3 +466,16 @@ generic-ooo 前/后：
 - 当前状态：D。先检查目标汇编出现 `.interchanged8` 以及内层 `LDP/2×MLA/STP`，再独立测试 `matmul1/2/3`；只有恢复到父提交之上且稳定正收益后才运行 60/60，否则独立撤回。
 
 本候选由 AI 辅助完成退化根因分析、流式循环顺序保留、八列 SLP 展开、成对访存、寄存器冲突修正和 8/4 宽度合成差分。技术依据为 loop unrolling、SLP、memory locality 与 ARMv8-A NEON `LDP/STP/MLA` 语义；未使用特定样例身份或未定义行为。
+
+## 2026-07-27 AArch64 连续 i32 乘减归约双向量化（待平台判定）
+
+- 基线与目标差距：合并后的 `zct-arm-no-magic`/`wz-arm` 基线为 `0ee19ae`。用户回传 Cortex-A53 榜单中三个三角矩阵分解点为 `16.73/16.71/16.99s`，最佳为 `3.19/3.18/3.19s`。编译器生成的八列连续行更新已使用 NEON，但前代和回代中的连续整数点积仍为逐元素 `LDR + LDR + MSUB`。
+- Clang/LLVM 对照：使用 Clang `-O3 -mcpu=cortex-a53 -fwrapv -fno-strict-aliasing`，保证不借助 C 有符号溢出未定义行为。优化诊断显示流水线依次运行 `LoopVectorizePass`、`SLPVectorizerPass` 和 `LoopUnrollPass`；连续点积被降为两个 `i32x4` 累加器、两组 `LDP`、两条 `MLS` 和退出 `ADD + ADDV`。跨行步长点积被向量成本模型拒绝，未被本候选错误当作连续流。
+- 通用条件：只接受规范 SSA 循环头中的两个 i32 Phi、`icmp.slt` 退出、单位递增索引和 `acc = acc - lhs[index] * rhs[index]`。两个 load 必须来自以同一归纳变量索引的终端 i32 GEP；循环体必须无调用、store 或额外指令，所有中间值均为单用途。函数存在浮点状态或未知 NEON pseudo 时拒绝。匹配器不读取源码路径、测试/函数/变量/全局/块名称、数组维度、固定循环上界、输入或输出。
+- 变换与证明：运行时要求非负起点、有序上下界且至少有八次迭代；零起点使用更短的 `bound>=8` 守卫。完整八元素区间用 `v0/v1` 两个模 `2^32` 累加器执行 `2×LDP + 2×MLS`，退出时水平求和；不足八项和所有不满足守卫的路径执行原标量循环。SysY i32 加减乘的回绕语义构成模环，分 lane 后再求和与原顺序逐次回绕严格相等。循环内只有读取，因此两个输入区间即使互相别名也不改变可观察行为。
+- 合成覆盖：匿名测试覆盖 trip count `0/1/7/8/9/15/16/17`、非零起点、`INT_MIN/MAX` 和乘减溢出、两个输入为同一数组、极大零趟起点，以及非单位步长和循环内 store 的 fallback。O0、关闭候选的 O1 与开启候选的 O1 输出逐字一致，生成汇编通过 GNU AArch64 汇编器。
+- 隔离与正确性：ARM performance 为 `60/60 AC`，AArch64 correctness 为 `140/140 AC`。60 项中只有三个三角矩阵分解点汇编变化，每项恰有两处连续点积变为 NEON；其余 57 项候选与关闭版本汇编逐字一致。
+- 静态性能：Cortex-A53 LLVM MCA 中，候选八元素核心 block throughput 为约 `4.5 cycles`；原标量一元素核心约 `2.0 cycles`，八次约 `16 cycles`，核心吞吐预测约改善 `3.56×`。Clang 同类向量核心约 `5.0 cycles/8 elements`。本地 QEMU 软件模拟中目标三项计时由关闭版本约 `1.74–1.90ms` 变为 `2.55–2.64ms`；该退化与仓库既有 NEON 候选一致，只作为诊断记录，不能覆盖真实 Cortex-A53 结果。
+- 状态：D，代码与完整本地正确性门禁已完成。按仓库所有者指定的新流程，候选先推送到 `zct-arm-no-magic`，再由所有者提交官方 Cortex-A53 独立提测；平台收益成立则保留，平台退化或错误则立即独立回退并推送。下一项独立候选可参考 LLVM `LoopUnroll`，对被向量成本模型拒绝的只读乘减归约做两路标量交错，不与本次向量化混合消融。
+
+本候选由 AI 辅助完成 Clang 最终汇编差距分析、LLVM pass pipeline 诊断、SSA 合法性匹配、运行时版本化、隐藏 NEON 状态降级、地址活跃性修正、匿名边界/fallback、60/60 与 140/140 回归及 Cortex-A53 静态调度分析。外部技术参考为 LLVM 21.1.2 `LoopVectorize.cpp` 的 recurrence/cost 模型与 `AArch64TargetTransformInfo.cpp` 的 reduction cost 实现，以及 ARMv8-A NEON `MLS/ADDV/LDP` 指令语义；未复制 LLVM 源码。

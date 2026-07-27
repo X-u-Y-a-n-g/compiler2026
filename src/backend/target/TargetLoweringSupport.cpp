@@ -483,6 +483,25 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.reduce.mls.i32x8.init") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.reduce.mls.i32x8.step") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]), lowerValueOperand(operands[1]),
+            lowerValueOperand(operands[2], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.reduce.mls.i32x8.finish") {
+      emit(block, opcode,
+           bindVirtualResult(instruction.result(), ValueType::int32Type()), {});
+      return;
+    }
+
     if (opcode == "aarch64.widened.mul.lhs.i32" ||
         opcode == "aarch64.widened.mul.rhs.i32") {
       emit(block, opcode, {},
