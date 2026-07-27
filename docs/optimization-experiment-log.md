@@ -536,3 +536,23 @@ generic-ooo 前/后：
 - 状态：D。独立提交并等待 Cortex-A53；若三项合计相对 `15.45/15.45/15.41s` 稳定改善则保留，否则完整回退。
 
 本候选由 AI 辅助完成循环依赖证明、K/J 二维 strip-mining、32 列 NEON 状态设计、错误多层 GEP 试验的主动识别与撤销、Clang 汇编对照、动态边界测试、完整回归及 60 份汇编隔离。技术依据为经典 loop tiling/interchange、reuse-distance/cache locality、SSA Phi 重写和 ARMv8-A `LDP/STP/MLS` 语义；未使用测试、函数、变量、固定矩阵尺寸或输入输出作为触发条件。
+
+## 2026-07-27 Cortex-A53 分块复核、列面板回退与 shuffle 消融
+
+- h-5：`f461ce8` 的 K8×J32 二维分块在官方 Cortex-A53 上由
+  `15.45/15.45/15.41s` 降至 `13.91/13.97/13.86s`，三项合计
+  `46.31→41.74s`，下降约 `9.87%`。完整评测通过，判定为 A，保留。
+- many_mat：列面板交换 `02d11ea` 在本地 QEMU 曾显示约 `3.16%`
+  改善，但官方 Cortex-A53 由 `12.39/12.43/12.42s` 退化为
+  `13.08/13.25/13.17s`，三项合计 `37.24→39.50s`，退化约
+  `6.07%`。真实平台否决本地缓存模型，已由 `f821111` 完整回退。
+- shuffle：四个既有开关的消融中，关闭 late helper cache、state-chain
+  pipeline 或 state-chain inlining 均不改变最终汇编；关闭对象敏感 load
+  forwarding 会增加 13 次静态 load。把大型循环 helper 内联到调用循环会使
+  h-1 的 memo 识别失效，QEMU 三项合计约慢 `3.6×`；收紧为只内联极小 helper
+  后，五轮交错中 shuffle0/1 中位数仍分别退化约 `0.75%/1.36%`。两种候选
+  均已在未提交状态撤销。
+
+结论：真实 Cortex-A53 数据优先于 QEMU；保留 h-5 二维分块，不恢复
+many_mat 列面板交换，也不通过按输入规模或用例身份区分同源码的 shuffle
+变体。
