@@ -514,6 +514,19 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.srem.i32x4.init") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.srem.i32x4.step") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1], ValueType::int32Type())});
+      return;
+    }
+
     if (opcode == "aarch64.widened.mul.lhs.i32" ||
         opcode == "aarch64.widened.mul.rhs.i32") {
       emit(block, opcode, {},

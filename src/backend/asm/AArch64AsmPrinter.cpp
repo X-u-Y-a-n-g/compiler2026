@@ -2621,6 +2621,34 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     storeResult(os, function, instruction.result, destination);
     return;
   }
+  if (opcode == "aarch64.neon.srem.i32x4.init" &&
+      instruction.operands.size() == 1 &&
+      instruction.operands[0].kind == MachineOperandKind::ImmediateInt &&
+      instruction.operands[0].intValue == 11) {
+    os << "  movz w16, #0xa2e9\n";
+    os << "  movk w16, #0x2e8b, lsl #16\n";
+    os << "  dup v0.4s, w16\n";
+    os << "  movi v1.4s, #11\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.srem.i32x4.step" &&
+      instruction.operands.size() == 2) {
+    const auto base =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto index =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  add x16, " << base << ", "
+       << integerRegister(index, ValueType::int32Type()) << ", sxtw #2\n";
+    os << "  ldr q2, [x16]\n";
+    os << "  smull2 v3.2d, v2.4s, v0.4s\n";
+    os << "  smull v4.2d, v2.2s, v0.2s\n";
+    os << "  uzp2 v3.4s, v4.4s, v3.4s\n";
+    os << "  sshr v4.4s, v3.4s, #1\n";
+    os << "  usra v4.4s, v3.4s, #31\n";
+    os << "  mls v2.4s, v4.4s, v1.4s\n";
+    os << "  str q2, [x16]\n";
+    return;
+  }
   if (opcode == "aarch64.widened.mul.lhs.i32" &&
       instruction.operands.size() == 1) {
     const auto source =

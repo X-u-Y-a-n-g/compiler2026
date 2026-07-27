@@ -642,6 +642,14 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     os << opcode;
     return os.str();
   }
+  if (opcode == "aarch64.neon.srem.i32x4.init") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.srem.i32x4.step") {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
 
   if (opcode == "aarch64.widened.mul.lhs.i32" ||
       opcode == "aarch64.widened.mul.rhs.i32") {

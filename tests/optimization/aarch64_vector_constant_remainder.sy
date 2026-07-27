@@ -1,0 +1,65 @@
+int values[16];
+int fallback_values[16];
+
+void initialize() {
+  values[0] = 0;
+  values[1] = 10;
+  values[2] = 11;
+  values[3] = 12;
+  values[4] = -10;
+  values[5] = -11;
+  values[6] = -12;
+  values[7] = 2147483647;
+  values[8] = -2147483647 - 1;
+  values[9] = 123456789;
+  values[10] = -123456789;
+}
+
+void reduce_modulo_eleven(int array[], int begin, int end) {
+  int index = begin;
+  while (index < end) {
+    array[index] = array[index] % 11;
+    index = index + 1;
+  }
+}
+
+void different_divisor_fallback(int array[], int end) {
+  int index = 0;
+  while (index < end) {
+    array[index] = array[index] % 13;
+    index = index + 1;
+  }
+}
+
+void non_unit_fallback(int array[], int end) {
+  int index = 0;
+  while (index < end) {
+    array[index] = array[index] % 11;
+    index = index + 2;
+  }
+}
+
+int main() {
+  int length = 0;
+  while (length < 8) {
+    initialize();
+    reduce_modulo_eleven(values, 0, length);
+    putint(values[0] + values[1] + values[2] + values[3] + values[4] +
+           values[5] + values[6]);
+    putch(10);
+    length = length + 1;
+  }
+
+  initialize();
+  reduce_modulo_eleven(values, 1, 11);
+  putarray(11, values);
+
+  initialize();
+  different_divisor_fallback(values, 11);
+  putarray(11, values);
+
+  initialize();
+  non_unit_fallback(values, 11);
+  putarray(11, values);
+  return 0;
+}

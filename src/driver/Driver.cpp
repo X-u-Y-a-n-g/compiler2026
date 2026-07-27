@@ -27,6 +27,7 @@
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
+#include "../../include/compiler/midend/pass/AArch64VectorConstantRemainderPass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
@@ -281,6 +282,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::MonotonicLoopBoundPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::AArch64VectorConstantRemainderPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::NestedInvariantReductionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
