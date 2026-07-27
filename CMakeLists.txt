@@ -40,7 +40,6 @@ add_library(compiler_lib
   src/midend/pass/MonotonicContinueEliminationPass.cpp
   src/midend/pass/MonotonicLoopBoundPass.cpp
   src/midend/pass/NestedInvariantReductionPass.cpp
-  src/midend/pass/OrderedRecurrenceUnrollPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/PowerOfTwoDispatchPass.cpp
   src/midend/pass/RedundantLoadEliminationPass.cpp

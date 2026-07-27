@@ -391,8 +391,7 @@ matchInduction(const MachineFunction &function, const LoopInfo &loop,
     }
     const auto step =
         inductionOffsetForIndex(*next, phi.result, loop, definitions, function);
-    if (!step.has_value() ||
-        (*step != 1 && *step != 2 && *step != 4) ||
+    if (!step.has_value() || (*step != 1 && *step != 2) ||
         (inductionStep.has_value() && *inductionStep != *step)) {
       return std::nullopt;
     }
@@ -527,31 +526,6 @@ bool isSimpleReadOnlyIntegerSelectReduction(const MachineFunction &function,
          selects == 1;
 }
 
-bool isFourWayReadOnlyIntegerSelectReduction(const MachineFunction &function,
-                                             const LoopInfo &loop) {
-  unsigned loads = 0;
-  unsigned multiplies = 0;
-  unsigned selects = 0;
-  for (const auto block : loop.blocks) {
-    for (const auto &instruction : function.blocks[block].instructions) {
-      if (instruction.opcode == "call" || instruction.opcode == "store" ||
-          instruction.opcode == "fstore" ||
-          instruction.opcode.rfind("aarch64.neon.", 0) == 0) {
-        return false;
-      }
-      if (instruction.opcode == "load") {
-        ++loads;
-      } else if (instruction.opcode == "mul") {
-        ++multiplies;
-      } else if (instruction.opcode == "select") {
-        ++selects;
-      }
-    }
-  }
-  return loop.blocks.size() == 2 && loads == 8 && multiplies == 4 &&
-         selects == 4;
-}
-
 std::optional<Plan>
 findPlan(const MachineFunction &function,
          const compiler::backend::target::TargetInstrAdapter &adapter,
@@ -573,8 +547,6 @@ findPlan(const MachineFunction &function,
         isInterleavedReadOnlyMultiplySubReduction(function, loop);
     const bool scalarIntegerSelectReduction =
         isSimpleReadOnlyIntegerSelectReduction(function, loop);
-    const bool fourWayIntegerSelectReduction =
-        isFourWayReadOnlyIntegerSelectReduction(function, loop);
     const auto &headerName = function.blocks[loop.header].name;
     if (transformedHeaders.find(headerName) != transformedHeaders.end()) {
       continue;
@@ -582,15 +554,6 @@ findPlan(const MachineFunction &function,
     for (const auto &phi : function.blocks[loop.header].instructions) {
       const auto induction = matchInduction(function, loop, phi, definitions);
       if (!induction.has_value()) {
-        continue;
-      }
-      const bool fourWaySelectLoop =
-          fourWayIntegerSelectReduction && induction->step == 4;
-      if (induction->step == 4 &&
-          (!enableNestedScalarLargeStride || !fourWaySelectLoop ||
-           std::getenv(
-               "COMPILER_DISABLE_AARCH64_FOUR_WAY_SELECT_POINTER_IV") !=
-               nullptr)) {
         continue;
       }
       if (induction->step == 2 &&
@@ -624,11 +587,8 @@ findPlan(const MachineFunction &function,
               current.operands[1], induction->phi, loop, definitions, function);
           if (!inductionOffset.has_value() ||
               (*inductionOffset != 0 && !(enableNestedScalarLargeStride &&
-                                           (scalarIntegerSelectReduction ||
-                                           interleavedMultiplySubReduction ||
-                                           (fourWaySelectLoop &&
-                                            *inductionOffset >= 0 &&
-                                            *inductionOffset <= 4))))) {
+                                          (scalarIntegerSelectReduction ||
+                                           interleavedMultiplySubReduction)))) {
             continue;
           }
           const auto resultUses = uses.find(current.result.text);
@@ -666,9 +626,7 @@ findPlan(const MachineFunction &function,
               enableNestedScalarLargeStride &&
               std::getenv("COMPILER_DISABLE_NESTED_AFFINE_SELECT_POINTER_IV") ==
                   nullptr &&
-              nested &&
-              (scalarIntegerSelectReduction ||
-               fourWaySelectLoop) &&
+              nested && scalarIntegerSelectReduction &&
               isNonPowerOfTwoScale(scale) && oldCost == newCost + 1;
           // A step-two interleaved i32 reduction consumes two adjacent
           // elements from each stream.  Even a power-of-two byte scale is
@@ -729,10 +687,7 @@ findPlan(const MachineFunction &function,
                   return lhs.inductionOffset < rhs.inductionOffset;
                 });
       const std::size_t maximumCandidates =
-          (interleavedMultiplySubReduction ||
-           fourWaySelectLoop)
-              ? 4
-              : 2;
+          interleavedMultiplySubReduction ? 4 : 2;
       if (candidates.size() > maximumCandidates) {
         candidates.resize(maximumCandidates);
       }

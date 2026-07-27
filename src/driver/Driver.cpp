@@ -45,7 +45,6 @@
 #include "../../include/compiler/midend/pass/MonotonicContinueEliminationPass.h"
 #include "../../include/compiler/midend/pass/MonotonicLoopBoundPass.h"
 #include "../../include/compiler/midend/pass/NestedInvariantReductionPass.h"
-#include "../../include/compiler/midend/pass/OrderedRecurrenceUnrollPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
@@ -282,10 +281,6 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::MonotonicLoopBoundPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
-    if (isAArch64) {
-      passManager.add(std::make_unique<
-                      compiler::midend::pass::OrderedRecurrenceUnrollPass>());
-    }
     passManager.add(
         std::make_unique<compiler::midend::pass::NestedInvariantReductionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
