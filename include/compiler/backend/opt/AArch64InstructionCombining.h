@@ -6,6 +6,8 @@ namespace compiler::backend::opt {
 
 class AArch64InstructionCombining {
  public:
+  void lowerHotConstantDivisions(
+      compiler::backend::mir::MachineModule& module) const;
   void run(compiler::backend::mir::MachineModule& module) const;
   void runPostRA(compiler::backend::mir::MachineModule& module) const;
 };

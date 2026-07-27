@@ -30,6 +30,7 @@ using compiler::backend::mir::ValueType;
 constexpr const char* kAddrScratch = "x16";
 constexpr const char* kImmScratch = "x17";
 constexpr const char* kHiddenScratch = "x18";
+constexpr const char* kMagicDivisorScratch = "x15";
 constexpr const char* kFloatScratch = "s16";
 
 struct ContiguousMaddLane {
@@ -2618,6 +2619,56 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto source = floatOperand(os, function, instruction.operands[0], kFloatScratch);
     const auto dst = resultRegister(instruction.result, "s17"); os << "  fneg " << dst << ", " << source << '\n';
     storeResult(os, function, instruction.result, dst); return;
+  }
+  const bool magicDivision = opcode == "sdiv.magic.i32" &&
+                             instruction.operands.size() == 4;
+  const bool magicRemainder = opcode == "srem.magic.i32" &&
+                              instruction.operands.size() == 5;
+  if ((magicDivision || magicRemainder) && instruction.hasResult) {
+    const std::size_t adjustmentIndex = magicRemainder ? 3U : 2U;
+    const std::size_t shiftIndex = adjustmentIndex + 1U;
+    if (instruction.operands[adjustmentIndex].kind ==
+            MachineOperandKind::ImmediateInt &&
+        instruction.operands[shiftIndex].kind ==
+            MachineOperandKind::ImmediateInt &&
+        instruction.operands[shiftIndex].intValue >= 0 &&
+        instruction.operands[shiftIndex].intValue < 32) {
+      const auto lhs = integerOperand(os, function, instruction.operands[0],
+                                      kAddrScratch);
+      const auto multiplier = integerOperand(
+          os, function, instruction.operands[1], kImmScratch);
+      std::string divisor;
+      if (magicRemainder) {
+        divisor = integerOperand(os, function, instruction.operands[2],
+                                 kMagicDivisorScratch);
+      }
+      const auto dst = resultRegister(instruction.result, kImmScratch);
+      const auto d = integerRegister(dst, ValueType::int32Type());
+      const auto l = integerRegister(lhs, ValueType::int32Type());
+      const auto m = integerRegister(multiplier, ValueType::int32Type());
+      os << "  smull x18, " << l << ", " << m << '\n';
+      os << "  asr x18, x18, #32\n";
+      if (instruction.operands[adjustmentIndex].intValue > 0) {
+        os << "  add w18, w18, " << l << '\n';
+      } else if (instruction.operands[adjustmentIndex].intValue < 0) {
+        os << "  sub w18, w18, " << l << '\n';
+      }
+      if (instruction.operands[shiftIndex].intValue != 0) {
+        os << "  asr w18, w18, #"
+           << instruction.operands[shiftIndex].intValue << '\n';
+      }
+      os << "  add w18, w18, w18, lsr #31\n";
+      if (magicRemainder) {
+        os << "  msub " << d << ", w18, "
+           << integerRegister(divisor, ValueType::int32Type()) << ", " << l
+           << '\n';
+      } else if (d != "w18") {
+        os << "  mov " << d << ", w18\n";
+      }
+      storeResult(os, function, instruction.result,
+                  magicDivision && d == "w18" ? "x18" : dst);
+      return;
+    }
   }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {

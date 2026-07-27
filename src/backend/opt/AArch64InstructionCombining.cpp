@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <string>
 #include <limits>
 #include <optional>
@@ -11,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/backend/common/CFGBuilder.h"
+#include "../../../include/compiler/backend/target/AArch64MagicDivision.h"
 #include "../../../include/compiler/backend/target/TargetBackend.h"
 
 namespace compiler::backend::opt {
@@ -20,6 +24,23 @@ using compiler::backend::mir::MachineFunction;
 using compiler::backend::mir::MachineInstruction;
 using compiler::backend::mir::MachineOperand;
 using compiler::backend::mir::MachineOperandKind;
+using compiler::backend::mir::ValueType;
+
+struct NaturalLoop {
+  std::size_t header = 0;
+  std::size_t preheader = 0;
+  std::unordered_set<std::size_t> blocks;
+};
+
+struct ConstantDivisionCandidate {
+  std::size_t block = 0;
+  std::size_t instruction = 0;
+  std::int32_t divisor = 0;
+  compiler::backend::target::aarch64::SignedMagic32 magic;
+  int adjustment = 0;
+  bool isRemainder = false;
+  unsigned estimatedSaving = 0;
+};
 
 struct Definition {
   std::size_t block = 0;
@@ -75,6 +96,369 @@ std::string freshVirtualRegisterName(std::unordered_set<std::string>& names,
   for (std::size_t suffix = 0;; ++suffix) {
     const std::string candidate = prefix + "." + std::to_string(suffix);
     if (names.insert(candidate).second) return candidate;
+  }
+}
+
+std::vector<bool> computeReachable(
+    const compiler::backend::common::ControlFlowGraph& cfg) {
+  std::vector<bool> reachable(cfg.blocks.size(), false);
+  if (cfg.blocks.empty()) return reachable;
+  std::deque<std::size_t> worklist;
+  reachable[0] = true;
+  worklist.push_back(0);
+  while (!worklist.empty()) {
+    const auto block = worklist.front();
+    worklist.pop_front();
+    for (const auto successor : cfg.successors[block]) {
+      if (!reachable[successor]) {
+        reachable[successor] = true;
+        worklist.push_back(successor);
+      }
+    }
+  }
+  return reachable;
+}
+
+std::vector<std::unordered_set<std::size_t>> computeDominators(
+    const compiler::backend::common::ControlFlowGraph& cfg,
+    const std::vector<bool>& reachable) {
+  std::unordered_set<std::size_t> allReachable;
+  for (std::size_t block = 0; block < reachable.size(); ++block) {
+    if (reachable[block]) allReachable.insert(block);
+  }
+  std::vector<std::unordered_set<std::size_t>> dominators(reachable.size());
+  if (reachable.empty()) return dominators;
+  dominators[0].insert(0);
+  for (std::size_t block = 1; block < reachable.size(); ++block) {
+    if (reachable[block]) dominators[block] = allReachable;
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block = 1; block < reachable.size(); ++block) {
+      if (!reachable[block]) continue;
+      std::optional<std::unordered_set<std::size_t>> intersection;
+      for (const auto predecessor : cfg.predecessors[block]) {
+        if (!reachable[predecessor]) continue;
+        if (!intersection.has_value()) {
+          intersection = dominators[predecessor];
+          continue;
+        }
+        std::unordered_set<std::size_t> next;
+        for (const auto candidate : *intersection) {
+          if (dominators[predecessor].find(candidate) !=
+              dominators[predecessor].end()) {
+            next.insert(candidate);
+          }
+        }
+        intersection = std::move(next);
+      }
+      auto next = intersection.value_or(std::unordered_set<std::size_t>{});
+      next.insert(block);
+      if (next != dominators[block]) {
+        dominators[block] = std::move(next);
+        changed = true;
+      }
+    }
+  }
+  return dominators;
+}
+
+std::vector<NaturalLoop> findNaturalLoops(
+    const compiler::backend::common::ControlFlowGraph& cfg,
+    const std::vector<bool>& reachable,
+    const std::vector<std::unordered_set<std::size_t>>& dominators) {
+  std::unordered_map<std::size_t, NaturalLoop> byHeader;
+  for (std::size_t latch = 0; latch < cfg.blocks.size(); ++latch) {
+    if (!reachable[latch]) continue;
+    for (const auto header : cfg.successors[latch]) {
+      if (dominators[latch].find(header) == dominators[latch].end()) continue;
+      std::unordered_set<std::size_t> blocks{header, latch};
+      std::deque<std::size_t> worklist;
+      if (latch != header) worklist.push_back(latch);
+      while (!worklist.empty()) {
+        const auto block = worklist.front();
+        worklist.pop_front();
+        for (const auto predecessor : cfg.predecessors[block]) {
+          if (blocks.insert(predecessor).second && predecessor != header) {
+            worklist.push_back(predecessor);
+          }
+        }
+      }
+      auto& loop = byHeader[header];
+      loop.header = header;
+      loop.blocks.insert(blocks.begin(), blocks.end());
+    }
+  }
+
+  std::vector<NaturalLoop> loops;
+  for (auto& [header, loop] : byHeader) {
+    std::optional<std::size_t> preheader;
+    bool unique = true;
+    for (const auto predecessor : cfg.predecessors[header]) {
+      if (loop.blocks.find(predecessor) != loop.blocks.end()) continue;
+      if (preheader.has_value()) {
+        unique = false;
+        break;
+      }
+      preheader = predecessor;
+    }
+    if (!unique || !preheader.has_value() ||
+        cfg.successors[*preheader] != std::vector<std::size_t>{header}) {
+      continue;
+    }
+    loop.preheader = *preheader;
+    loops.push_back(std::move(loop));
+  }
+  std::sort(loops.begin(), loops.end(),
+            [](const NaturalLoop& lhs, const NaturalLoop& rhs) {
+              return lhs.blocks.size() < rhs.blocks.size();
+            });
+  return loops;
+}
+
+bool isPowerOfTwoMagnitude(std::int64_t value) {
+  if (value == 0) return false;
+  const auto magnitude =
+      value < 0 ? static_cast<std::uint64_t>(-(value + 1)) + 1U
+                : static_cast<std::uint64_t>(value);
+  return (magnitude & (magnitude - 1U)) == 0;
+}
+
+std::optional<ConstantDivisionCandidate> analyzeConstantDivision(
+    const MachineInstruction& instruction, std::size_t block,
+    std::size_t instructionIndex, std::optional<std::int32_t> knownDivisor) {
+  const bool division = instruction.opcode == "div" ||
+                        instruction.opcode == "sdiv";
+  const bool remainder = instruction.opcode == "mod" ||
+                         instruction.opcode == "srem";
+  if ((!division && !remainder) || !instruction.hasResult ||
+      !instruction.result.type.isInt32() || instruction.operands.size() != 2) {
+    return std::nullopt;
+  }
+  if (!knownDivisor.has_value()) {
+    return std::nullopt;
+  }
+  const auto divisor = *knownDivisor;
+  if (divisor == 0 || isPowerOfTwoMagnitude(divisor)) return std::nullopt;
+  const auto magic =
+      compiler::backend::target::aarch64::signedMagic32(divisor);
+  if (!magic.has_value()) return std::nullopt;
+
+  int adjustment = 0;
+  if (divisor > 0 && magic->multiplier < 0) {
+    adjustment = 1;
+  } else if (divisor < 0 && magic->multiplier > 0) {
+    adjustment = -1;
+  }
+
+  // Cortex-A53 integer SDIV is a long, non-pipelined dependency.  The magic
+  // quotient needs multiply-high, sign extraction, optional adjustment/shift,
+  // and one truncation correction.  Remainder adds one MSUB.  Require at least
+  // four estimated cycles of recurring-loop benefit before increasing
+  // invariant register pressure.
+  const unsigned loweredCost = 3U + (adjustment != 0 ? 1U : 0U) +
+                               (magic->shift != 0 ? 1U : 0U) +
+                               (remainder ? 1U : 0U);
+  const unsigned hardwareCost = remainder ? 13U : 12U;
+  if (loweredCost + 4U > hardwareCost) return std::nullopt;
+  return ConstantDivisionCandidate{block, instructionIndex, divisor, *magic,
+                                   adjustment, remainder,
+                                   hardwareCost - loweredCost};
+}
+
+std::optional<std::int32_t> resolveLoopInvariantI32Constant(
+    const MachineOperand& operand, const NaturalLoop& loop,
+    const std::unordered_map<std::string, Definition>& definitions,
+    const MachineFunction& function, std::unordered_set<std::string>& visiting) {
+  if (operand.kind == MachineOperandKind::ImmediateInt) {
+    if (operand.intValue < std::numeric_limits<std::int32_t>::min() ||
+        operand.intValue > std::numeric_limits<std::int32_t>::max()) {
+      return std::nullopt;
+    }
+    return static_cast<std::int32_t>(operand.intValue);
+  }
+  if (!isVirtualRegister(operand) || !visiting.insert(operand.text).second) {
+    return std::nullopt;
+  }
+  const auto found = definitions.find(operand.text);
+  if (found == definitions.end() ||
+      loop.blocks.find(found->second.block) != loop.blocks.end()) {
+    visiting.erase(operand.text);
+    return std::nullopt;
+  }
+  const auto& definition =
+      function.blocks[found->second.block].instructions[found->second.instruction];
+  std::optional<std::int32_t> result;
+  if (definition.opcode == "copy" && definition.operands.size() == 1) {
+    result = resolveLoopInvariantI32Constant(definition.operands[0], loop,
+                                             definitions, function, visiting);
+  } else if (definition.opcode == "neg" &&
+             definition.operands.size() == 1) {
+    if (const auto value = resolveLoopInvariantI32Constant(
+            definition.operands[0], loop, definitions, function, visiting)) {
+      const auto bits = 0U - static_cast<std::uint32_t>(*value);
+      std::int32_t negated = 0;
+      std::memcpy(&negated, &bits, sizeof(negated));
+      result = negated;
+    }
+  }
+  visiting.erase(operand.text);
+  return result;
+}
+
+std::size_t terminatorInsertionPoint(
+    const compiler::backend::mir::MachineBlock& block) {
+  std::size_t position = block.instructions.size();
+  while (position > 0) {
+    const auto& opcode = block.instructions[position - 1].opcode;
+    if (opcode != "br" && opcode.rfind("br.icmp.", 0) != 0 &&
+        opcode != "ret") {
+      break;
+    }
+    --position;
+  }
+  return position;
+}
+
+void lowerFunctionHotConstantDivisions(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  std::size_t instructionCount = 0;
+  for (const auto& block : function.blocks) {
+    instructionCount += block.instructions.size();
+  }
+  if (instructionCount > 4096) return;
+
+  const auto cfg = compiler::backend::common::CFGBuilder{}.build(function,
+                                                                  adapter);
+  const auto reachable = computeReachable(cfg);
+  const auto dominators = computeDominators(cfg, reachable);
+  const auto loops = findNaturalLoops(cfg, reachable, dominators);
+  auto names = collectVirtualRegisterNames(function, adapter);
+  std::unordered_map<std::string, Definition> definitions;
+  const auto rebuildDefinitions = [&]() {
+    definitions.clear();
+    for (std::size_t block = 0; block < function.blocks.size(); ++block) {
+      for (std::size_t instruction = 0;
+           instruction < function.blocks[block].instructions.size();
+           ++instruction) {
+        const auto& current = function.blocks[block].instructions[instruction];
+        if (current.hasResult && isVirtualRegister(current.result)) {
+          definitions.emplace(current.result.text,
+                              Definition{block, instruction});
+        }
+      }
+    }
+  };
+  rebuildDefinitions();
+
+  for (const auto& loop : loops) {
+    bool hasCall = false;
+    std::vector<ConstantDivisionCandidate> candidates;
+    for (const auto blockIndex : loop.blocks) {
+      const auto& instructions = function.blocks[blockIndex].instructions;
+      for (std::size_t instructionIndex = 0;
+           instructionIndex < instructions.size(); ++instructionIndex) {
+        if (instructions[instructionIndex].opcode == "call") hasCall = true;
+        std::unordered_set<std::string> visiting;
+        const auto knownDivisor =
+            instructions[instructionIndex].operands.size() == 2
+                ? resolveLoopInvariantI32Constant(
+                      instructions[instructionIndex].operands[1], loop,
+                      definitions, function, visiting)
+                : std::nullopt;
+        if (const auto candidate = analyzeConstantDivision(
+                instructions[instructionIndex], blockIndex, instructionIndex,
+                knownDivisor)) {
+          candidates.push_back(*candidate);
+        }
+      }
+    }
+    if (hasCall || candidates.empty()) continue;
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& lhs, const auto& rhs) {
+                if (lhs.estimatedSaving != rhs.estimatedSaving) {
+                  return lhs.estimatedSaving > rhs.estimatedSaving;
+                }
+                if (lhs.block != rhs.block) return lhs.block < rhs.block;
+                return lhs.instruction < rhs.instruction;
+              });
+
+    // Avoid turning an unusually constant-heavy loop into a register-pressure
+    // regression.  This is a target resource limit, not a workload identity.
+    constexpr std::size_t kMaximumNewInvariantRegisters = 8;
+    std::unordered_set<std::int32_t> selectedConstants;
+    std::vector<ConstantDivisionCandidate> selected;
+    for (const auto& candidate : candidates) {
+      auto required = selectedConstants;
+      required.insert(candidate.magic.multiplier);
+      if (candidate.isRemainder) required.insert(candidate.divisor);
+      if (required.size() > kMaximumNewInvariantRegisters) continue;
+      selectedConstants = std::move(required);
+      selected.push_back(candidate);
+    }
+    if (selected.empty()) continue;
+    unsigned recurringSaving = 0;
+    for (const auto& candidate : selected) {
+      recurringSaving += candidate.estimatedSaving;
+    }
+    // A lone quotient replacement is especially sensitive to code layout and
+    // invariant-register pressure.  Require enough aggregate recurring-loop
+    // benefit to pay for both effects; serial div/rem chains clear this bar,
+    // while isolated operations stay on the compact hardware SDIV path.
+    constexpr unsigned kMinimumAggregateRecurringSaving = 12;
+    if (recurringSaving < kMinimumAggregateRecurringSaving) continue;
+
+    std::unordered_map<std::int32_t, MachineOperand> constants;
+    std::vector<MachineInstruction> initializers;
+    auto constantRegister = [&](std::int32_t value) -> MachineOperand {
+      const auto found = constants.find(value);
+      if (found != constants.end()) return found->second;
+      const auto name = freshVirtualRegisterName(
+          names, "%aarch64.hot.div.constant");
+      auto operand = MachineOperand::virtualRegister(name,
+                                                     ValueType::int32Type());
+      initializers.push_back(MachineInstruction::copy(
+          operand, MachineOperand::immediateInt(value, ValueType::int32Type())));
+      constants.emplace(value, operand);
+      return operand;
+    };
+
+    for (const auto& candidate : selected) {
+      auto& instruction = function.blocks[candidate.block]
+                              .instructions[candidate.instruction];
+      if (instruction.opcode != "div" && instruction.opcode != "sdiv" &&
+          instruction.opcode != "mod" && instruction.opcode != "srem") {
+        continue;
+      }
+      const auto multiplier = constantRegister(candidate.magic.multiplier);
+      if (candidate.isRemainder) {
+        const auto divisor = constantRegister(candidate.divisor);
+        instruction = MachineInstruction::target(
+            "srem.magic.i32", instruction.result,
+            {instruction.operands[0], multiplier, divisor,
+             MachineOperand::immediateInt(candidate.adjustment,
+                                          ValueType::int32Type()),
+             MachineOperand::immediateInt(candidate.magic.shift,
+                                          ValueType::int32Type())});
+      } else {
+        instruction = MachineInstruction::target(
+            "sdiv.magic.i32", instruction.result,
+            {instruction.operands[0], multiplier,
+             MachineOperand::immediateInt(candidate.adjustment,
+                                          ValueType::int32Type()),
+             MachineOperand::immediateInt(candidate.magic.shift,
+                                          ValueType::int32Type())});
+      }
+    }
+
+    auto& preheader = function.blocks[loop.preheader];
+    const auto position = terminatorInsertionPoint(preheader);
+    preheader.instructions.insert(preheader.instructions.begin() + position,
+                                  initializers.begin(), initializers.end());
+    rebuildDefinitions();
   }
 }
 
@@ -582,6 +966,19 @@ void redirectPostRANoOpBlocks(MachineFunction& function) {
 }
 
 }  // namespace
+
+void AArch64InstructionCombining::lowerHotConstantDivisions(
+    compiler::backend::mir::MachineModule& module) const {
+  if (module.target.name() != "aarch64" ||
+      std::getenv("COMPILER_DISABLE_AARCH64_HOT_MAGIC_DIVISION") != nullptr) {
+    return;
+  }
+  const auto& adapter =
+      compiler::backend::target::instrAdapterFor(module.target);
+  for (auto& function : module.functions) {
+    lowerFunctionHotConstantDivisions(function, adapter);
+  }
+}
 
 void AArch64InstructionCombining::run(
     compiler::backend::mir::MachineModule& module) const {
