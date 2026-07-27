@@ -1,7 +1,6 @@
 #include "../../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <functional>
 #include <optional>
 #include <string>
@@ -41,16 +40,6 @@ struct PointerPath {
   std::vector<std::string> indices;
 };
 
-struct PanelInterchangeInfo {
-  std::string enclosingHeader;
-  std::string enclosingPreheader;
-  std::string enclosingBody;
-  std::string enclosingLatch;
-  std::string enclosingIndex;
-  std::string coefficientBase;
-  std::string destinationBase;
-};
-
 struct Candidate {
   std::string outerHeader;
   std::string outerBody;
@@ -65,7 +54,6 @@ struct Candidate {
   std::string outerBound;
   std::string reductionType;
   std::string reductionIdentity;
-  std::optional<PanelInterchangeInfo> panelInterchange;
 };
 
 using DefinitionMap = std::unordered_map<std::string, const Instruction*>;
@@ -423,114 +411,6 @@ bool memoryDependencesPermitJamming(
   return foundSameObjectColumnLoad;
 }
 
-std::optional<PanelInterchangeInfo> findPanelInterchangeInfo(
-    const Function& function, const CFG& cfg,
-    const DefinitionMap& definitions,
-    const std::unordered_set<std::string>& scalarSlots,
-    const std::string& outerPreheader, const std::string& outerHeader,
-    const std::string& outerExit, const std::string& outerSlot,
-    const std::string& innerSlot, const std::string& bound,
-    const BasicBlock& innerBody, const std::string& destination) {
-  const auto preheaderIndex = cfg.index.find(outerPreheader);
-  if (preheaderIndex == cfg.index.end() ||
-      cfg.predecessors[preheaderIndex->second].size() != 1) {
-    return std::nullopt;
-  }
-  const std::string enclosingHeader =
-      cfg.predecessors[preheaderIndex->second].front();
-  const auto* header = findBlock(function, cfg, enclosingHeader);
-  const auto* body = findBlock(function, cfg, outerPreheader);
-  const auto* latch = findBlock(function, cfg, outerExit);
-  if (header == nullptr || body == nullptr || latch == nullptr ||
-      header->instructions().size() != 3 ||
-      header->instructions()[0].opcode() != "phi" ||
-      header->instructions()[0].operands().size() != 5 ||
-      header->instructions()[1].opcode() != "icmp.slt" ||
-      header->instructions()[1].operands().size() != 2 ||
-      header->instructions()[2].opcode() != "br" ||
-      header->instructions()[2].operands().size() != 3 ||
-      header->instructions()[2].operands()[0] !=
-          header->instructions()[1].result() ||
-      header->instructions()[2].operands()[1] != outerPreheader ||
-      header->instructions()[1].operands()[0] !=
-          header->instructions()[0].result() ||
-      header->instructions()[1].operands()[1] != bound ||
-      body->terminator() == nullptr || body->terminator()->opcode() != "br" ||
-      body->terminator()->operands() != std::vector<std::string>{outerHeader} ||
-      latch->terminator() == nullptr ||
-      latch->terminator()->opcode() != "br" ||
-      latch->terminator()->operands() !=
-          std::vector<std::string>{enclosingHeader}) {
-    return std::nullopt;
-  }
-
-  const auto& rowPhi = header->instructions()[0];
-  const std::string row = rowPhi.result();
-  std::string enclosingPreheader;
-  std::string rowNext;
-  for (std::size_t index = 1; index + 1 < rowPhi.operands().size();
-       index += 2) {
-    if (rowPhi.operands()[index] == "0") {
-      enclosingPreheader = rowPhi.operands()[index + 1];
-    } else if (rowPhi.operands()[index + 1] == outerExit) {
-      rowNext = rowPhi.operands()[index];
-    }
-  }
-  const auto next = definitions.find(rowNext);
-  if (enclosingPreheader.empty() || next == definitions.end() ||
-      next->second->opcode() != "add" ||
-      next->second->operands().size() != 2 ||
-      !((next->second->operands()[0] == row &&
-         next->second->operands()[1] == "1") ||
-        (next->second->operands()[1] == row &&
-         next->second->operands()[0] == "1"))) {
-    return std::nullopt;
-  }
-
-  const auto destinationPath = pointerPath(destination, definitions);
-  if (!destinationPath.has_value() ||
-      destinationPath->indices.size() != 2 ||
-      destinationPath->indices[0] != row ||
-      !isValueLoadedFromSlot(destinationPath->indices[1], outerSlot,
-                             definitions)) {
-    return std::nullopt;
-  }
-
-  bool foundSource = false;
-  std::optional<std::string> coefficientBase;
-  for (const auto& instruction : innerBody.instructions()) {
-    if (instruction.opcode() != "load" ||
-        instruction.operands().size() != 2 ||
-        scalarSlots.find(instruction.operands()[1]) != scalarSlots.end()) {
-      continue;
-    }
-    const auto path = pointerPath(instruction.operands()[1], definitions);
-    if (!path.has_value() || path->indices.size() != 2) {
-      return std::nullopt;
-    }
-    if (path->base == destinationPath->base &&
-        isValueLoadedFromSlot(path->indices[0], innerSlot, definitions) &&
-        isValueLoadedFromSlot(path->indices[1], outerSlot, definitions)) {
-      foundSource = true;
-      continue;
-    }
-    if (path->base != destinationPath->base && path->indices[0] == row &&
-        isValueLoadedFromSlot(path->indices[1], innerSlot, definitions) &&
-        (!coefficientBase.has_value() || *coefficientBase == path->base)) {
-      coefficientBase = path->base;
-      continue;
-    }
-    return std::nullopt;
-  }
-  if (!foundSource || !coefficientBase.has_value()) {
-    return std::nullopt;
-  }
-
-  return PanelInterchangeInfo{
-      enclosingHeader, enclosingPreheader, outerPreheader, outerExit, row,
-      *coefficientBase, destinationPath->base};
-}
-
 std::optional<Candidate> findCandidate(const Function& function) {
   const auto cfg = buildCFG(function);
   const auto definitions = buildDefinitions(function);
@@ -563,8 +443,7 @@ std::optional<Candidate> findCandidate(const Function& function) {
     }
     const auto innerCondition = loopCondition(*innerHeader, definitions);
     const auto* innerTerminator = innerHeader->terminator();
-    if (!innerCondition.has_value() || innerTerminator == nullptr ||
-        innerCondition->bound != outerCondition->bound) {
+    if (!innerCondition.has_value() || innerTerminator == nullptr) {
       continue;
     }
     const std::string innerBodyName = innerTerminator->operands()[1];
@@ -669,18 +548,12 @@ std::optional<Candidate> findCandidate(const Function& function) {
       continue;
     }
 
-    const auto panelInterchange = findPanelInterchangeInfo(
-        function, cfg, definitions, scalarSlots, outerPreheader,
-        outerHeader.name(), outerExitName, outerCondition->slot,
-        innerCondition->slot, outerCondition->bound, *innerBody,
-        *destination);
-
     return Candidate{
         outerHeader.name(),    outerBodyName,         outerExitName,
         innerHeaderName,       innerBodyName,         innerExitName,
         outerCondition->slot,  innerCondition->slot,  reductions[0].first,
         outerCondition->value, outerCondition->bound, *reductionType,
-        reductions[0].second,  panelInterchange};
+        reductions[0].second};
   }
   return std::nullopt;
 }
@@ -1152,192 +1025,6 @@ bool collapseJammedAddReductionToNeon(
   return true;
 }
 
-bool interchangeVectorPanelWithEnclosingLoop(
-    Function& function, const Candidate& candidate,
-    std::unordered_set<std::string>& valueNames,
-    std::unordered_set<std::string>& blockNames) {
-  if (!candidate.panelInterchange.has_value()) return false;
-  const auto& panel = *candidate.panelInterchange;
-  auto* enclosingHeader = findBlock(function, panel.enclosingHeader);
-  auto* enclosingPreheader = findBlock(function, panel.enclosingPreheader);
-  auto* enclosingBody = findBlock(function, panel.enclosingBody);
-  if (enclosingHeader == nullptr || enclosingPreheader == nullptr ||
-      enclosingBody == nullptr || enclosingHeader->instructions().empty() ||
-      enclosingHeader->instructions().front().opcode() != "phi" ||
-      enclosingPreheader->terminator() == nullptr ||
-      enclosingPreheader->terminator()->opcode() != "br") {
-    return false;
-  }
-
-  const std::string prepareName =
-      freshName(blockNames, "panel.interchange.prepare");
-  const std::string panelHeaderName =
-      freshName(blockNames, "panel.interchange.panel.header");
-  const std::string rowHeaderName =
-      freshName(blockNames, "panel.interchange.row.header");
-  const std::string rowBodyName =
-      freshName(blockNames, "panel.interchange.row.body");
-  const std::string kHeaderName =
-      freshName(blockNames, "panel.interchange.k.header");
-  const std::string kBodyName =
-      freshName(blockNames, "panel.interchange.k.body");
-  const std::string storeName =
-      freshName(blockNames, "panel.interchange.store");
-  const std::string panelLatchName =
-      freshName(blockNames, "panel.interchange.panel.latch");
-
-  const std::string vectorEnd =
-      freshName(valueNames, "%panel.interchange.vector.end");
-  const std::string column =
-      freshName(valueNames, "%panel.interchange.column");
-  const std::string hasPanel =
-      freshName(valueNames, "%panel.interchange.has.panel");
-  const std::string row =
-      freshName(valueNames, "%panel.interchange.row");
-  const std::string hasRow =
-      freshName(valueNames, "%panel.interchange.has.row");
-  const std::string coefficientRow =
-      freshName(valueNames, "%panel.interchange.coefficient.row");
-  const std::string destinationRow =
-      freshName(valueNames, "%panel.interchange.destination.row");
-  const std::string k = freshName(valueNames, "%panel.interchange.k");
-  const std::string hasK =
-      freshName(valueNames, "%panel.interchange.has.k");
-  const std::string coefficientAddress =
-      freshName(valueNames, "%panel.interchange.coefficient.address");
-  const std::string coefficient =
-      freshName(valueNames, "%panel.interchange.coefficient");
-  const std::string sourceRow =
-      freshName(valueNames, "%panel.interchange.source.row");
-  const std::string source =
-      freshName(valueNames, "%panel.interchange.source");
-  const std::string kNext =
-      freshName(valueNames, "%panel.interchange.k.next");
-  const std::string destination =
-      freshName(valueNames, "%panel.interchange.destination");
-  const std::string rowNext =
-      freshName(valueNames, "%panel.interchange.row.next");
-  const std::string columnNext =
-      freshName(valueNames, "%panel.interchange.column.next");
-
-  auto preheaderBranch = enclosingPreheader->terminator()->operands();
-  bool retargeted = false;
-  for (auto& operand : preheaderBranch) {
-    if (operand == panel.enclosingHeader) {
-      operand = prepareName;
-      retargeted = true;
-    }
-  }
-  if (!retargeted) return false;
-
-  auto phiOperands =
-      enclosingHeader->instructions().front().operands();
-  bool rewrotePhi = false;
-  for (std::size_t index = 2; index < phiOperands.size(); index += 2) {
-    if (phiOperands[index] == panel.enclosingPreheader) {
-      phiOperands[index] = panelHeaderName;
-      rewrotePhi = true;
-    }
-  }
-  if (!rewrotePhi) return false;
-
-  bool rewroteScalarStart = false;
-  for (auto& instruction : enclosingBody->instructions()) {
-    if (isStoreTo(instruction, candidate.outerSlot) &&
-        instruction.operands()[1] == "0") {
-      instruction = Instruction{
-          "store", {candidate.reductionType, vectorEnd, candidate.outerSlot}};
-      rewroteScalarStart = true;
-    }
-  }
-  if (!rewroteScalarStart) return false;
-
-  enclosingPreheader->instructions().back() =
-      Instruction{"br", std::move(preheaderBranch)};
-  enclosingHeader->instructions().front() =
-      Instruction{"phi", std::move(phiOperands), panel.enclosingIndex};
-
-  BasicBlock prepare{prepareName};
-  prepare.addInstruction(
-      Instruction{"and", {candidate.outerBound, "-32"}, vectorEnd});
-  prepare.addInstruction(Instruction{"br", {panelHeaderName}});
-
-  BasicBlock panelHeader{panelHeaderName};
-  panelHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", prepareName, columnNext, panelLatchName},
-                  column});
-  panelHeader.addInstruction(
-      Instruction{"icmp.slt", {column, vectorEnd}, hasPanel});
-  panelHeader.addInstruction(
-      Instruction{"br", {hasPanel, rowHeaderName, panel.enclosingHeader}});
-
-  BasicBlock rowHeader{rowHeaderName};
-  rowHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", panelHeaderName, rowNext, storeName},
-                  row});
-  rowHeader.addInstruction(
-      Instruction{"icmp.slt", {row, candidate.outerBound}, hasRow});
-  rowHeader.addInstruction(
-      Instruction{"br", {hasRow, rowBodyName, panelLatchName}});
-
-  BasicBlock rowBody{rowBodyName};
-  rowBody.addInstruction(Instruction{
-      "getelementptr", {panel.coefficientBase, row}, coefficientRow});
-  rowBody.addInstruction(Instruction{
-      "getelementptr", {panel.destinationBase, row}, destinationRow});
-  rowBody.addInstruction(
-      Instruction{"aarch64.neon.zero.acc.i32x32", {}});
-  rowBody.addInstruction(Instruction{"br", {kHeaderName}});
-
-  BasicBlock kHeader{kHeaderName};
-  kHeader.addInstruction(
-      Instruction{"phi", {"int", "0", rowBodyName, kNext, kBodyName}, k});
-  kHeader.addInstruction(
-      Instruction{"icmp.slt", {k, candidate.outerBound}, hasK});
-  kHeader.addInstruction(Instruction{"br", {hasK, kBodyName, storeName}});
-
-  BasicBlock kBody{kBodyName};
-  kBody.addInstruction(
-      Instruction{"getelementptr", {coefficientRow, k}, coefficientAddress});
-  kBody.addInstruction(
-      Instruction{"load", {"int", coefficientAddress}, coefficient});
-  kBody.addInstruction(
-      Instruction{"getelementptr", {panel.destinationBase, k}, sourceRow});
-  kBody.addInstruction(
-      Instruction{"getelementptr", {sourceRow, column}, source});
-  kBody.addInstruction(
-      Instruction{"aarch64.neon.dup.acc.i32x32", {coefficient}});
-  kBody.addInstruction(
-      Instruction{"aarch64.neon.mla.acc.i32x32", {source}});
-  kBody.addInstruction(Instruction{"add", {k, "1"}, kNext});
-  kBody.addInstruction(Instruction{"br", {kHeaderName}});
-
-  BasicBlock store{storeName};
-  store.addInstruction(
-      Instruction{"getelementptr", {destinationRow, column}, destination});
-  store.addInstruction(
-      Instruction{"aarch64.neon.store.acc.i32x32", {destination}});
-  store.addInstruction(Instruction{"add", {row, "1"}, rowNext});
-  store.addInstruction(Instruction{"br", {rowHeaderName}});
-
-  BasicBlock panelLatch{panelLatchName};
-  panelLatch.addInstruction(
-      Instruction{"add", {column, "32"}, columnNext});
-  panelLatch.addInstruction(Instruction{"br", {panelHeaderName}});
-
-  function.addBlock(std::move(prepare));
-  function.addBlock(std::move(panelHeader));
-  function.addBlock(std::move(rowHeader));
-  function.addBlock(std::move(rowBody));
-  function.addBlock(std::move(kHeader));
-  function.addBlock(std::move(kBody));
-  function.addBlock(std::move(store));
-  function.addBlock(std::move(panelLatch));
-  return true;
-}
-
 bool transform(Function& function, const Candidate& candidate, int jamFactor,
                bool useAArch64VectorAccumulator) {
   auto valueNames = collectValueNames(function);
@@ -1415,10 +1102,9 @@ bool transform(Function& function, const Candidate& candidate, int jamFactor,
                           std::vector<std::string>{candidate.outerHeader});
   innerExit->instructions() = std::move(jammedExit);
 
-  bool collapsedToVectorAccumulator = false;
   if (useAArch64VectorAccumulator && jamFactor == 32) {
-    collapsedToVectorAccumulator = collapseJammedAddReductionToNeon(
-        function, *outerBody, *innerBody, *innerExit, laneReductionSlots);
+    collapseJammedAddReductionToNeon(function, *outerBody, *innerBody,
+                                     *innerExit, laneReductionSlots);
   }
 
   const auto guardName = freshName(blockNames, "unrolljam.guard");
@@ -1440,11 +1126,6 @@ bool transform(Function& function, const Candidate& candidate, int jamFactor,
   function.addBlock(std::move(guard));
   for (auto& block : tailBlocks) {
     function.addBlock(std::move(block));
-  }
-  if (collapsedToVectorAccumulator &&
-      std::getenv("COMPILER_DISABLE_COLUMN_PANEL_INTERCHANGE") == nullptr) {
-    interchangeVectorPanelWithEnclosingLoop(function, candidate, valueNames,
-                                            blockNames);
   }
   return true;
 }
