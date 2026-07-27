@@ -391,6 +391,10 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   auto blocks = blockNames(function);
   const std::string setupName = freshBlock(blocks, "row.vector.setup");
   const std::string prepareName = freshBlock(blocks, "row.vector.prepare");
+  const std::string kTileHeaderName =
+      freshBlock(blocks, "row.vector.k.tile.header");
+  const std::string kTilePrepareName =
+      freshBlock(blocks, "row.vector.k.tile.prepare");
   const std::string jHeaderName = freshBlock(blocks, "row.vector.j.header");
   const std::string initializeName =
       freshBlock(blocks, "row.vector.initialize");
@@ -402,8 +406,17 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   const std::string remaining = freshValue(values, "row.vector.remaining");
   const std::string vectorColumns = freshValue(values, "row.vector.columns");
   const std::string vectorEnd = freshValue(values, "row.vector.end");
+  const std::string hasVector = freshValue(values, "row.vector.has.vector");
+  const std::string kTile = freshValue(values, "row.vector.k.tile");
+  const std::string hasKTile = freshValue(values, "row.vector.has.k.tile");
+  const std::string tentativeKEnd =
+      freshValue(values, "row.vector.k.tentative.end");
+  const std::string useFullKTile =
+      freshValue(values, "row.vector.k.use.full.tile");
+  const std::string kEnd = freshValue(values, "row.vector.k.end");
   const std::string j = freshValue(values, "row.vector.j");
-  const std::string hasVector = freshValue(values, "row.vector.has.work");
+  const std::string hasVectorColumn =
+      freshValue(values, "row.vector.has.column");
   const std::string destination = freshValue(values, "row.vector.destination");
   const std::string k = freshValue(values, "row.vector.k");
   const std::string hasK = freshValue(values, "row.vector.has.k");
@@ -453,8 +466,9 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
     return;
   header->instructions().front() =
       Instruction{"phi",
-                  {"int", candidate.rowIndex, setupName, j, jHeaderName,
-                   backedgeValue, candidate.outerLatch},
+                  {"int", candidate.rowIndex, setupName, vectorEnd, prepareName,
+                   vectorEnd, kTileHeaderName, backedgeValue,
+                   candidate.outerLatch},
                   candidate.outerIndex};
 
   BasicBlock setup{setupName};
@@ -466,30 +480,56 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   BasicBlock prepare{prepareName};
   prepare.addInstruction(
       Instruction{"sub", {candidate.bound, candidate.rowIndex}, remaining});
-  prepare.addInstruction(Instruction{"and", {remaining, "-8"}, vectorColumns});
+  prepare.addInstruction(Instruction{"and", {remaining, "-32"}, vectorColumns});
   prepare.addInstruction(
       Instruction{"add", {candidate.rowIndex, vectorColumns}, vectorEnd});
-  prepare.addInstruction(Instruction{"br", {jHeaderName}});
+  prepare.addInstruction(
+      Instruction{"icmp.sgt", {vectorColumns, "0"}, hasVector});
+  prepare.addInstruction(
+      Instruction{"br", {hasVector, kTileHeaderName, candidate.header}});
+
+  BasicBlock kTileHeader{kTileHeaderName};
+  kTileHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", prepareName, kEnd, jHeaderName},
+                  kTile});
+  kTileHeader.addInstruction(
+      Instruction{"icmp.slt", {kTile, candidate.rowIndex}, hasKTile});
+  kTileHeader.addInstruction(
+      Instruction{"br", {hasKTile, kTilePrepareName, candidate.header}});
+
+  BasicBlock kTilePrepare{kTilePrepareName};
+  kTilePrepare.addInstruction(
+      Instruction{"add", {kTile, "8"}, tentativeKEnd});
+  kTilePrepare.addInstruction(
+      Instruction{"icmp.slt", {tentativeKEnd, candidate.rowIndex},
+                  useFullKTile});
+  kTilePrepare.addInstruction(
+      Instruction{"select", {useFullKTile, tentativeKEnd, candidate.rowIndex},
+                  kEnd});
+  kTilePrepare.addInstruction(Instruction{"br", {jHeaderName}});
 
   BasicBlock jHeader{jHeaderName};
   jHeader.addInstruction(Instruction{
-      "phi", {"int", candidate.rowIndex, prepareName, jNext, storeName}, j});
-  jHeader.addInstruction(Instruction{"icmp.slt", {j, vectorEnd}, hasVector});
+      "phi", {"int", candidate.rowIndex, kTilePrepareName, jNext, storeName},
+      j});
   jHeader.addInstruction(
-      Instruction{"br", {hasVector, initializeName, candidate.header}});
+      Instruction{"icmp.slt", {j, vectorEnd}, hasVectorColumn});
+  jHeader.addInstruction(
+      Instruction{"br", {hasVectorColumn, initializeName, kTileHeaderName}});
 
   BasicBlock initialize{initializeName};
   initialize.addInstruction(
       Instruction{"getelementptr", {candidate.rowBase, j}, destination});
   initialize.addInstruction(
-      Instruction{"aarch64.neon.load.acc.i32x8", {destination}});
+      Instruction{"aarch64.neon.load.acc.i32x32", {destination}});
   initialize.addInstruction(Instruction{"br", {kHeaderName}});
 
   BasicBlock kHeader{kHeaderName};
   kHeader.addInstruction(
-      Instruction{"phi", {"int", "0", initializeName, kNext, kBodyName}, k});
+      Instruction{"phi", {"int", kTile, initializeName, kNext, kBodyName}, k});
   kHeader.addInstruction(
-      Instruction{"icmp.slt", {k, candidate.rowIndex}, hasK});
+      Instruction{"icmp.slt", {k, kEnd}, hasK});
   kHeader.addInstruction(Instruction{"br", {hasK, kBodyName, storeName}});
 
   BasicBlock kBody{kBodyName};
@@ -501,20 +541,24 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
       Instruction{"getelementptr", {candidate.matrixBase, k}, sourceRow});
   kBody.addInstruction(Instruction{"getelementptr", {sourceRow, j}, source});
   kBody.addInstruction(
-      Instruction{"aarch64.neon.mls.acc.i32x8", {source, coefficient}});
+      Instruction{"aarch64.neon.mls.acc.i32x32", {source, coefficient}});
   kBody.addInstruction(Instruction{"add", {k, "1"}, kNext});
   kBody.addInstruction(Instruction{"br", {kHeaderName}});
 
   BasicBlock store{storeName};
   store.addInstruction(
-      Instruction{"aarch64.neon.store.acc.i32x8", {destination}});
-  store.addInstruction(Instruction{"add", {j, "8"}, jNext});
+      Instruction{"aarch64.neon.store.acc.i32x32", {destination}});
+  store.addInstruction(Instruction{"add", {j, "32"}, jNext});
   store.addInstruction(Instruction{"br", {jHeaderName}});
 
   auto insertion = header;
   insertion = function.blocks().insert(insertion, std::move(setup));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(prepare));
+  ++insertion;
+  insertion = function.blocks().insert(insertion, std::move(kTileHeader));
+  ++insertion;
+  insertion = function.blocks().insert(insertion, std::move(kTilePrepare));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(jHeader));
   ++insertion;

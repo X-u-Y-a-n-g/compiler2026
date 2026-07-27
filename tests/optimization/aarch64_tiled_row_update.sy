@@ -1,0 +1,65 @@
+int tiled_matrix[48][48];
+int tiled_sizes[4];
+
+void initialize_tiled_matrix(int seed) {
+    int row = 0;
+    while (row < 48) {
+        int column = 0;
+        while (column < 48) {
+            tiled_matrix[row][column] =
+                (row * 17 + column * 13 + seed) % 23 - 11;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+void update_tiled_rows(int size, int values[][48]) {
+    int row = 0;
+    while (row < size) {
+        int column = row;
+        while (column < size) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < row) {
+                current = current -
+                    values[row][reduction] * values[reduction][column];
+                reduction = reduction + 1;
+            }
+            values[row][column] = current;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+int tiled_checksum() {
+    int checksum = 0;
+    int row = 0;
+    while (row < 48) {
+        int column = 0;
+        while (column < 48) {
+            checksum = checksum * 31 + tiled_matrix[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    return checksum;
+}
+
+int main() {
+    int test = 0;
+    while (test < 4) {
+        tiled_sizes[test] = getint();
+        test = test + 1;
+    }
+    test = 0;
+    while (test < 4) {
+        initialize_tiled_matrix(test + 1);
+        update_tiled_rows(tiled_sizes[test], tiled_matrix);
+        putint(tiled_checksum());
+        putch(10);
+        test = test + 1;
+    }
+    return 0;
+}

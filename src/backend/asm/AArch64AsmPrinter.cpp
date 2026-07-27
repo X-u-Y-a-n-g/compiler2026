@@ -2503,6 +2503,38 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q17, q19, [" << address << "]\n";
     return;
   }
+  if (opcode == "aarch64.neon.load.acc.i32x32" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q20, q21, [" << address << "]\n";
+    os << "  ldp q22, q23, [" << address << ", #32]\n";
+    os << "  ldp q24, q25, [" << address << ", #64]\n";
+    os << "  ldp q26, q27, [" << address << ", #96]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.acc.i32x32" &&
+      instruction.operands.size() == 2) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  dup v29.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    os << "  ldp q28, q30, [" << address << "]\n";
+    os << "  mls v20.4s, v28.4s, v29.4s\n";
+    os << "  mls v21.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #32]\n";
+    os << "  mls v22.4s, v28.4s, v29.4s\n";
+    os << "  mls v23.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #64]\n";
+    os << "  mls v24.4s, v28.4s, v29.4s\n";
+    os << "  mls v25.4s, v30.4s, v29.4s\n";
+    os << "  ldp q28, q30, [" << address << ", #96]\n";
+    os << "  mls v26.4s, v28.4s, v29.4s\n";
+    os << "  mls v27.4s, v30.4s, v29.4s\n";
+    return;
+  }
   if (opcode == "aarch64.neon.zero.acc.i32x32" &&
       instruction.operands.empty()) {
     os << "  movi v20.4s, #0\n";
