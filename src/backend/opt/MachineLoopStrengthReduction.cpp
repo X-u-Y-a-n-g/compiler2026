@@ -54,6 +54,7 @@ struct Candidate {
   long long inductionOffset = 0;
   unsigned estimatedSaving = 0;
   bool hoistStride = false;
+  bool requiresAdjacentPartner = false;
 };
 
 struct Plan {
@@ -497,7 +498,7 @@ bool isInterleavedReadOnlyMultiplySubReduction(const MachineFunction &function,
     }
   }
   return loop.blocks.size() == 2 && loads == 4 && multiplies == 2 &&
-         subtracts == 2;
+         (subtracts == 2 || subtracts == 3);
 }
 
 bool isSimpleReadOnlyIntegerSelectReduction(const MachineFunction &function,
@@ -627,17 +628,55 @@ findPlan(const MachineFunction &function,
                   nullptr &&
               nested && scalarIntegerSelectReduction &&
               isNonPowerOfTwoScale(scale) && oldCost == newCost + 1;
+          // A step-two interleaved i32 reduction consumes two adjacent
+          // elements from each stream.  Even a power-of-two byte scale is
+          // profitable when both GEPs can share one pointer phi and one
+          // update, because the second address becomes a fixed +4 offset.
+          const bool allowInterleavedAdjacentI32Pointer =
+              enableNestedScalarLargeStride &&
+              interleavedMultiplySubReduction && induction->step == 2 &&
+              (scale == 4 || scale == -4) &&
+              (*inductionOffset == 0 || *inductionOffset == 1);
           const bool allowNestedLargeStride =
               allowNestedVectorLargeStride || allowNestedScalarLargeStride ||
               allowNestedAffineSelectLargeStride;
-          if (oldCost < newCost + 2 && !allowNestedLargeStride) {
+          if (oldCost < newCost + 2 && !allowNestedLargeStride &&
+              !allowInterleavedAdjacentI32Pointer) {
             continue;
           }
           candidates.push_back(Candidate{block, instruction, current,
                                          *inductionOffset, oldCost - newCost,
-                                         allowNestedLargeStride});
+                                         allowNestedLargeStride,
+                                         allowInterleavedAdjacentI32Pointer});
         }
       }
+      std::vector<Candidate> pairedCandidates;
+      pairedCandidates.reserve(candidates.size());
+      for (std::size_t index = 0; index < candidates.size(); ++index) {
+        const auto &candidate = candidates[index];
+        if (candidate.requiresAdjacentPartner) {
+          bool hasPartner = false;
+          for (std::size_t otherIndex = 0; otherIndex < candidates.size();
+               ++otherIndex) {
+            if (index == otherIndex)
+              continue;
+            const auto &other = candidates[otherIndex];
+            if (sameOperand(candidate.gep.operands[0],
+                            other.gep.operands[0]) &&
+                candidate.gep.operands[2].intValue ==
+                    other.gep.operands[2].intValue &&
+                (candidate.inductionOffset + 1 == other.inductionOffset ||
+                 other.inductionOffset + 1 == candidate.inductionOffset)) {
+              hasPartner = true;
+              break;
+            }
+          }
+          if (!hasPartner)
+            continue;
+        }
+        pairedCandidates.push_back(candidate);
+      }
+      candidates = std::move(pairedCandidates);
       if (candidates.empty()) {
         continue;
       }
@@ -647,8 +686,10 @@ findPlan(const MachineFunction &function,
                     return lhs.estimatedSaving > rhs.estimatedSaving;
                   return lhs.inductionOffset < rhs.inductionOffset;
                 });
-      if (candidates.size() > 2) {
-        candidates.resize(2);
+      const std::size_t maximumCandidates =
+          interleavedMultiplySubReduction ? 4 : 2;
+      if (candidates.size() > maximumCandidates) {
+        candidates.resize(maximumCandidates);
       }
       return Plan{loop, *induction, std::move(candidates)};
     }
@@ -680,6 +721,73 @@ MachineOperand freshVirtual(std::unordered_set<std::string> &names,
     if (names.insert(name).second) {
       return MachineOperand::virtualRegister(name, type);
     }
+  }
+}
+
+void removeFullyReplacedInduction(MachineFunction &function,
+                                  const Plan &plan) {
+  if (plan.induction.step != 2 || !isVirtualRegister(plan.induction.phi))
+    return;
+
+  std::unordered_set<std::string> recurrenceValues{plan.induction.phi.text};
+  for (const auto &instruction : function.blocks[plan.loop.header].instructions) {
+    if (instruction.kind != MachineInstructionKind::Phi ||
+        !instruction.hasResult ||
+        instruction.result.text != plan.induction.phi.text) {
+      continue;
+    }
+    for (const auto &incoming : instruction.phiInputs) {
+      if (isVirtualRegister(incoming.value) &&
+          incoming.block != function.blocks[plan.loop.preheader].name) {
+        recurrenceValues.insert(incoming.value.text);
+      }
+    }
+    break;
+  }
+  for (const auto &candidate : plan.candidates) {
+    if (isVirtualRegister(candidate.gep.operands[1]))
+      recurrenceValues.insert(candidate.gep.operands[1].text);
+  }
+
+  for (const auto &block : function.blocks) {
+    for (const auto &instruction : block.instructions) {
+      bool usesRecurrence = false;
+      for (const auto &operand : instruction.operands) {
+        if (isVirtualRegister(operand) &&
+            recurrenceValues.find(operand.text) != recurrenceValues.end()) {
+          usesRecurrence = true;
+          break;
+        }
+      }
+      if (!usesRecurrence && instruction.kind == MachineInstructionKind::Phi) {
+        for (const auto &incoming : instruction.phiInputs) {
+          if (isVirtualRegister(incoming.value) &&
+              recurrenceValues.find(incoming.value.text) !=
+                  recurrenceValues.end()) {
+            usesRecurrence = true;
+            break;
+          }
+        }
+      }
+      if (usesRecurrence &&
+          (!instruction.hasResult || !isVirtualRegister(instruction.result) ||
+           recurrenceValues.find(instruction.result.text) ==
+               recurrenceValues.end())) {
+        return;
+      }
+    }
+  }
+
+  for (auto &block : function.blocks) {
+    block.instructions.erase(
+        std::remove_if(block.instructions.begin(), block.instructions.end(),
+                       [&](const MachineInstruction &instruction) {
+                         return instruction.hasResult &&
+                                isVirtualRegister(instruction.result) &&
+                                recurrenceValues.find(instruction.result.text) !=
+                                    recurrenceValues.end();
+                       }),
+        block.instructions.end());
   }
 }
 
@@ -797,25 +905,38 @@ bool transform(MachineFunction &function, const Plan &plan) {
   std::unordered_map<std::string, MachineOperand> replacements;
   std::unordered_map<std::size_t, std::unordered_set<std::size_t>> removals;
 
-  const bool shareAdjacentPointer =
-      plan.induction.step == 2 && plan.candidates.size() == 2 &&
-      sameOperand(plan.candidates[0].gep.operands[0],
-                  plan.candidates[1].gep.operands[0]) &&
-      plan.candidates[0].gep.operands[2].intValue ==
-          plan.candidates[1].gep.operands[2].intValue &&
-      plan.candidates[1].inductionOffset ==
-          plan.candidates[0].inductionOffset + 1;
-  std::optional<MachineOperand> sharedPointer;
+  std::vector<std::optional<std::size_t>> sharedRoot(plan.candidates.size());
+  if (plan.induction.step == 2) {
+    for (std::size_t root = 0; root < plan.candidates.size(); ++root) {
+      for (std::size_t adjacent = 0; adjacent < plan.candidates.size();
+           ++adjacent) {
+        if (root == adjacent || sharedRoot[adjacent].has_value())
+          continue;
+        if (sameOperand(plan.candidates[root].gep.operands[0],
+                        plan.candidates[adjacent].gep.operands[0]) &&
+            plan.candidates[root].gep.operands[2].intValue ==
+                plan.candidates[adjacent].gep.operands[2].intValue &&
+            plan.candidates[adjacent].inductionOffset ==
+                plan.candidates[root].inductionOffset + 1) {
+          sharedRoot[adjacent] = root;
+          break;
+        }
+      }
+    }
+  }
+  std::unordered_map<std::size_t, MachineOperand> sharedPointers;
 
   for (std::size_t candidateIndex = 0; candidateIndex < plan.candidates.size();
        ++candidateIndex) {
     const auto &candidate = plan.candidates[candidateIndex];
-    if (shareAdjacentPointer && candidateIndex == 1 &&
-        sharedPointer.has_value()) {
+    if (sharedRoot[candidateIndex].has_value()) {
+      const auto pointer = sharedPointers.find(*sharedRoot[candidateIndex]);
+      if (pointer == sharedPointers.end())
+        return false;
       function.blocks[candidate.block].instructions[candidate.instruction] =
           MachineInstruction::target(
               candidate.gep.opcode, candidate.gep.result,
-              {*sharedPointer,
+              {pointer->second,
                MachineOperand::immediateInt(
                    1, compiler::backend::mir::ValueType::int32Type()),
                candidate.gep.operands[2]});
@@ -841,8 +962,10 @@ bool transform(MachineFunction &function, const Plan &plan) {
 
     const auto pointerPhi =
         freshVirtual(names, "%loop.pointer", candidate.gep.result.type);
-    if (shareAdjacentPointer && candidateIndex == 0)
-      sharedPointer = pointerPhi;
+    if (std::find(sharedRoot.begin(), sharedRoot.end(), candidateIndex) !=
+        sharedRoot.end()) {
+      sharedPointers.emplace(candidateIndex, pointerPhi);
+    }
     std::optional<MachineOperand> hoistedStride;
     if (candidate.hoistStride) {
       hoistedStride = freshVirtual(names, "%loop.pointer.stride",
@@ -935,6 +1058,7 @@ bool transform(MachineFunction &function, const Plan &plan) {
     }
     function.blocks[block].instructions = std::move(rewritten);
   }
+  removeFullyReplacedInduction(function, plan);
   return !replacements.empty();
 }
 

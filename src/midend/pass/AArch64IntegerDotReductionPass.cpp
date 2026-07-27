@@ -723,6 +723,13 @@ ScalarInterleaveLane cloneScalarInterleaveLane(
   for (const auto &instruction : body.instructions()) {
     if (instruction.isTerminator())
       continue;
+    // The two-lane loop owns a single step-two induction update in its latch.
+    // Cloning the scalar step-one update into each lane would both duplicate
+    // work and keep the canonical induction backedge outside the latch.
+    if (instruction.hasResult() &&
+        instruction.result() == candidate.inductionBackedge) {
+      continue;
+    }
     auto operands = instruction.operands();
     for (auto &operand : operands) {
       if (const auto found = replacements.find(operand);
@@ -738,7 +745,6 @@ ScalarInterleaveLane cloneScalarInterleaveLane(
     lane.instructions.emplace_back(instruction.opcode(), std::move(operands),
                                    std::move(result));
   }
-  lane.inductionBackedge = replacements.at(candidate.inductionBackedge);
   lane.accumulatorBackedge = replacements.at(candidate.accumulatorBackedge);
   return lane;
 }
@@ -768,20 +774,38 @@ bool transformScalarInterleave(Function &function,
     return false;
   }
 
-  const std::string pairHeaderName = freshName(blockNames, "dot.scalar.header");
+  const std::string guardName = freshName(blockNames, "dot.scalar.guard");
+  const std::string prepareName = freshName(blockNames, "dot.scalar.prepare");
   const std::string pairBodyName = freshName(blockNames, "dot.scalar.body");
+  const std::string pairLatchName = freshName(blockNames, "dot.scalar.latch");
   const std::string combineName = freshName(blockNames, "dot.scalar.combine");
   const std::string pairIndex = freshName(valueNames, "%dot.scalar.index");
   const std::string primary = freshName(valueNames, "%dot.scalar.primary");
   const std::string secondary = freshName(valueNames, "%dot.scalar.secondary");
+  const std::string pairCount = freshName(valueNames, "%dot.scalar.count");
+  const std::string pairSpan = freshName(valueNames, "%dot.scalar.span");
+  const std::string remaining = freshName(valueNames, "%dot.scalar.remaining");
   const std::string nextIndex = freshName(valueNames, "%dot.scalar.next");
+  const std::string pairIndexBackedge =
+      freshName(valueNames, "%dot.scalar.index.next");
   const std::string hasPair = freshName(valueNames, "%dot.scalar.has.pair");
+  const std::string nextRemaining =
+      freshName(valueNames, "%dot.scalar.remaining.next");
+  const std::string hasMore = freshName(valueNames, "%dot.scalar.has.more");
+  const std::string finalIndex =
+      freshName(valueNames, "%dot.scalar.final.index");
+  const std::string finalPrimary =
+      freshName(valueNames, "%dot.scalar.final.primary");
+  const std::string finalSecondary =
+      freshName(valueNames, "%dot.scalar.final.secondary");
   const std::string combined = freshName(valueNames, "%dot.scalar.combined");
 
   auto firstLane = cloneScalarInterleaveLane(*body, candidate, pairIndex,
                                              primary, valueNames);
   auto secondLane = cloneScalarInterleaveLane(*body, candidate, nextIndex,
                                               secondary, valueNames);
+  const std::string primaryBackedge = firstLane.accumulatorBackedge;
+  const std::string secondaryBackedge = secondLane.accumulatorBackedge;
 
   bool changedInductionPhi = false;
   bool changedAccumulatorPhi = false;
@@ -793,7 +817,7 @@ bool transformScalarInterleave(Function &function,
       if (operands[index + 1] != candidate.preheader)
         continue;
       if (instruction.result() == candidate.induction) {
-        operands[index] = pairIndex;
+        operands[index] = finalIndex;
         operands[index + 1] = combineName;
         changedInductionPhi = true;
       } else if (instruction.result() == candidate.accumulator) {
@@ -806,39 +830,70 @@ bool transformScalarInterleave(Function &function,
   }
   if (!changedInductionPhi || !changedAccumulatorPhi)
     return false;
-  preheader->instructions().back() = Instruction{"br", {pairHeaderName}};
+  preheader->instructions().back() = Instruction{"br", {guardName}};
 
-  BasicBlock pairHeader{pairHeaderName};
-  pairHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", candidate.preheader,
-                   secondLane.inductionBackedge, pairBodyName},
-                  pairIndex});
-  pairHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", candidate.initialAccumulator, candidate.preheader,
-                   firstLane.accumulatorBackedge, pairBodyName},
-                  primary});
-  pairHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", candidate.preheader,
-                   secondLane.accumulatorBackedge, pairBodyName},
-                  secondary});
-  pairHeader.addInstruction(Instruction{"add", {pairIndex, "1"}, nextIndex});
-  pairHeader.addInstruction(
-      Instruction{"icmp.slt", {nextIndex, candidate.bound}, hasPair});
-  pairHeader.addInstruction(
-      Instruction{"br", {hasPair, pairBodyName, combineName}});
+  BasicBlock guard{guardName};
+  guard.addInstruction(
+      Instruction{"icmp.sgt", {candidate.bound, "1"}, hasPair});
+  guard.addInstruction(
+      Instruction{"br", {hasPair, prepareName, combineName}});
+
+  BasicBlock prepare{prepareName};
+  prepare.addInstruction(Instruction{"ashr", {candidate.bound, "1"}, pairCount});
+  prepare.addInstruction(Instruction{"shl", {pairCount, "1"}, pairSpan});
+  prepare.addInstruction(Instruction{"br", {pairBodyName}});
 
   BasicBlock pairBody{pairBodyName};
+  pairBody.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", prepareName,
+                   pairIndexBackedge, pairLatchName},
+                  pairIndex});
+  pairBody.addInstruction(
+      Instruction{"phi",
+                  {"int", candidate.initialAccumulator, prepareName,
+                   primaryBackedge, pairLatchName},
+                  primary});
+  pairBody.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", prepareName,
+                   secondaryBackedge, pairLatchName},
+                  secondary});
+  pairBody.addInstruction(
+      Instruction{"phi", {"int", pairCount, prepareName, nextRemaining,
+                            pairLatchName}, remaining});
+  pairBody.addInstruction(Instruction{"add", {pairIndex, "1"}, nextIndex});
   if (!interleaveScalarInstructions(pairBody, std::move(firstLane),
                                     std::move(secondLane))) {
     return false;
   }
-  pairBody.addInstruction(Instruction{"br", {pairHeaderName}});
+  pairBody.addInstruction(Instruction{"br", {pairLatchName}});
+
+  BasicBlock pairLatch{pairLatchName};
+  pairLatch.addInstruction(
+      Instruction{"add", {pairIndex, "2"}, pairIndexBackedge});
+  pairLatch.addInstruction(
+      Instruction{"sub", {remaining, "1"}, nextRemaining});
+  pairLatch.addInstruction(
+      Instruction{"icmp.ne", {nextRemaining, "0"}, hasMore});
+  pairLatch.addInstruction(
+      Instruction{"br", {hasMore, pairBodyName, combineName}});
 
   BasicBlock combine{combineName};
-  combine.addInstruction(Instruction{"add", {primary, secondary}, combined});
+  combine.addInstruction(
+      Instruction{"phi", {"int", "0", guardName,
+                            pairSpan, pairLatchName},
+                  finalIndex});
+  combine.addInstruction(
+      Instruction{"phi", {"int", candidate.initialAccumulator, guardName,
+                            primaryBackedge, pairLatchName},
+                  finalPrimary});
+  combine.addInstruction(
+      Instruction{"phi", {"int", "0", guardName,
+                            secondaryBackedge, pairLatchName},
+                  finalSecondary});
+  combine.addInstruction(
+      Instruction{"add", {finalPrimary, finalSecondary}, combined});
   combine.addInstruction(Instruction{"br", {candidate.header}});
 
   auto position =
@@ -848,9 +903,13 @@ bool transformScalarInterleave(Function &function,
                    });
   if (position == function.blocks().end())
     return false;
-  position = function.blocks().insert(position, std::move(pairHeader));
+  position = function.blocks().insert(position, std::move(guard));
+  ++position;
+  position = function.blocks().insert(position, std::move(prepare));
   ++position;
   position = function.blocks().insert(position, std::move(pairBody));
+  ++position;
+  position = function.blocks().insert(position, std::move(pairLatch));
   ++position;
   function.blocks().insert(position, std::move(combine));
   return true;

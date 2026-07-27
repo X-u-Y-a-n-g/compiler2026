@@ -69,6 +69,8 @@ class AArch64Backend final : public BackendTarget {
     compiler::backend::stack::StackLowering{}.lower(machineModule);
     compiler::backend::opt::MachineLoopBlockPlacement{}.run(machineModule);
     compiler::backend::opt::MachineTraceBlockPlacement{}.run(machineModule);
+    compiler::backend::opt::AArch64InstructionCombining{}.runPostRA(
+        machineModule);
     return compiler::backend::asmcode::AArch64AsmPrinter{}.print(machineModule);
   }
 };

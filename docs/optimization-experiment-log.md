@@ -485,6 +485,20 @@ generic-ooo 前/后：
 - 最终热循环：目标三项的两处跨行归约均由逐元素 `MOVZ stride + MUL + ADD + LDR + MSUB` 变为两路交错结构。核心只保留四次 load、两条独立 `MSUB`、一次 `pointer += 2*stride` 和每两元素一次分支；第二个跨行 load 使用 `[pointer, #stride]`。相较 Clang 核心仍未把连续侧两个标量 load 合成 `LDP`，但地址递推、双 recurrence 和奇数尾部结构已经一致。
 - 合成覆盖：新增匿名 `12×19` 测试，动态函数参数覆盖 trip count `0/1/2/3/7/8/9`、正负初值、`INT_MIN/MAX`、乘减溢出、同一二维对象内可能重叠的两条只读访问，以及非单位递增和循环内 store fallback。O0、候选 O1 与完整关闭版 O1 输出逐字一致。测试曾主动发现“无类型指针 GEP +1 丢失行尺度”的错误方案，该方案已删除，最终实现只在保留显式 Machine GEP scale 时合并地址。
 - 隔离与门禁：Release 构建通过；ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`。相对同时关闭标量交错、步长二 pointer IV 和不变基址地址重关联的版本，60 项中仅 `h-5-01/02/03` 汇编变化。三个完整输入在候选和关闭版本均 AC。当前 AArch64 QEMU 软件模拟计时约由 `2.54/2.61/2.56ms` 变为 `3.06/3.00/2.90ms`，该退化只作诊断；仓库所有者已明确要求理论上可能改善 Cortex-A53 时仍先推送官方提测。
-- 状态：D。按所有者要求，与连续 NEON 路径作为 Clang 风格组合候选推送到 `zct-arm-no-magic`。官方 Cortex-A53 若相对 `0ee19ae` 有稳定总收益则保留；统计持平、退化或错误则整体独立回退。
+- 官方 Cortex-A53：提交 `06f39f8` 的 `h-5-01/02/03` 为 `15.55/15.44/15.57s`，相对父版本约 `16.73/16.96/16.75s`，三项合计 `50.44→46.56s`，下降约 `7.7%`，完整评测通过。
+- 状态：A。两路标量 recurrence 与步长二 pointer induction 的组合在真实 Cortex-A53 上稳定有效，提交 `06f39f8` 保留。
 
 本候选由 AI 辅助完成 Clang pass pipeline/汇编差距分析、SSA 两路 recurrence、逐指令交错克隆、二维地址重关联、步长二 Machine LSR、共享相邻指针、匿名边界与 fallback、跨目标隔离及 60/60、140/140 回归。外部技术参考为 LLVM 21.1.2 `LoopVectorize.cpp`、`AArch64TargetTransformInfo.cpp`、Clang `LoopUnrollPass` 的公开行为，以及经典 loop unrolling/interleaving、SCEV 式地址重关联和 pointer induction；未复制外部实现，也未使用测试、函数、变量、固定数组尺寸、固定 stride 或输入输出作为触发条件。
+
+## 2026-07-27 AArch64 两路归约 counted loop、双 pointer IV 与 post-RA 配对访存
+
+- 通用中端条件：沿用已验证的只读 i32 乘减归约匹配。只有循环上界大于一时进入双路路径；预头计算 `pairCount = bound / 2` 和尾部起点 `2 * pairCount`，循环体每轮执行两条独立 recurrence，latch 只递减 counted trip count。负上界、零趟、单趟和奇数尾部继续进入原标量循环；i32 乘减和最终 accumulator 合并保持模 `2^32` 语义。
+- Machine LSR：当步长二的只读交错归约存在两组相邻 i32 地址时，每组 offset `0/1` 共享一个 pointer Phi。连续流每轮 `pointer += 8`，跨行流每轮 `pointer += 2*stride`；只有四个候选共同满足循环内使用、循环不变基址和相邻 offset 证明时，才放宽连续 i32 流的成本门槛。地址全部替换后，已无外部使用的整数索引 recurrence 及其 offset 定义被删除。
+- post-RA 组合：两个相邻、同物理基址、不同物理目标寄存器的 i32 load，且低地址满足 AArch64 `LDP` 有符号缩放立即数范围时，合成为 `LDP Wt1,Wt2,[base,#offset]`。对 `count = count - 1; count != 0; branch`，仅允许中间出现不写 NZCV 的 add/copy/GEP，生成 `SUBS + B.NE`。无操作 Phi 边块在所有分支完成重定向后删除。规则不读取函数、块、变量、测试名称或固定 stride。
+- 最终热循环：两处目标归约均形成 `LDP + 2×LDR + 2×MSUB + SUBS + 2×pointer ADD + branch`；循环内不再包含地址乘法、stride 常量物化、显式 `CMP/CSET` 或整数索引更新。两个目标函数的寄存器分配均为 `spilled=0`。
+- 合成与边界：匿名 `12×19` 测试继续覆盖 trip count `0/1/2/3/7/8/9`、正负初值、`INT_MIN/MAX`、i32 溢出、只读别名、非单位步长和循环内 store fallback；O1 AArch64 汇编链接执行后与期望逐字一致。
+- 隔离与正确性：相对 `06f39f8`，60 份最终汇编中 h-5 三项进入 counted/pointer/LDP 链；另有 27 项仅由通用无操作边块重定向删除跳转或标签，非 h-5 汇编指令数均未增长。最终 ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`，所有产物通过 GNU AArch64 汇编和静态链接。
+- 本地诊断：QEMU 内部计时约 `3.57–3.77ms`，高于父版本约 `2.55–2.64ms`；AArch64 QEMU 对该调度形态不作为接受依据。真实 Cortex-A53 上每两元素的热工作量明确减少，最终去留必须由官方平台独立判定。
+- 状态：D，等待仓库所有者提交官方 Cortex-A53。若三项相对 `15.55/15.44/15.57s` 稳定改善则升级为 A；持平、退化或错误则独立回退本候选。
+
+本候选由 AI 辅助完成 counted-loop CFG/Phi 修复、双流 Machine LSR、失效整数 recurrence 删除、post-RA `LDP` 与 `SUBS/B.NE` 组合、无操作边块清理、Clang 汇编对照、匿名边界测试、60/60 与 140/140 回归。技术依据为经典 loop rotation/countdown canonicalization、strength reduction、paired-load selection、flag-setting decrement branch 和 LLVM/Clang AArch64 `-O3 -mcpu=cortex-a53` 的公开输出结构；未复制外部实现源码。

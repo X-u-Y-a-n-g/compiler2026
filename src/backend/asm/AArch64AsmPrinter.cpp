@@ -2181,6 +2181,17 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     else { emitAddress(os, function, address, kAddrScratch); emitLoad(os, dst, instruction.result.type, kAddrScratch, 0); }
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode == "aarch64.ldp.i32" && instruction.operands.size() == 4) {
+    const auto& low = instruction.operands[0];
+    const auto& high = instruction.operands[1];
+    const auto& base = instruction.operands[2];
+    const auto offset = instruction.operands[3].intValue;
+    os << "  ldp " << integerRegister(low.text, low.type) << ", "
+       << integerRegister(high.text, high.type) << ", [" << base.text;
+    if (offset != 0) os << ", #" << offset;
+    os << "]\n";
+    return;
+  }
   if (opcode == "load.indexed") {
     const auto& baseOp = instruction.operands[0];
     const auto& indexOp = instruction.operands[1];
@@ -2250,6 +2261,35 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
       if (fallthrough != nullptr && *fallthrough == no) os << "  cbnz " << integerRegister(condition, instruction.operands[0].type) << ", " << yes << '\n';
       else if (fallthrough != nullptr && *fallthrough == yes) os << "  cbz " << integerRegister(condition, instruction.operands[0].type) << ", " << no << '\n';
       else os << "  cbnz " << integerRegister(condition, instruction.operands[0].type) << ", " << yes << "\n  b " << no << '\n';
+    }
+    return;
+  }
+  if (opcode == "aarch64.subs" && instruction.hasResult &&
+      instruction.operands.size() == 2) {
+    const auto destination = integerRegister(instruction.result.text,
+                                             instruction.result.type);
+    const auto lhs = integerOperand(os, function, instruction.operands[0],
+                                    kAddrScratch);
+    os << "  subs " << destination << ", "
+       << integerRegister(lhs, instruction.result.type) << ", ";
+    if (instruction.operands[1].kind == MachineOperandKind::ImmediateInt) {
+      os << '#' << instruction.operands[1].intValue << '\n';
+    } else {
+      const auto rhs = integerOperand(os, function, instruction.operands[1],
+                                      kImmScratch);
+      os << integerRegister(rhs, instruction.result.type) << '\n';
+    }
+    return;
+  }
+  if (opcode == "aarch64.br.flags.ne" && instruction.operands.size() == 2) {
+    const auto& yes = labels.at(instruction.operands[0].text);
+    const auto& no = labels.at(instruction.operands[1].text);
+    if (fallthrough != nullptr && *fallthrough == no) {
+      os << "  b.ne " << yes << '\n';
+    } else if (fallthrough != nullptr && *fallthrough == yes) {
+      os << "  b.eq " << no << '\n';
+    } else {
+      os << "  b.ne " << yes << "\n  b " << no << '\n';
     }
     return;
   }

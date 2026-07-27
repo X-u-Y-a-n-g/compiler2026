@@ -1,9 +1,11 @@
 #include "../../../include/compiler/backend/opt/AArch64InstructionCombining.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -30,6 +32,13 @@ bool isVirtualRegister(const MachineOperand& operand) {
 
 bool sameVirtualRegister(const MachineOperand& lhs, const MachineOperand& rhs) {
   return isVirtualRegister(lhs) && isVirtualRegister(rhs) &&
+         lhs.text == rhs.text && lhs.type.kind == rhs.type.kind;
+}
+
+bool samePhysicalRegister(const MachineOperand& lhs,
+                          const MachineOperand& rhs) {
+  return lhs.kind == MachineOperandKind::PhysicalRegister &&
+         rhs.kind == MachineOperandKind::PhysicalRegister &&
          lhs.text == rhs.text && lhs.type.kind == rhs.type.kind;
 }
 
@@ -367,6 +376,211 @@ void foldIndexedAddresses(
   }
 }
 
+struct PhysicalI32Load {
+  MachineOperand destination;
+  MachineOperand base;
+  long long byteOffset = 0;
+};
+
+std::optional<PhysicalI32Load>
+physicalI32Load(const MachineInstruction& instruction) {
+  if (!instruction.hasResult || !instruction.result.type.isInt32() ||
+      instruction.result.kind != MachineOperandKind::PhysicalRegister) {
+    return std::nullopt;
+  }
+  if (instruction.opcode == "load" && instruction.operands.size() == 1 &&
+      instruction.operands[0].kind == MachineOperandKind::PhysicalRegister) {
+    return PhysicalI32Load{instruction.result, instruction.operands[0], 0};
+  }
+  if (instruction.opcode != "load.indexed" ||
+      instruction.operands.size() != 3 ||
+      instruction.operands[0].kind != MachineOperandKind::PhysicalRegister ||
+      instruction.operands[1].kind != MachineOperandKind::ImmediateInt ||
+      instruction.operands[2].kind != MachineOperandKind::ImmediateInt) {
+    return std::nullopt;
+  }
+  const __int128 offset =
+      static_cast<__int128>(instruction.operands[1].intValue) *
+      instruction.operands[2].intValue;
+  if (offset < std::numeric_limits<long long>::min() ||
+      offset > std::numeric_limits<long long>::max()) {
+    return std::nullopt;
+  }
+  return PhysicalI32Load{instruction.result, instruction.operands[0],
+                         static_cast<long long>(offset)};
+}
+
+void combinePostRAPairedI32Loads(MachineFunction& function) {
+  for (auto& block : function.blocks) {
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(block.instructions.size());
+    for (std::size_t index = 0; index < block.instructions.size();) {
+      if (index + 1 < block.instructions.size()) {
+        const auto first = physicalI32Load(block.instructions[index]);
+        const auto second = physicalI32Load(block.instructions[index + 1]);
+        if (first.has_value() && second.has_value() &&
+            samePhysicalRegister(first->base, second->base) &&
+            !samePhysicalRegister(first->destination, second->destination)) {
+          const PhysicalI32Load* low = &*first;
+          const PhysicalI32Load* high = &*second;
+          if (second->byteOffset < first->byteOffset) {
+            low = &*second;
+            high = &*first;
+          }
+          if (low->byteOffset + 4 == high->byteOffset &&
+              low->byteOffset >= -256 && low->byteOffset <= 252 &&
+              low->byteOffset % 4 == 0) {
+            rewritten.push_back(MachineInstruction::target(
+                "aarch64.ldp.i32",
+                {low->destination, high->destination, low->base,
+                 MachineOperand::immediateInt(
+                     low->byteOffset,
+                     compiler::backend::mir::ValueType::int32Type())}));
+            index += 2;
+            continue;
+          }
+        }
+      }
+      rewritten.push_back(std::move(block.instructions[index++]));
+    }
+    block.instructions = std::move(rewritten);
+  }
+}
+
+bool isZeroImmediate(const MachineOperand& operand) {
+  return operand.kind == MachineOperandKind::ImmediateInt &&
+         operand.intValue == 0;
+}
+
+bool isFlagTransparentCountedLoopInstruction(
+    const MachineInstruction& instruction) {
+  return instruction.opcode == "add" || instruction.opcode == "copy" ||
+         instruction.opcode == "gep" || instruction.opcode == "gep.linear" ||
+         instruction.opcode == "getelementptr" ||
+         instruction.opcode == "getelementptr.linear";
+}
+
+void combinePostRACountedBranches(MachineFunction& function) {
+  for (auto& block : function.blocks) {
+    auto& instructions = block.instructions;
+    for (std::size_t subIndex = 0; subIndex < instructions.size(); ++subIndex) {
+      auto& subtract = instructions[subIndex];
+      if (subtract.opcode != "sub" || !subtract.hasResult ||
+          subtract.result.kind != MachineOperandKind::PhysicalRegister ||
+          (!subtract.result.type.isInt32() &&
+           !subtract.result.type.isInt64()) ||
+          subtract.operands.size() != 2 ||
+          subtract.operands[1].kind != MachineOperandKind::ImmediateInt ||
+          subtract.operands[1].intValue != 1) {
+        continue;
+      }
+
+      std::optional<std::size_t> compareIndex;
+      std::optional<std::size_t> branchIndex;
+      MachineOperand predicate;
+      for (std::size_t index = subIndex + 1;
+           index < instructions.size() && index <= subIndex + 8; ++index) {
+        const auto& current = instructions[index];
+        if (!compareIndex.has_value()) {
+          if (current.opcode == "icmp.ne" && current.hasResult &&
+              current.result.kind == MachineOperandKind::PhysicalRegister &&
+              current.operands.size() == 2 &&
+              ((samePhysicalRegister(current.operands[0], subtract.result) &&
+                isZeroImmediate(current.operands[1])) ||
+               (samePhysicalRegister(current.operands[1], subtract.result) &&
+                isZeroImmediate(current.operands[0])))) {
+            compareIndex = index;
+            predicate = current.result;
+            continue;
+          }
+          if (!isFlagTransparentCountedLoopInstruction(current))
+            break;
+          continue;
+        }
+        if (current.opcode == "br" && current.operands.size() == 3 &&
+            samePhysicalRegister(current.operands[0], predicate)) {
+          branchIndex = index;
+          break;
+        }
+        if (!isFlagTransparentCountedLoopInstruction(current))
+          break;
+      }
+      if (!compareIndex.has_value() || !branchIndex.has_value())
+        continue;
+
+      subtract.opcode = "aarch64.subs";
+      instructions[*branchIndex] = MachineInstruction::target(
+          "aarch64.br.flags.ne",
+          {instructions[*branchIndex].operands[1],
+           instructions[*branchIndex].operands[2]});
+      instructions.erase(instructions.begin() +
+                         static_cast<std::ptrdiff_t>(*compareIndex));
+      break;
+    }
+  }
+}
+
+void redirectPostRANoOpBlocks(MachineFunction& function) {
+  std::unordered_map<std::string, std::string> redirects;
+  for (std::size_t blockIndex = 1; blockIndex < function.blocks.size();
+       ++blockIndex) {
+    const auto& block = function.blocks[blockIndex];
+    if (block.instructions.empty())
+      continue;
+    bool noOp = true;
+    for (std::size_t index = 0; index + 1 < block.instructions.size();
+         ++index) {
+      const auto& instruction = block.instructions[index];
+      if (instruction.opcode != "copy" || !instruction.hasResult ||
+          instruction.operands.size() != 1 ||
+          !samePhysicalRegister(instruction.result,
+                                instruction.operands.front())) {
+        noOp = false;
+        break;
+      }
+    }
+    const auto& terminator = block.instructions.back();
+    if (noOp && terminator.opcode == "br" &&
+        terminator.operands.size() == 1 &&
+        terminator.operands.front().kind == MachineOperandKind::Label &&
+        terminator.operands.front().text != block.name) {
+      redirects.emplace(block.name, terminator.operands.front().text);
+    }
+  }
+  if (redirects.empty())
+    return;
+
+  const auto resolve = [&](std::string name) {
+    std::unordered_set<std::string> seen;
+    while (seen.insert(name).second) {
+      const auto found = redirects.find(name);
+      if (found == redirects.end())
+        break;
+      name = found->second;
+    }
+    return name;
+  };
+  for (auto& block : function.blocks) {
+    for (auto& instruction : block.instructions) {
+      const bool branch = instruction.opcode == "br" ||
+                          instruction.opcode.rfind("br.icmp.", 0) == 0 ||
+                          instruction.opcode == "aarch64.br.flags.ne";
+      if (!branch)
+        continue;
+      for (auto& operand : instruction.operands) {
+        if (operand.kind == MachineOperandKind::Label)
+          operand.text = resolve(operand.text);
+      }
+    }
+  }
+  function.blocks.erase(
+      std::remove_if(function.blocks.begin() + 1, function.blocks.end(),
+                     [&](const compiler::backend::mir::MachineBlock& block) {
+                       return redirects.find(block.name) != redirects.end();
+                     }),
+      function.blocks.end());
+}
+
 }  // namespace
 
 void AArch64InstructionCombining::run(
@@ -381,6 +595,16 @@ void AArch64InstructionCombining::run(
       shareBoundedModuloConstant(function, adapter);
     }
     foldIndexedAddresses(function, adapter);
+  }
+}
+
+void AArch64InstructionCombining::runPostRA(
+    compiler::backend::mir::MachineModule& module) const {
+  if (module.target.name() != "aarch64") return;
+  for (auto& function : module.functions) {
+    combinePostRAPairedI32Loads(function);
+    combinePostRACountedBranches(function);
+    redirectPostRANoOpBlocks(function);
   }
 }
 
