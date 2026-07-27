@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <deque>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -43,6 +44,7 @@ struct Definition {
 struct Induction {
   MachineOperand phi;
   MachineOperand initial;
+  long long step = 1;
 };
 
 struct Candidate {
@@ -284,15 +286,15 @@ bool isLoopInvariant(
          loop.blocks.find(definition->second.block) == loop.blocks.end();
 }
 
-std::optional<long long> inductionOffsetForIndex(
+std::optional<long long> inductionOffsetForIndexImpl(
     const MachineOperand &index, const MachineOperand &induction,
     const LoopInfo &loop,
     const std::unordered_map<std::string, Definition> &definitions,
-    const MachineFunction &function) {
+    const MachineFunction &function, unsigned depth) {
   if (sameOperand(index, induction)) {
     return 0;
   }
-  if (!isVirtualRegister(index)) {
+  if (!isVirtualRegister(index) || depth == 0) {
     return std::nullopt;
   }
   const auto definition = definitions.find(index.text);
@@ -300,21 +302,38 @@ std::optional<long long> inductionOffsetForIndex(
       loop.blocks.find(definition->second.block) == loop.blocks.end()) {
     return std::nullopt;
   }
-  const auto &instruction =
-      function.blocks[definition->second.block]
-          .instructions[definition->second.instruction];
+  const auto &instruction = function.blocks[definition->second.block]
+                                .instructions[definition->second.instruction];
   if (instruction.opcode != "add" || instruction.operands.size() != 2) {
     return std::nullopt;
   }
   for (std::size_t immediateIndex = 0; immediateIndex < 2; ++immediateIndex) {
     const auto valueIndex = 1 - immediateIndex;
     const auto &immediate = instruction.operands[immediateIndex];
-    if (sameOperand(instruction.operands[valueIndex], induction) &&
-        immediate.kind == MachineOperandKind::ImmediateInt) {
-      return immediate.intValue;
+    if (immediate.kind != MachineOperandKind::ImmediateInt)
+      continue;
+    const auto base =
+        inductionOffsetForIndexImpl(instruction.operands[valueIndex], induction,
+                                    loop, definitions, function, depth - 1);
+    if (!base.has_value())
+      continue;
+    const __int128 offset = static_cast<__int128>(*base) + immediate.intValue;
+    if (offset < std::numeric_limits<long long>::min() ||
+        offset > std::numeric_limits<long long>::max()) {
+      return std::nullopt;
     }
+    return static_cast<long long>(offset);
   }
   return std::nullopt;
+}
+
+std::optional<long long> inductionOffsetForIndex(
+    const MachineOperand &index, const MachineOperand &induction,
+    const LoopInfo &loop,
+    const std::unordered_map<std::string, Definition> &definitions,
+    const MachineFunction &function) {
+  return inductionOffsetForIndexImpl(index, induction, loop, definitions,
+                                     function, 4);
 }
 
 std::optional<MachineOperand> phiIncoming(const MachineInstruction &phi,
@@ -359,6 +378,7 @@ matchInduction(const MachineFunction &function, const LoopInfo &loop,
   if (!initial.has_value()) {
     return std::nullopt;
   }
+  std::optional<long long> inductionStep;
   for (const auto latch : loop.latches) {
     const auto next = phiIncoming(phi, function.blocks[latch].name);
     if (!next.has_value() || !isVirtualRegister(*next)) {
@@ -368,23 +388,17 @@ matchInduction(const MachineFunction &function, const LoopInfo &loop,
     if (definition == definitions.end() || definition->second.block != latch) {
       return std::nullopt;
     }
-    const auto &update = function.blocks[definition->second.block]
-                             .instructions[definition->second.instruction];
-    if (update.opcode != "add" || update.operands.size() != 2) {
+    const auto step =
+        inductionOffsetForIndex(*next, phi.result, loop, definitions, function);
+    if (!step.has_value() || (*step != 1 && *step != 2) ||
+        (inductionStep.has_value() && *inductionStep != *step)) {
       return std::nullopt;
     }
-    const auto isUnitStep = [&](const MachineOperand &value,
-                                const MachineOperand &step) {
-      return sameOperand(value, phi.result) &&
-             step.kind == MachineOperandKind::ImmediateInt &&
-             step.intValue == 1;
-    };
-    if (!isUnitStep(update.operands[0], update.operands[1]) &&
-        !isUnitStep(update.operands[1], update.operands[0])) {
-      return std::nullopt;
-    }
+    inductionStep = step;
   }
-  return Induction{phi.result, *initial};
+  if (!inductionStep.has_value())
+    return std::nullopt;
+  return Induction{phi.result, *initial, *inductionStep};
 }
 
 unsigned dynamicGepCost(long long scale) {
@@ -461,6 +475,31 @@ bool isSimpleReadOnlyMultiplySubReduction(const MachineFunction &function,
          subtracts == 1;
 }
 
+bool isInterleavedReadOnlyMultiplySubReduction(const MachineFunction &function,
+                                               const LoopInfo &loop) {
+  unsigned loads = 0;
+  unsigned multiplies = 0;
+  unsigned subtracts = 0;
+  for (const auto block : loop.blocks) {
+    for (const auto &instruction : function.blocks[block].instructions) {
+      if (instruction.opcode == "call" || instruction.opcode == "store" ||
+          instruction.opcode == "fstore" ||
+          instruction.opcode.rfind("aarch64.neon.", 0) == 0) {
+        return false;
+      }
+      if (instruction.opcode == "load") {
+        ++loads;
+      } else if (instruction.opcode == "mul") {
+        ++multiplies;
+      } else if (instruction.opcode == "sub") {
+        ++subtracts;
+      }
+    }
+  }
+  return loop.blocks.size() == 2 && loads == 4 && multiplies == 2 &&
+         subtracts == 2;
+}
+
 bool isSimpleReadOnlyIntegerSelectReduction(const MachineFunction &function,
                                             const LoopInfo &loop) {
   unsigned loads = 0;
@@ -503,6 +542,8 @@ findPlan(const MachineFunction &function,
     const bool vectorMemoryLoop = containsVectorMemoryOperation(function, loop);
     const bool scalarMultiplySubReduction =
         isSimpleReadOnlyMultiplySubReduction(function, loop);
+    const bool interleavedMultiplySubReduction =
+        isInterleavedReadOnlyMultiplySubReduction(function, loop);
     const bool scalarIntegerSelectReduction =
         isSimpleReadOnlyIntegerSelectReduction(function, loop);
     const auto &headerName = function.blocks[loop.header].name;
@@ -512,6 +553,12 @@ findPlan(const MachineFunction &function,
     for (const auto &phi : function.blocks[loop.header].instructions) {
       const auto induction = matchInduction(function, loop, phi, definitions);
       if (!induction.has_value()) {
+        continue;
+      }
+      if (induction->step == 2 &&
+          (!enableNestedScalarLargeStride ||
+           std::getenv("COMPILER_DISABLE_AARCH64_STEP_TWO_POINTER_IV") !=
+               nullptr)) {
         continue;
       }
       std::vector<Candidate> candidates;
@@ -538,9 +585,9 @@ findPlan(const MachineFunction &function,
           const auto inductionOffset = inductionOffsetForIndex(
               current.operands[1], induction->phi, loop, definitions, function);
           if (!inductionOffset.has_value() ||
-              (*inductionOffset != 0 &&
-               !(enableNestedScalarLargeStride &&
-                 scalarIntegerSelectReduction))) {
+              (*inductionOffset != 0 && !(enableNestedScalarLargeStride &&
+                                          (scalarIntegerSelectReduction ||
+                                           interleavedMultiplySubReduction)))) {
             continue;
           }
           const auto resultUses = uses.find(current.result.text);
@@ -553,6 +600,12 @@ findPlan(const MachineFunction &function,
             continue;
           }
           const auto scale = current.operands[2].intValue;
+          const __int128 steppedScale =
+              static_cast<__int128>(scale) * induction->step;
+          if (steppedScale < std::numeric_limits<long long>::min() ||
+              steppedScale > std::numeric_limits<long long>::max()) {
+            continue;
+          }
           const auto oldCost = dynamicGepCost(scale);
           const auto newCost = immediateGepCost(scale);
           const bool allowNestedVectorLargeStride =
@@ -563,20 +616,17 @@ findPlan(const MachineFunction &function,
               oldCost == newCost + 1;
           const bool allowNestedScalarLargeStride =
               enableNestedScalarLargeStride &&
-              std::getenv(
-                  "COMPILER_DISABLE_NESTED_SCALAR_NON_POWER_OF_TWO_POINTER_IV") ==
-                  nullptr &&
-              nested && scalarMultiplySubReduction &&
-              isNonPowerOfTwoScale(scale) &&
-              oldCost == newCost + 1;
+              std::getenv("COMPILER_DISABLE_NESTED_SCALAR_NON_POWER_OF_TWO_"
+                          "POINTER_IV") == nullptr &&
+              nested &&
+              (scalarMultiplySubReduction || interleavedMultiplySubReduction) &&
+              isNonPowerOfTwoScale(scale) && oldCost == newCost + 1;
           const bool allowNestedAffineSelectLargeStride =
               enableNestedScalarLargeStride &&
-              std::getenv(
-                  "COMPILER_DISABLE_NESTED_AFFINE_SELECT_POINTER_IV") ==
+              std::getenv("COMPILER_DISABLE_NESTED_AFFINE_SELECT_POINTER_IV") ==
                   nullptr &&
               nested && scalarIntegerSelectReduction &&
-              isNonPowerOfTwoScale(scale) &&
-              oldCost == newCost + 1;
+              isNonPowerOfTwoScale(scale) && oldCost == newCost + 1;
           const bool allowNestedLargeStride =
               allowNestedVectorLargeStride || allowNestedScalarLargeStride ||
               allowNestedAffineSelectLargeStride;
@@ -593,7 +643,9 @@ findPlan(const MachineFunction &function,
       }
       std::sort(candidates.begin(), candidates.end(),
                 [](const Candidate &lhs, const Candidate &rhs) {
-                  return lhs.estimatedSaving > rhs.estimatedSaving;
+                  if (lhs.estimatedSaving != rhs.estimatedSaving)
+                    return lhs.estimatedSaving > rhs.estimatedSaving;
+                  return lhs.inductionOffset < rhs.inductionOffset;
                 });
       if (candidates.size() > 2) {
         candidates.resize(2);
@@ -745,7 +797,30 @@ bool transform(MachineFunction &function, const Plan &plan) {
   std::unordered_map<std::string, MachineOperand> replacements;
   std::unordered_map<std::size_t, std::unordered_set<std::size_t>> removals;
 
-  for (const auto &candidate : plan.candidates) {
+  const bool shareAdjacentPointer =
+      plan.induction.step == 2 && plan.candidates.size() == 2 &&
+      sameOperand(plan.candidates[0].gep.operands[0],
+                  plan.candidates[1].gep.operands[0]) &&
+      plan.candidates[0].gep.operands[2].intValue ==
+          plan.candidates[1].gep.operands[2].intValue &&
+      plan.candidates[1].inductionOffset ==
+          plan.candidates[0].inductionOffset + 1;
+  std::optional<MachineOperand> sharedPointer;
+
+  for (std::size_t candidateIndex = 0; candidateIndex < plan.candidates.size();
+       ++candidateIndex) {
+    const auto &candidate = plan.candidates[candidateIndex];
+    if (shareAdjacentPointer && candidateIndex == 1 &&
+        sharedPointer.has_value()) {
+      function.blocks[candidate.block].instructions[candidate.instruction] =
+          MachineInstruction::target(
+              candidate.gep.opcode, candidate.gep.result,
+              {*sharedPointer,
+               MachineOperand::immediateInt(
+                   1, compiler::backend::mir::ValueType::int32Type()),
+               candidate.gep.operands[2]});
+      continue;
+    }
     auto initialIndex = plan.induction.initial;
     if (candidate.inductionOffset != 0) {
       initialIndex =
@@ -766,14 +841,19 @@ bool transform(MachineFunction &function, const Plan &plan) {
 
     const auto pointerPhi =
         freshVirtual(names, "%loop.pointer", candidate.gep.result.type);
+    if (shareAdjacentPointer && candidateIndex == 0)
+      sharedPointer = pointerPhi;
     std::optional<MachineOperand> hoistedStride;
     if (candidate.hoistStride) {
       hoistedStride = freshVirtual(names, "%loop.pointer.stride",
                                    candidate.gep.result.type);
       preheaderInitializers.push_back(MachineInstruction::copy(
           *hoistedStride,
-          MachineOperand::immediateInt(candidate.gep.operands[2].intValue,
-                                       candidate.gep.result.type)));
+          MachineOperand::immediateInt(
+              static_cast<long long>(
+                  static_cast<__int128>(candidate.gep.operands[2].intValue) *
+                  plan.induction.step),
+              candidate.gep.result.type)));
     }
     std::vector<compiler::backend::mir::MachinePhiIncoming> incoming;
     incoming.push_back(
@@ -789,7 +869,8 @@ bool transform(MachineFunction &function, const Plan &plan) {
             candidate.gep.opcode, nextPointer,
             {pointerPhi,
              MachineOperand::immediateInt(
-                 1, compiler::backend::mir::ValueType::int32Type()),
+                 plan.induction.step,
+                 compiler::backend::mir::ValueType::int32Type()),
              candidate.gep.operands[2]}));
       }
       incoming.push_back({function.blocks[latch].name, nextPointer});
@@ -872,9 +953,8 @@ void MachineLoopStrengthReduction::run(
       continue;
     }
     std::unordered_set<std::string> transformedHeaders;
-    while (const auto plan =
-               findPlan(function, adapter, transformedHeaders,
-                        module.target.name() == "aarch64")) {
+    while (const auto plan = findPlan(function, adapter, transformedHeaders,
+                                      module.target.name() == "aarch64")) {
       transformedHeaders.insert(function.blocks[plan->loop.header].name);
       if (!transform(function, *plan)) {
         break;

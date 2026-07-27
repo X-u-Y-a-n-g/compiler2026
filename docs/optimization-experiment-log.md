@@ -467,15 +467,24 @@ generic-ooo 前/后：
 
 本候选由 AI 辅助完成退化根因分析、流式循环顺序保留、八列 SLP 展开、成对访存、寄存器冲突修正和 8/4 宽度合成差分。技术依据为 loop unrolling、SLP、memory locality 与 ARMv8-A NEON `LDP/STP/MLA` 语义；未使用特定样例身份或未定义行为。
 
-## 2026-07-27 AArch64 连续 i32 乘减归约双向量化（待平台判定）
+## 2026-07-27 AArch64 连续 i32 乘减归约双向量化平台持平记录
 
-- 基线与目标差距：合并后的 `zct-arm-no-magic`/`wz-arm` 基线为 `0ee19ae`。用户回传 Cortex-A53 榜单中三个三角矩阵分解点为 `16.73/16.71/16.99s`，最佳为 `3.19/3.18/3.19s`。编译器生成的八列连续行更新已使用 NEON，但前代和回代中的连续整数点积仍为逐元素 `LDR + LDR + MSUB`。
-- Clang/LLVM 对照：使用 Clang `-O3 -mcpu=cortex-a53 -fwrapv -fno-strict-aliasing`，保证不借助 C 有符号溢出未定义行为。优化诊断显示流水线依次运行 `LoopVectorizePass`、`SLPVectorizerPass` 和 `LoopUnrollPass`；连续点积被降为两个 `i32x4` 累加器、两组 `LDP`、两条 `MLS` 和退出 `ADD + ADDV`。跨行步长点积被向量成本模型拒绝，未被本候选错误当作连续流。
-- 通用条件：只接受规范 SSA 循环头中的两个 i32 Phi、`icmp.slt` 退出、单位递增索引和 `acc = acc - lhs[index] * rhs[index]`。两个 load 必须来自以同一归纳变量索引的终端 i32 GEP；循环体必须无调用、store 或额外指令，所有中间值均为单用途。函数存在浮点状态或未知 NEON pseudo 时拒绝。匹配器不读取源码路径、测试/函数/变量/全局/块名称、数组维度、固定循环上界、输入或输出。
-- 变换与证明：运行时要求非负起点、有序上下界且至少有八次迭代；零起点使用更短的 `bound>=8` 守卫。完整八元素区间用 `v0/v1` 两个模 `2^32` 累加器执行 `2×LDP + 2×MLS`，退出时水平求和；不足八项和所有不满足守卫的路径执行原标量循环。SysY i32 加减乘的回绕语义构成模环，分 lane 后再求和与原顺序逐次回绕严格相等。循环内只有读取，因此两个输入区间即使互相别名也不改变可观察行为。
-- 合成覆盖：匿名测试覆盖 trip count `0/1/7/8/9/15/16/17`、非零起点、`INT_MIN/MAX` 和乘减溢出、两个输入为同一数组、极大零趟起点，以及非单位步长和循环内 store 的 fallback。O0、关闭候选的 O1 与开启候选的 O1 输出逐字一致，生成汇编通过 GNU AArch64 汇编器。
-- 隔离与正确性：ARM performance 为 `60/60 AC`，AArch64 correctness 为 `140/140 AC`。60 项中只有三个三角矩阵分解点汇编变化，每项恰有两处连续点积变为 NEON；其余 57 项候选与关闭版本汇编逐字一致。
-- 静态性能：Cortex-A53 LLVM MCA 中，候选八元素核心 block throughput 为约 `4.5 cycles`；原标量一元素核心约 `2.0 cycles`，八次约 `16 cycles`，核心吞吐预测约改善 `3.56×`。Clang 同类向量核心约 `5.0 cycles/8 elements`。本地 QEMU 软件模拟中目标三项计时由关闭版本约 `1.74–1.90ms` 变为 `2.55–2.64ms`；该退化与仓库既有 NEON 候选一致，只作为诊断记录，不能覆盖真实 Cortex-A53 结果。
-- 状态：D，代码与完整本地正确性门禁已完成。按仓库所有者指定的新流程，候选先推送到 `zct-arm-no-magic`，再由所有者提交官方 Cortex-A53 独立提测；平台收益成立则保留，平台退化或错误则立即独立回退并推送。下一项独立候选可参考 LLVM `LoopUnroll`，对被向量成本模型拒绝的只读乘减归约做两路标量交错，不与本次向量化混合消融。
+- 被测变换：对两个连续只读 i32 流的规范 `acc -= lhs[i] * rhs[i]` 归约做八元素 strip-mining，使用两个 `i32x4` NEON accumulator、两组 `LDP`、两条 `MLS` 和退出 `ADDV`，完整保留短循环、尾部和运行时守卫 fallback。触发只依赖 SSA、CFG、类型和连续 GEP 语义。
+- 本地门禁：匿名边界/溢出/别名/fallback 差分通过，ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`；60 项中仅 `h-5-01/02/03` 汇编变化。Cortex-A53 LLVM MCA 对八元素核心给出约 `4.5 cycles`，但本地 QEMU 已显示 NEON 软件模拟退化。
+- 官方平台：父提交为 `16.73/16.71/16.99s`，候选提交 `92d7a94` 为 `16.73/16.96/16.75s`。三项合计 `50.43→50.44s`，变化约 `+0.02%`；第二项退化 `0.25s` 与第三项改善 `0.24s` 基本抵消，没有稳定或有意义的真实 Cortex-A53 收益。
+- 判定：单独候选在平台上统计持平，不能独立作为已接受收益。仓库所有者随后明确要求按 Clang 完整流程测试组合效果，因此当前提交继续保留该连续流向量路径，并与下述“向量成本模型拒绝时的两路标量交错”组成一次组合候选；最终去留以组合版本相对 `0ee19ae` 的官方 Cortex-A53 结果决定。
 
-本候选由 AI 辅助完成 Clang 最终汇编差距分析、LLVM pass pipeline 诊断、SSA 合法性匹配、运行时版本化、隐藏 NEON 状态降级、地址活跃性修正、匿名边界/fallback、60/60 与 140/140 回归及 Cortex-A53 静态调度分析。外部技术参考为 LLVM 21.1.2 `LoopVectorize.cpp` 的 recurrence/cost 模型与 `AArch64TargetTransformInfo.cpp` 的 reduction cost 实现，以及 ARMv8-A NEON `MLS/ADDV/LDP` 指令语义；未复制 LLVM 源码。
+本候选由 AI 辅助完成 Clang/LLVM 对照、实现、完整回归、平台数据消融和回退判定。外部参考为 LLVM 21.1.2 `LoopVectorize` 与 AArch64 reduction cost model；未使用测试身份作为触发条件。
+
+## 2026-07-27 AArch64 两路标量乘减归约交错与步长二指针归纳（待平台判定）
+
+- Clang 对照：Clang `-O3 -mcpu=cortex-a53 -fwrapv -fno-strict-aliasing` 的优化诊断显示连续双流归约由 `LoopVectorizePass` 处理，而跨行流被成本模型拒绝向量化，随后由 `LoopUnrollPass` 形成两条独立标量 recurrence。最终核心使用相邻连续 load、相隔一行的两次 load、两条 `MSUB` 和每两元素一次的指针/分支更新。本实现只复刻该通用优化链和汇编结构，未复制 LLVM 源码。
+- 中端通用条件：只接受唯一预头、唯一回边、零起始、单位递增索引的规范 SSA `i32` 循环，循环体必须精确等价于两个只读 `i32` load、`mul`、`acc - product`、索引加一和回边。两个 load 的地址允许由任意层只读 GEP 链构成，但所有循环内 GEP 必须属于这两条地址依赖链；load/product 必须单用途，循环内不得出现 store、call、浮点或未知指令。输入即使别名也安全，因为循环没有写内存。
+- 变换与整数证明：建立主、次两个 `i32` accumulator，每轮交错克隆两次原指令序列，处理索引 `i` 与 `i+1`，索引以二递增；退出时用模 `2^32` 加法合并两个 accumulator，再进入原标量循环处理零次或一次尾部。SysY i32 乘减回绕语义构成模环，因此拆分 recurrence 后求和与原逐次乘减严格等价。`i+1<bound` 守卫保留负上界、零趟、单趟和奇数尾部语义。
+- Machine IR 链：`AddressReassociation` 只在数组基址和列索引均为循环不变量、基址定义支配预头时，把 `GEP(GEP(base,row,rowStride),column,columnStride)` 重关联为预头列基址加循环行索引；不同 lane 的相同列基址复用同一值。`MachineLoopStrengthReduction` 只在 AArch64 上识别步长一或二的归纳链；相邻 offset `0/1` 且基址和尺度相同的两次访问共享一个 pointer Phi，第二次访问保留一个常量 stride 偏移。步长二路径和扩展重关联均有独立消融开关，RISC-V 候选与关闭版汇编逐字一致。
+- 最终热循环：目标三项的两处跨行归约均由逐元素 `MOVZ stride + MUL + ADD + LDR + MSUB` 变为两路交错结构。核心只保留四次 load、两条独立 `MSUB`、一次 `pointer += 2*stride` 和每两元素一次分支；第二个跨行 load 使用 `[pointer, #stride]`。相较 Clang 核心仍未把连续侧两个标量 load 合成 `LDP`，但地址递推、双 recurrence 和奇数尾部结构已经一致。
+- 合成覆盖：新增匿名 `12×19` 测试，动态函数参数覆盖 trip count `0/1/2/3/7/8/9`、正负初值、`INT_MIN/MAX`、乘减溢出、同一二维对象内可能重叠的两条只读访问，以及非单位递增和循环内 store fallback。O0、候选 O1 与完整关闭版 O1 输出逐字一致。测试曾主动发现“无类型指针 GEP +1 丢失行尺度”的错误方案，该方案已删除，最终实现只在保留显式 Machine GEP scale 时合并地址。
+- 隔离与门禁：Release 构建通过；ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`。相对同时关闭标量交错、步长二 pointer IV 和不变基址地址重关联的版本，60 项中仅 `h-5-01/02/03` 汇编变化。三个完整输入在候选和关闭版本均 AC。当前 AArch64 QEMU 软件模拟计时约由 `2.54/2.61/2.56ms` 变为 `3.06/3.00/2.90ms`，该退化只作诊断；仓库所有者已明确要求理论上可能改善 Cortex-A53 时仍先推送官方提测。
+- 状态：D。按所有者要求，与连续 NEON 路径作为 Clang 风格组合候选推送到 `zct-arm-no-magic`。官方 Cortex-A53 若相对 `0ee19ae` 有稳定总收益则保留；统计持平、退化或错误则整体独立回退。
+
+本候选由 AI 辅助完成 Clang pass pipeline/汇编差距分析、SSA 两路 recurrence、逐指令交错克隆、二维地址重关联、步长二 Machine LSR、共享相邻指针、匿名边界与 fallback、跨目标隔离及 60/60、140/140 回归。外部技术参考为 LLVM 21.1.2 `LoopVectorize.cpp`、`AArch64TargetTransformInfo.cpp`、Clang `LoopUnrollPass` 的公开行为，以及经典 loop unrolling/interleaving、SCEV 式地址重关联和 pointer induction；未复制外部实现，也未使用测试、函数、变量、固定数组尺寸、固定 stride 或输入输出作为触发条件。

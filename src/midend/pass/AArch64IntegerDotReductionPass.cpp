@@ -20,6 +20,7 @@ using compiler::ir::core::Module;
 
 constexpr int kVectorWidth = 8;
 constexpr std::size_t kMaximumReductionsPerFunction = 16;
+constexpr std::size_t kMaximumScalarInterleavesPerFunction = 16;
 
 struct Candidate {
   std::string header;
@@ -34,6 +35,18 @@ struct Candidate {
   std::string bound;
   std::string leftBase;
   std::string rightBase;
+};
+
+struct ScalarInterleaveCandidate {
+  std::string header;
+  std::string body;
+  std::string preheader;
+  std::string induction;
+  std::string accumulator;
+  std::string inductionBackedge;
+  std::string accumulatorBackedge;
+  std::string initialAccumulator;
+  std::string bound;
 };
 
 bool isGep(const Instruction &instruction) {
@@ -530,6 +543,319 @@ bool transform(Function &function, const Candidate &candidate) {
   return true;
 }
 
+bool collectBodyAddressChain(
+    const Instruction &load, const BasicBlock &body,
+    const std::unordered_map<std::string, const Instruction *> &definitions,
+    std::unordered_set<const Instruction *> &required) {
+  if (load.opcode() != "load" || load.operands().size() != 2 ||
+      load.operands()[0] != "int") {
+    return false;
+  }
+
+  std::unordered_set<const Instruction *> bodyInstructions;
+  for (const auto &instruction : body.instructions())
+    bodyInstructions.insert(&instruction);
+
+  std::vector<std::string> pending{load.operands()[1]};
+  while (!pending.empty()) {
+    const std::string value = std::move(pending.back());
+    pending.pop_back();
+    const auto *definition = definitionOf(definitions, value);
+    if (definition == nullptr ||
+        bodyInstructions.find(definition) == bodyInstructions.end()) {
+      continue;
+    }
+    if (!isGep(*definition) || !required.insert(definition).second)
+      return false;
+    for (const auto &operand : definition->operands()) {
+      if (!operand.empty() && operand.front() == '%')
+        pending.push_back(operand);
+    }
+  }
+  required.insert(&load);
+  return true;
+}
+
+std::optional<ScalarInterleaveCandidate>
+matchScalarInterleaveCandidate(const Function &function) {
+  if (functionHasFloatingPoint(function))
+    return std::nullopt;
+
+  const auto definitions = definitionsOf(function);
+  const auto blocks = blocksOf(function);
+  const auto predecessors = predecessorsOf(function);
+  const auto uses = useCountsOf(function);
+
+  for (const auto &header : function.blocks()) {
+    const auto &instructions = header.instructions();
+    if (instructions.size() != 4 || instructions[0].opcode() != "phi" ||
+        instructions[1].opcode() != "phi" ||
+        instructions[2].opcode() != "icmp.slt" ||
+        instructions[2].operands().size() != 2 ||
+        instructions[3].opcode() != "br" ||
+        instructions[3].operands().size() != 3 ||
+        instructions[3].operands()[0] != instructions[2].result()) {
+      continue;
+    }
+
+    const auto headerPredecessors = predecessors.find(header.name());
+    if (headerPredecessors == predecessors.end() ||
+        headerPredecessors->second.size() != 2) {
+      continue;
+    }
+    const std::string bodyName = instructions[3].operands()[1];
+    const auto bodyFound = blocks.find(bodyName);
+    if (bodyFound == blocks.end())
+      continue;
+    const auto *body = bodyFound->second;
+    if (body->terminator() == nullptr || body->terminator()->opcode() != "br" ||
+        body->terminator()->operands() !=
+            std::vector<std::string>{header.name()}) {
+      continue;
+    }
+    const auto bodyPredecessors = predecessors.find(bodyName);
+    if (bodyPredecessors == predecessors.end() ||
+        bodyPredecessors->second != std::vector<std::string>{header.name()}) {
+      continue;
+    }
+
+    std::string preheaderName;
+    for (const auto &predecessor : headerPredecessors->second) {
+      if (predecessor != bodyName)
+        preheaderName = predecessor;
+    }
+    const auto preheaderFound = blocks.find(preheaderName);
+    if (preheaderFound == blocks.end() ||
+        preheaderFound->second->terminator() == nullptr ||
+        preheaderFound->second->terminator()->opcode() != "br" ||
+        preheaderFound->second->terminator()->operands() !=
+            std::vector<std::string>{header.name()}) {
+      continue;
+    }
+
+    const std::string compared = instructions[2].operands()[0];
+    const Instruction *inductionPhi = nullptr;
+    const Instruction *accumulatorPhi = nullptr;
+    for (std::size_t index = 0; index < 2; ++index) {
+      const auto &phi = instructions[index];
+      if (phi.result() == compared)
+        inductionPhi = &phi;
+      else
+        accumulatorPhi = &phi;
+    }
+    if (inductionPhi == nullptr || accumulatorPhi == nullptr)
+      continue;
+
+    const auto inductionInitial = phiIncoming(*inductionPhi, preheaderName);
+    const auto inductionBackedge = phiIncoming(*inductionPhi, bodyName);
+    const auto accumulatorInitial = phiIncoming(*accumulatorPhi, preheaderName);
+    const auto accumulatorBackedge = phiIncoming(*accumulatorPhi, bodyName);
+    if (!inductionInitial.has_value() || inductionInitial->first != "0" ||
+        !inductionBackedge.has_value() || !accumulatorInitial.has_value() ||
+        !accumulatorBackedge.has_value()) {
+      continue;
+    }
+
+    const auto *inductionUpdate =
+        definitionOf(definitions, inductionBackedge->first);
+    if (!isAddOne(inductionUpdate, inductionPhi->result()))
+      continue;
+    const auto *subtract =
+        definitionOf(definitions, accumulatorBackedge->first);
+    if (subtract == nullptr || subtract->opcode() != "sub" ||
+        subtract->operands().size() != 2 ||
+        subtract->operands()[0] != accumulatorPhi->result()) {
+      continue;
+    }
+    const auto *multiply = definitionOf(definitions, subtract->operands()[1]);
+    if (multiply == nullptr || multiply->opcode() != "mul" ||
+        multiply->operands().size() != 2) {
+      continue;
+    }
+    const auto *leftLoad = definitionOf(definitions, multiply->operands()[0]);
+    const auto *rightLoad = definitionOf(definitions, multiply->operands()[1]);
+    if (leftLoad == nullptr || rightLoad == nullptr || leftLoad == rightLoad)
+      continue;
+
+    std::unordered_set<const Instruction *> required{
+        multiply, subtract, inductionUpdate, body->terminator()};
+    if (!collectBodyAddressChain(*leftLoad, *body, definitions, required) ||
+        !collectBodyAddressChain(*rightLoad, *body, definitions, required) ||
+        required.size() != body->instructions().size()) {
+      continue;
+    }
+
+    const auto leftUses = uses.find(leftLoad->result());
+    const auto rightUses = uses.find(rightLoad->result());
+    const auto multiplyUses = uses.find(multiply->result());
+    if (leftUses == uses.end() || leftUses->second != 1 ||
+        rightUses == uses.end() || rightUses->second != 1 ||
+        multiplyUses == uses.end() || multiplyUses->second != 1) {
+      continue;
+    }
+
+    return ScalarInterleaveCandidate{header.name(),
+                                     bodyName,
+                                     preheaderName,
+                                     inductionPhi->result(),
+                                     accumulatorPhi->result(),
+                                     inductionBackedge->first,
+                                     accumulatorBackedge->first,
+                                     accumulatorInitial->first,
+                                     instructions[2].operands()[1]};
+  }
+  return std::nullopt;
+}
+
+struct ScalarInterleaveLane {
+  std::vector<Instruction> instructions;
+  std::string inductionBackedge;
+  std::string accumulatorBackedge;
+};
+
+ScalarInterleaveLane cloneScalarInterleaveLane(
+    const BasicBlock &body, const ScalarInterleaveCandidate &candidate,
+    const std::string &induction, const std::string &accumulator,
+    std::unordered_set<std::string> &valueNames) {
+  std::unordered_map<std::string, std::string> replacements{
+      {candidate.induction, induction}, {candidate.accumulator, accumulator}};
+  ScalarInterleaveLane lane;
+  for (const auto &instruction : body.instructions()) {
+    if (instruction.isTerminator())
+      continue;
+    auto operands = instruction.operands();
+    for (auto &operand : operands) {
+      if (const auto found = replacements.find(operand);
+          found != replacements.end()) {
+        operand = found->second;
+      }
+    }
+    std::string result;
+    if (instruction.hasResult()) {
+      result = freshName(valueNames, "%dot.scalar.lane");
+      replacements[instruction.result()] = result;
+    }
+    lane.instructions.emplace_back(instruction.opcode(), std::move(operands),
+                                   std::move(result));
+  }
+  lane.inductionBackedge = replacements.at(candidate.inductionBackedge);
+  lane.accumulatorBackedge = replacements.at(candidate.accumulatorBackedge);
+  return lane;
+}
+
+bool interleaveScalarInstructions(BasicBlock &block, ScalarInterleaveLane first,
+                                  ScalarInterleaveLane second) {
+  if (first.instructions.size() != second.instructions.size())
+    return false;
+  for (std::size_t index = 0; index < first.instructions.size(); ++index) {
+    block.addInstruction(std::move(first.instructions[index]));
+    block.addInstruction(std::move(second.instructions[index]));
+  }
+  return true;
+}
+
+bool transformScalarInterleave(Function &function,
+                               const ScalarInterleaveCandidate &candidate) {
+  auto valueNames = collectValueNames(function);
+  auto blockNames = collectBlockNames(function);
+  auto *preheader = blockByName(function, candidate.preheader);
+  auto *header = blockByName(function, candidate.header);
+  const auto *body = blockByName(function, candidate.body);
+  if (preheader == nullptr || header == nullptr || body == nullptr ||
+      preheader->terminator() == nullptr ||
+      preheader->terminator()->operands() !=
+          std::vector<std::string>{candidate.header}) {
+    return false;
+  }
+
+  const std::string pairHeaderName = freshName(blockNames, "dot.scalar.header");
+  const std::string pairBodyName = freshName(blockNames, "dot.scalar.body");
+  const std::string combineName = freshName(blockNames, "dot.scalar.combine");
+  const std::string pairIndex = freshName(valueNames, "%dot.scalar.index");
+  const std::string primary = freshName(valueNames, "%dot.scalar.primary");
+  const std::string secondary = freshName(valueNames, "%dot.scalar.secondary");
+  const std::string nextIndex = freshName(valueNames, "%dot.scalar.next");
+  const std::string hasPair = freshName(valueNames, "%dot.scalar.has.pair");
+  const std::string combined = freshName(valueNames, "%dot.scalar.combined");
+
+  auto firstLane = cloneScalarInterleaveLane(*body, candidate, pairIndex,
+                                             primary, valueNames);
+  auto secondLane = cloneScalarInterleaveLane(*body, candidate, nextIndex,
+                                              secondary, valueNames);
+
+  bool changedInductionPhi = false;
+  bool changedAccumulatorPhi = false;
+  for (auto &instruction : header->instructions()) {
+    if (instruction.opcode() != "phi")
+      continue;
+    auto operands = instruction.operands();
+    for (std::size_t index = 1; index + 1 < operands.size(); index += 2) {
+      if (operands[index + 1] != candidate.preheader)
+        continue;
+      if (instruction.result() == candidate.induction) {
+        operands[index] = pairIndex;
+        operands[index + 1] = combineName;
+        changedInductionPhi = true;
+      } else if (instruction.result() == candidate.accumulator) {
+        operands[index] = combined;
+        operands[index + 1] = combineName;
+        changedAccumulatorPhi = true;
+      }
+    }
+    instruction = Instruction{"phi", std::move(operands), instruction.result()};
+  }
+  if (!changedInductionPhi || !changedAccumulatorPhi)
+    return false;
+  preheader->instructions().back() = Instruction{"br", {pairHeaderName}};
+
+  BasicBlock pairHeader{pairHeaderName};
+  pairHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", candidate.preheader,
+                   secondLane.inductionBackedge, pairBodyName},
+                  pairIndex});
+  pairHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", candidate.initialAccumulator, candidate.preheader,
+                   firstLane.accumulatorBackedge, pairBodyName},
+                  primary});
+  pairHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", candidate.preheader,
+                   secondLane.accumulatorBackedge, pairBodyName},
+                  secondary});
+  pairHeader.addInstruction(Instruction{"add", {pairIndex, "1"}, nextIndex});
+  pairHeader.addInstruction(
+      Instruction{"icmp.slt", {nextIndex, candidate.bound}, hasPair});
+  pairHeader.addInstruction(
+      Instruction{"br", {hasPair, pairBodyName, combineName}});
+
+  BasicBlock pairBody{pairBodyName};
+  if (!interleaveScalarInstructions(pairBody, std::move(firstLane),
+                                    std::move(secondLane))) {
+    return false;
+  }
+  pairBody.addInstruction(Instruction{"br", {pairHeaderName}});
+
+  BasicBlock combine{combineName};
+  combine.addInstruction(Instruction{"add", {primary, secondary}, combined});
+  combine.addInstruction(Instruction{"br", {candidate.header}});
+
+  auto position =
+      std::find_if(function.blocks().begin(), function.blocks().end(),
+                   [&](const BasicBlock &block) {
+                     return block.name() == candidate.header;
+                   });
+  if (position == function.blocks().end())
+    return false;
+  position = function.blocks().insert(position, std::move(pairHeader));
+  ++position;
+  position = function.blocks().insert(position, std::move(pairBody));
+  ++position;
+  function.blocks().insert(position, std::move(combine));
+  return true;
+}
+
 } // namespace
 
 void AArch64IntegerDotReductionPass::run(Module &module) {
@@ -543,6 +869,18 @@ void AArch64IntegerDotReductionPass::run(Module &module) {
       const auto candidate = matchCandidate(function);
       if (!candidate.has_value() || !transform(function, *candidate))
         break;
+    }
+    for (std::size_t count = 0; count < kMaximumScalarInterleavesPerFunction;
+         ++count) {
+      if (std::getenv("COMPILER_DISABLE_AARCH64_SCALAR_DOT_INTERLEAVING") !=
+          nullptr) {
+        break;
+      }
+      const auto candidate = matchScalarInterleaveCandidate(function);
+      if (!candidate.has_value() ||
+          !transformScalarInterleave(function, *candidate)) {
+        break;
+      }
     }
   }
 }

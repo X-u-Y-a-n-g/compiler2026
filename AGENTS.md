@@ -31,7 +31,8 @@ These rules are mandatory for every compiler optimization in this repository.
    Cortex-A53 platform; local QEMU and LLVM MCA remain diagnostic evidence only.
 6. Use the official Cortex-A53 result to decide acceptance. Keep and document a
    meaningful target improvement; promptly revert and push an isolated target
-   regression or wrong result before developing the next candidate.
+   regression, statistically flat result, or wrong result before developing
+   the next candidate.
 7. The current owner-designated delivery branch is `zct-arm-no-magic`. Never
    push optimization work to another branch unless the repository owner
    explicitly requests it.
