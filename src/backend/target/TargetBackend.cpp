@@ -57,8 +57,6 @@ class AArch64Backend final : public BackendTarget {
     const auto target = TargetInfo::fromName("aarch64");
     auto machineModule = loweringFor(target).lowerModule(module, target);
     compiler::backend::opt::AddressReassociation{}.runReassociation(machineModule);
-    compiler::backend::opt::AArch64InstructionCombining{}
-        .lowerHotConstantDivisions(machineModule);
     compiler::backend::opt::MachineLoopStrengthReduction{}.run(machineModule);
     compiler::backend::opt::PhiElimination{}.run(machineModule);
     compiler::backend::opt::CompareBranchFusion{}.run(machineModule);

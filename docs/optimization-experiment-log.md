@@ -503,14 +503,11 @@ generic-ooo 前/后：
 
 本候选由 AI 辅助完成 counted-loop CFG/Phi 修复、双流 Machine LSR、失效整数 recurrence 删除、post-RA `LDP` 与 `SUBS/B.NE` 组合、无操作边块清理、Clang 汇编对照、匿名边界测试、60/60 与 140/140 回归。技术依据为经典 loop rotation/countdown canonicalization、strength reduction、paired-load selection、flag-setting decrement branch 和 LLVM/Clang AArch64 `-O3 -mcpu=cortex-a53` 的公开输出结构；未复制外部实现源码。
 
-## 2026-07-27 AArch64 热循环成本驱动的常量有符号除余降低（待平台判定）
+## 2026-07-27 AArch64 热循环常量有符号除余降低平台退化记录
 
-- 通用条件：只处理具有唯一预头的 AArch64 自然循环中的 i32 `sdiv/srem`。除数必须能从立即数或循环外的常量取负定义解析为非零、非二次幂 i32 常量；循环内存在调用、函数超过 4096 条 Machine IR、证明不完整或目标成本不盈利时保留原硬件 `SDIV`。触发不读取路径、用例/函数/变量/块名称、固定公开常数、输入或输出。
-- 成本模型：按 Cortex-A53 的整数 `SDIV` 关键路径估算，magic 商包含 `SMULL`、高半提取、可选加减修正、可选移位和向零截断修正，余数再增加一条 `MSUB`。同一循环累计 recurring saving 至少为 12 才转换，并限制最多新增 8 个循环不变整数寄存器；因此孤立常量除法继续使用紧凑的硬件路径，串行除余链才承担代码增长。消融开关为 `COMPILER_DISABLE_AARCH64_HOT_MAGIC_DIVISION=1`。
-- 变换：在寄存器分配前生成 `sdiv.magic.i32/srem.magic.i32` Machine IR pseudo；magic 乘数和余数恢复所需原除数在循环预头物化，同值复用一个虚拟寄存器。汇编使用有符号乘高和标准向零修正恢复精确商，以 `remainder = dividend - quotient * divisor` 恢复余数，保持负数、`INT_MIN/MAX` 和 i32 语义。
-- 合成与 fallback：匿名测试覆盖正负除数、大小常量、`INT_MIN/MAX`、零趟、单趟、多趟、i32 回绕、负常量的循环外取负定义、循环内调用和非循环 fallback。候选与关闭版本输出逐字一致；含调用循环及冷除法保留 `SDIV`。
-- 汇编结果：目标热循环每轮 `3×SDIV → 3×SMULL`，两个余数路径使用 `MSUB`，5 个乘数/模数均在预头初始化；寄存器分配为 `24 colored / 0 spilled`。最终 60 份性能汇编仅 h-4 三项变化，其余 57 份逐字一致。
-- 正确性与本地诊断：最终 ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`，全部候选均由 GNU AArch64 工具链静态链接执行。三项 QEMU 计时合计单轮由 `0.147283s→0.134574s`，下降约 `8.63%`；QEMU 只作诊断，真实收益仍以官方 Cortex-A53 为准。
-- 状态：D，代码与门禁已完成，等待仓库所有者提交官方平台。若三项稳定改善则保留；持平、退化或错误则独立回退本候选。
+- 被测候选：提交 `f5e7193` 仅对唯一预头、循环内无调用、累计 A53 静态收益达到门槛的自然循环，将非二次幂常量 i32 `sdiv/srem` 降为 `SMULL`、符号修正和余数恢复 `MSUB`，并在预头缓存 magic 乘数与除数。触发只依赖 Machine IR、循环和目标成本，不使用测试身份或固定公开常数。
+- 本地门禁：匿名正负边界、零趟、多趟、回绕和 fallback 差分通过；ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`。60 项仅 h-4 三项汇编变化，热循环 `3×SDIV→0×SDIV`、无 spill；QEMU 三项合计曾显示约 `8.63%` 改善。
+- 官方 Cortex-A53：父版本约为 `4.60/15.26/28.31s`，候选为 `5.91/19.56/36.23s`。三项合计 `48.17→61.70s`，退化约 `28.1%`，且三项分别均退化约 `28%`。
+- 判定：B，真实 A53 明确否定当前 magic lowering 成本模型。更多标量指令、长依赖链、循环不变寄存器占用和代码尺寸成本超过硬件 `SDIV`；不得用 QEMU 或“消除除法”静态指标覆盖平台结果。候选代码、测试和能力说明已完整回退。
 
-本候选由 AI 辅助完成 Clang `-O3 -mcpu=cortex-a53` 汇编差距分析、自然循环/支配分析、目标成本模型、Machine IR pseudo、预头常量复用、正负边界与 fallback、60/60 和 140/140 回归。技术依据为经典有符号常量除法 magic-number lowering、Henry S. Warren《Hacker's Delight》的 signed division 推导及公开 AArch64 ISA/Clang 输出；未复制 LLVM/Clang 源码或使用公开用例身份作为触发条件。
+本次候选与回退由 AI 辅助完成 Clang 汇编对照、实现、边界验证、全套门禁、平台结果消融和退化归因记录。技术参考为经典 signed magic division 与公开 AArch64 ISA；未复制外部编译器源码。
