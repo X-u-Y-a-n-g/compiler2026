@@ -2594,6 +2594,97 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q26, q27, [" << address << ", #96]\n";
     return;
   }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.init" &&
+      instruction.operands.size() == 4) {
+    const auto row0 =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto row1 =
+        integerOperand(os, function, instruction.operands[1], kHiddenScratch);
+    os << "  ldp q0, q1, [" << row0 << "]\n";
+    os << "  ldp q2, q3, [" << row0 << ", #32]\n";
+    os << "  ldp q4, q5, [" << row1 << "]\n";
+    os << "  ldp q6, q7, [" << row1 << ", #32]\n";
+    const auto initial0 =
+        integerOperand(os, function, instruction.operands[2], kAddrScratch);
+    for (int vector = 8; vector <= 11; ++vector) {
+      os << "  dup v" << vector << ".4s, "
+         << integerRegister(initial0, ValueType::int32Type()) << '\n';
+    }
+    const auto initial1 =
+        integerOperand(os, function, instruction.operands[3], kImmScratch);
+    for (int vector = 12; vector <= 15; ++vector) {
+      os << "  dup v" << vector << ".4s, "
+         << integerRegister(initial1, ValueType::int32Type()) << '\n';
+    }
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.shared" &&
+      instruction.operands.size() == 3) {
+    const auto coefficient0 =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  dup v20.4s, "
+       << integerRegister(coefficient0, ValueType::int32Type()) << '\n';
+    const auto coefficient1 =
+        integerOperand(os, function, instruction.operands[2], kHiddenScratch);
+    os << "  dup v21.4s, "
+       << integerRegister(coefficient1, ValueType::int32Type()) << '\n';
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q22, q23, [" << source << "]\n";
+    os << "  mla v8.4s, v22.4s, v20.4s\n";
+    os << "  mla v9.4s, v23.4s, v20.4s\n";
+    os << "  mla v12.4s, v22.4s, v21.4s\n";
+    os << "  mla v13.4s, v23.4s, v21.4s\n";
+    os << "  ldp q22, q23, [" << source << ", #32]\n";
+    os << "  mla v10.4s, v22.4s, v20.4s\n";
+    os << "  mla v11.4s, v23.4s, v20.4s\n";
+    os << "  mla v14.4s, v22.4s, v21.4s\n";
+    os << "  mla v15.4s, v23.4s, v21.4s\n";
+    return;
+  }
+  const auto emitPanelScaledAdd = [&](int destinationFirst,
+                                      int sourceFirst) {
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  dup v20.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    for (int lane = 0; lane < 4; ++lane) {
+      os << "  mla v" << destinationFirst + lane << ".4s, v"
+         << sourceFirst + lane << ".4s, v20.4s\n";
+    }
+  };
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.old0.to.row0" &&
+      instruction.operands.size() == 1) {
+    emitPanelScaledAdd(8, 0);
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.old1.to.row0" &&
+      instruction.operands.size() == 1) {
+    emitPanelScaledAdd(8, 4);
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.new0.to.row1" &&
+      instruction.operands.size() == 1) {
+    emitPanelScaledAdd(12, 8);
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.old1.to.row1" &&
+      instruction.operands.size() == 1) {
+    emitPanelScaledAdd(12, 4);
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.store" &&
+      instruction.operands.size() == 2) {
+    const auto row0 =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  stp q8, q9, [" << row0 << "]\n";
+    os << "  stp q10, q11, [" << row0 << ", #32]\n";
+    const auto row1 =
+        integerOperand(os, function, instruction.operands[1], kHiddenScratch);
+    os << "  stp q12, q13, [" << row1 << "]\n";
+    os << "  stp q14, q15, [" << row1 << ", #32]\n";
+    return;
+  }
   if (opcode == "aarch64.neon.reduce.mls.i32x8.init" &&
       instruction.operands.size() == 1) {
     const auto initial = integerOperand(os, function, instruction.operands[0],

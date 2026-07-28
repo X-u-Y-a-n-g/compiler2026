@@ -1,0 +1,61 @@
+int source[40][40];
+int coefficient[40][40];
+
+int main() {
+    int count = getint();
+    int row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            source[row][column] =
+                (row * 7 + column * 11 + 5) % 17 - 8;
+            coefficient[row][column] =
+                (row * 13 + column * 3 + 7) % 9 - 4;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        if (row >= count / 3) {
+            int column = 0;
+            while (column < count) {
+                source[row][column] = 0 - 3;
+                column = column + 1;
+            }
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            int reduction = 0;
+            int sum = 0;
+            while (reduction < count) {
+                sum = sum + coefficient[row][reduction] *
+                    source[reduction][column];
+                reduction = reduction + 1;
+            }
+            source[row][column] = sum;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    int result = 0;
+    row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            result = result * 31 + source[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

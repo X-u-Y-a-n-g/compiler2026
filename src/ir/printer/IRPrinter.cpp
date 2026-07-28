@@ -631,6 +631,25 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     os << opcode << " ptr " << operands[0];
     return os.str();
   }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.init") {
+    os << opcode << " ptr " << operands[0] << ", ptr " << operands[1]
+       << ", i32 " << operands[2] << ", i32 " << operands[3];
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.shared") {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1]
+       << ", i32 " << operands[2];
+    return os.str();
+  }
+  if (opcode.rfind("aarch64.neon.ordered.panel.i32x16.", 0) == 0 &&
+      opcode != "aarch64.neon.ordered.panel.i32x16.store") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.ordered.panel.i32x16.store") {
+    os << opcode << " ptr " << operands[0] << ", ptr " << operands[1];
+    return os.str();
+  }
 
   if (opcode == "aarch64.neon.reduce.mls.i32x8.init") {
     os << opcode << " i32 " << operands[0];

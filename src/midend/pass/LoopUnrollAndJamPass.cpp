@@ -604,6 +604,7 @@ struct PhiLoop {
 
 struct UniformSuffixPattern {
   std::string row;
+  std::string destinationMatrix;
   std::string coefficientMatrix;
   std::int32_t fillValue = 0;
   std::int32_t thresholdDivisor = 0;
@@ -1087,7 +1088,8 @@ findUniformSuffixPattern(const Function &function, const Candidate &candidate) {
         }
       }
       if (!clobbered) {
-        return UniformSuffixPattern{row, coefficientLoad->path.base, *fillValue,
+        return UniformSuffixPattern{row, destination->base,
+                                    coefficientLoad->path.base, *fillValue,
                                     static_cast<std::int32_t>(divisor)};
       }
     }
@@ -1222,6 +1224,427 @@ bool foldUniformSuffixContribution(Function &function, Candidate &candidate) {
   candidate.reductionIdentity = suffixAcc;
   function.addBlock(std::move(header));
   function.addBlock(std::move(body));
+  return true;
+}
+
+bool buildOrderedTwoRowPanel(Function &function, const Candidate &candidate,
+                             const UniformSuffixPattern &pattern) {
+  if (std::getenv("COMPILER_DISABLE_ORDERED_TWO_ROW_PANEL") != nullptr) {
+    return false;
+  }
+  const auto cfg = buildCFG(function);
+  const auto definitions = buildDefinitions(function);
+  const auto definitionBlock = definitionBlocks(function);
+  const auto rowDefinition = definitions.find(pattern.row);
+  const auto rowBlock = definitionBlock.find(pattern.row);
+  if (rowDefinition == definitions.end() ||
+      rowDefinition->second->opcode() != "phi" ||
+      rowDefinition->second->operands().size() != 5 ||
+      rowBlock == definitionBlock.end()) {
+    return false;
+  }
+  auto *rowHeader = findBlock(function, rowBlock->second);
+  const auto rowLoop = canonicalPhiLoop(
+      function, cfg, definitions, definitionBlock, pattern.row,
+      candidate.outerBound);
+  if (rowHeader == nullptr || !rowLoop.has_value() ||
+      rowHeader->terminator() == nullptr ||
+      rowHeader->terminator()->opcode() != "br" ||
+      rowHeader->terminator()->operands().size() != 3 ||
+      rowHeader->terminator()->operands()[1] != rowLoop->body) {
+    return false;
+  }
+
+  // The original scalar/32-column path remains the complete fallback.  The
+  // panel path is entered only when every column belongs to a full 16-wide
+  // block and a second row is available.
+  auto valueNames = collectValueNames(function);
+  auto blockNames = collectBlockNames(function);
+  auto value = [&](const std::string &stem) {
+    return freshName(valueNames, "%ordered.panel." + stem);
+  };
+  auto block = [&](const std::string &stem) {
+    return freshName(blockNames, "ordered.panel." + stem);
+  };
+
+  const auto row1 = value("row1");
+  const auto hasRow1 = value("has.row1");
+  const auto columnRemainder = value("column.remainder");
+  const auto fullColumns = value("full.columns");
+  const auto usePanel = value("use");
+  const auto guardName = block("guard");
+  const auto setupName = block("setup");
+  const auto suffix0HeaderName = block("suffix0.header");
+  const auto suffix0BodyName = block("suffix0.body");
+  const auto suffix1HeaderName = block("suffix1.header");
+  const auto suffix1BodyName = block("suffix1.body");
+  const auto columnHeaderName = block("column.header");
+  const auto columnBodyName = block("column.body");
+  const auto prefixHeaderName = block("prefix.header");
+  const auto prefixBodyName = block("prefix.body");
+  const auto highHeaderName = block("high.header");
+  const auto highBodyName = block("high.body");
+  const auto old0GuardName = block("old0.guard");
+  const auto old0BodyName = block("old0.body");
+  const auto old1Row0GuardName = block("old1.row0.guard");
+  const auto old1Row0BodyName = block("old1.row0.body");
+  const auto new0ToRow1Name = block("new0.to.row1");
+  const auto old1Row1GuardName = block("old1.row1.guard");
+  const auto old1Row1BodyName = block("old1.row1.body");
+  const auto storeName = block("store");
+  const auto rowLatchName = block("row.latch");
+
+  const auto threshold = value("threshold");
+  const auto below0 = value("below0");
+  const auto below1 = value("below1");
+  const auto cutoff0 = value("cutoff0");
+  const auto cutoff1 = value("cutoff1");
+  const auto coefficientRow0 = value("coefficient.row0");
+  const auto coefficientRow1 = value("coefficient.row1");
+  const auto destinationRow0 = value("destination.row0");
+  const auto destinationRow1 = value("destination.row1");
+
+  const auto suffix0K = value("suffix0.k");
+  const auto suffix0Acc = value("suffix0.acc");
+  const auto suffix0HasK = value("suffix0.has.k");
+  const auto suffix0Address = value("suffix0.address");
+  const auto suffix0Coefficient = value("suffix0.coefficient");
+  const auto suffix0Product = value("suffix0.product");
+  const auto suffix0NextAcc = value("suffix0.acc.next");
+  const auto suffix0NextK = value("suffix0.k.next");
+  const auto suffix1K = value("suffix1.k");
+  const auto suffix1Acc = value("suffix1.acc");
+  const auto suffix1HasK = value("suffix1.has.k");
+  const auto suffix1Address = value("suffix1.address");
+  const auto suffix1Coefficient = value("suffix1.coefficient");
+  const auto suffix1Product = value("suffix1.product");
+  const auto suffix1NextAcc = value("suffix1.acc.next");
+  const auto suffix1NextK = value("suffix1.k.next");
+
+  const auto column = value("column");
+  const auto hasColumn = value("has.column");
+  const auto destination0 = value("destination0");
+  const auto destination1 = value("destination1");
+  const auto prefixK = value("prefix.k");
+  const auto prefixHasK = value("prefix.has.k");
+  const auto prefixSourceRow = value("prefix.source.row");
+  const auto prefixSource = value("prefix.source");
+  const auto prefixCoefficient0Address = value("prefix.coefficient0.address");
+  const auto prefixCoefficient1Address = value("prefix.coefficient1.address");
+  const auto prefixCoefficient0 = value("prefix.coefficient0");
+  const auto prefixCoefficient1 = value("prefix.coefficient1");
+  const auto prefixNextK = value("prefix.k.next");
+  const auto highStart = value("high.start");
+  const auto highK = value("high.k");
+  const auto highHasK = value("high.has.k");
+  const auto highSourceRow = value("high.source.row");
+  const auto highSource = value("high.source");
+  const auto highCoefficient0Address = value("high.coefficient0.address");
+  const auto highCoefficient1Address = value("high.coefficient1.address");
+  const auto highCoefficient0 = value("high.coefficient0");
+  const auto highCoefficient1 = value("high.coefficient1");
+  const auto highNextK = value("high.k.next");
+  const auto includeOld0 = value("include.old0");
+  const auto coefficient00Address = value("coefficient00.address");
+  const auto coefficient00 = value("coefficient00");
+  const auto includeOld1Row0 = value("include.old1.row0");
+  const auto coefficient01Address = value("coefficient01.address");
+  const auto coefficient01 = value("coefficient01");
+  const auto coefficient10Address = value("coefficient10.address");
+  const auto coefficient10 = value("coefficient10");
+  const auto includeOld1Row1 = value("include.old1.row1");
+  const auto coefficient11Address = value("coefficient11.address");
+  const auto coefficient11 = value("coefficient11");
+  const auto nextColumn = value("column.next");
+  const auto nextRow = value("row.next");
+
+  auto rowTerminator = rowHeader->terminator()->operands();
+  rowTerminator[1] = guardName;
+  rowHeader->instructions().back() =
+      Instruction{"br", std::move(rowTerminator)};
+
+  BasicBlock guard{guardName};
+  guard.addInstruction(Instruction{"add", {pattern.row, "1"}, row1});
+  guard.addInstruction(
+      Instruction{"icmp.slt", {row1, candidate.outerBound}, hasRow1});
+  guard.addInstruction(
+      Instruction{"srem", {candidate.outerBound, "16"}, columnRemainder});
+  guard.addInstruction(
+      Instruction{"icmp.eq", {columnRemainder, "0"}, fullColumns});
+  guard.addInstruction(Instruction{"and", {hasRow1, fullColumns}, usePanel});
+  guard.addInstruction(
+      Instruction{"br", {usePanel, setupName, rowLoop->body}});
+
+  BasicBlock setup{setupName};
+  setup.addInstruction(Instruction{
+      "sdiv",
+      {candidate.outerBound, std::to_string(pattern.thresholdDivisor)},
+      threshold});
+  setup.addInstruction(Instruction{"icmp.slt", {pattern.row, threshold}, below0});
+  setup.addInstruction(Instruction{"icmp.slt", {row1, threshold}, below1});
+  setup.addInstruction(
+      Instruction{"select", {below0, threshold, pattern.row}, cutoff0});
+  setup.addInstruction(
+      Instruction{"select", {below1, threshold, row1}, cutoff1});
+  setup.addInstruction(Instruction{"getelementptr",
+                                   {pattern.coefficientMatrix, pattern.row},
+                                   coefficientRow0});
+  setup.addInstruction(Instruction{"getelementptr",
+                                   {pattern.coefficientMatrix, row1},
+                                   coefficientRow1});
+  setup.addInstruction(Instruction{"getelementptr",
+                                   {pattern.destinationMatrix, pattern.row},
+                                   destinationRow0});
+  setup.addInstruction(Instruction{"getelementptr",
+                                   {pattern.destinationMatrix, row1},
+                                   destinationRow1});
+  setup.addInstruction(Instruction{"br", {suffix0HeaderName}});
+
+  BasicBlock suffix0Header{suffix0HeaderName};
+  suffix0Header.addInstruction(
+      Instruction{"phi",
+                  {"int", cutoff0, setupName, suffix0NextK, suffix0BodyName},
+                  suffix0K});
+  suffix0Header.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", setupName, suffix0NextAcc, suffix0BodyName},
+                  suffix0Acc});
+  suffix0Header.addInstruction(
+      Instruction{"icmp.slt", {suffix0K, candidate.outerBound}, suffix0HasK});
+  suffix0Header.addInstruction(
+      Instruction{"br",
+                  {suffix0HasK, suffix0BodyName, suffix1HeaderName}});
+
+  BasicBlock suffix0Body{suffix0BodyName};
+  suffix0Body.addInstruction(Instruction{
+      "getelementptr", {coefficientRow0, suffix0K}, suffix0Address});
+  suffix0Body.addInstruction(
+      Instruction{"load", {"int", suffix0Address}, suffix0Coefficient});
+  suffix0Body.addInstruction(
+      Instruction{"mul",
+                  {suffix0Coefficient, std::to_string(pattern.fillValue)},
+                  suffix0Product});
+  suffix0Body.addInstruction(
+      Instruction{"add", {suffix0Acc, suffix0Product}, suffix0NextAcc});
+  suffix0Body.addInstruction(
+      Instruction{"add", {suffix0K, "1"}, suffix0NextK});
+  suffix0Body.addInstruction(Instruction{"br", {suffix0HeaderName}});
+
+  BasicBlock suffix1Header{suffix1HeaderName};
+  suffix1Header.addInstruction(
+      Instruction{"phi",
+                  {"int", cutoff1, suffix0HeaderName, suffix1NextK,
+                   suffix1BodyName},
+                  suffix1K});
+  suffix1Header.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", suffix0HeaderName, suffix1NextAcc,
+                   suffix1BodyName},
+                  suffix1Acc});
+  suffix1Header.addInstruction(
+      Instruction{"icmp.slt", {suffix1K, candidate.outerBound}, suffix1HasK});
+  suffix1Header.addInstruction(
+      Instruction{"br",
+                  {suffix1HasK, suffix1BodyName, columnHeaderName}});
+
+  BasicBlock suffix1Body{suffix1BodyName};
+  suffix1Body.addInstruction(Instruction{
+      "getelementptr", {coefficientRow1, suffix1K}, suffix1Address});
+  suffix1Body.addInstruction(
+      Instruction{"load", {"int", suffix1Address}, suffix1Coefficient});
+  suffix1Body.addInstruction(
+      Instruction{"mul",
+                  {suffix1Coefficient, std::to_string(pattern.fillValue)},
+                  suffix1Product});
+  suffix1Body.addInstruction(
+      Instruction{"add", {suffix1Acc, suffix1Product}, suffix1NextAcc});
+  suffix1Body.addInstruction(
+      Instruction{"add", {suffix1K, "1"}, suffix1NextK});
+  suffix1Body.addInstruction(Instruction{"br", {suffix1HeaderName}});
+
+  BasicBlock columnHeader{columnHeaderName};
+  columnHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", suffix1HeaderName, nextColumn, storeName},
+                  column});
+  columnHeader.addInstruction(
+      Instruction{"icmp.slt", {column, candidate.outerBound}, hasColumn});
+  columnHeader.addInstruction(
+      Instruction{"br", {hasColumn, columnBodyName, rowLatchName}});
+
+  BasicBlock columnBody{columnBodyName};
+  columnBody.addInstruction(
+      Instruction{"getelementptr", {destinationRow0, column}, destination0});
+  columnBody.addInstruction(
+      Instruction{"getelementptr", {destinationRow1, column}, destination1});
+  columnBody.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.init",
+      {destination0, destination1, suffix0Acc, suffix1Acc}});
+  columnBody.addInstruction(
+      Instruction{"add", {pattern.row, "2"}, highStart});
+  columnBody.addInstruction(Instruction{"br", {prefixHeaderName}});
+
+  BasicBlock prefixHeader{prefixHeaderName};
+  prefixHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", columnBodyName, prefixNextK, prefixBodyName},
+                  prefixK});
+  prefixHeader.addInstruction(
+      Instruction{"icmp.slt", {prefixK, pattern.row}, prefixHasK});
+  prefixHeader.addInstruction(
+      Instruction{"br", {prefixHasK, prefixBodyName, highHeaderName}});
+
+  BasicBlock prefixBody{prefixBodyName};
+  prefixBody.addInstruction(Instruction{
+      "getelementptr", {pattern.destinationMatrix, prefixK}, prefixSourceRow});
+  prefixBody.addInstruction(
+      Instruction{"getelementptr", {prefixSourceRow, column}, prefixSource});
+  prefixBody.addInstruction(Instruction{
+      "getelementptr", {coefficientRow0, prefixK},
+      prefixCoefficient0Address});
+  prefixBody.addInstruction(Instruction{
+      "getelementptr", {coefficientRow1, prefixK},
+      prefixCoefficient1Address});
+  prefixBody.addInstruction(Instruction{
+      "load", {"int", prefixCoefficient0Address}, prefixCoefficient0});
+  prefixBody.addInstruction(Instruction{
+      "load", {"int", prefixCoefficient1Address}, prefixCoefficient1});
+  prefixBody.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.shared",
+      {prefixSource, prefixCoefficient0, prefixCoefficient1}});
+  prefixBody.addInstruction(
+      Instruction{"add", {prefixK, "1"}, prefixNextK});
+  prefixBody.addInstruction(Instruction{"br", {prefixHeaderName}});
+
+  BasicBlock highHeader{highHeaderName};
+  highHeader.addInstruction(
+      Instruction{"phi",
+                  {"int", highStart, prefixHeaderName, highNextK, highBodyName},
+                  highK});
+  highHeader.addInstruction(
+      Instruction{"icmp.slt", {highK, cutoff0}, highHasK});
+  highHeader.addInstruction(
+      Instruction{"br", {highHasK, highBodyName, old0GuardName}});
+
+  BasicBlock highBody{highBodyName};
+  highBody.addInstruction(Instruction{
+      "getelementptr", {pattern.destinationMatrix, highK}, highSourceRow});
+  highBody.addInstruction(
+      Instruction{"getelementptr", {highSourceRow, column}, highSource});
+  highBody.addInstruction(Instruction{
+      "getelementptr", {coefficientRow0, highK}, highCoefficient0Address});
+  highBody.addInstruction(Instruction{
+      "getelementptr", {coefficientRow1, highK}, highCoefficient1Address});
+  highBody.addInstruction(
+      Instruction{"load", {"int", highCoefficient0Address}, highCoefficient0});
+  highBody.addInstruction(
+      Instruction{"load", {"int", highCoefficient1Address}, highCoefficient1});
+  highBody.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.shared",
+      {highSource, highCoefficient0, highCoefficient1}});
+  highBody.addInstruction(Instruction{"add", {highK, "1"}, highNextK});
+  highBody.addInstruction(Instruction{"br", {highHeaderName}});
+
+  BasicBlock old0Guard{old0GuardName};
+  old0Guard.addInstruction(
+      Instruction{"icmp.slt", {pattern.row, cutoff0}, includeOld0});
+  old0Guard.addInstruction(
+      Instruction{"br", {includeOld0, old0BodyName, old1Row0GuardName}});
+
+  BasicBlock old0Body{old0BodyName};
+  old0Body.addInstruction(Instruction{
+      "getelementptr", {coefficientRow0, pattern.row}, coefficient00Address});
+  old0Body.addInstruction(
+      Instruction{"load", {"int", coefficient00Address}, coefficient00});
+  old0Body.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.old0.to.row0", {coefficient00}});
+  old0Body.addInstruction(Instruction{"br", {old1Row0GuardName}});
+
+  BasicBlock old1Row0Guard{old1Row0GuardName};
+  old1Row0Guard.addInstruction(
+      Instruction{"icmp.slt", {row1, cutoff0}, includeOld1Row0});
+  old1Row0Guard.addInstruction(Instruction{
+      "br", {includeOld1Row0, old1Row0BodyName, new0ToRow1Name}});
+
+  BasicBlock old1Row0Body{old1Row0BodyName};
+  old1Row0Body.addInstruction(
+      Instruction{"getelementptr", {coefficientRow0, row1},
+                  coefficient01Address});
+  old1Row0Body.addInstruction(
+      Instruction{"load", {"int", coefficient01Address}, coefficient01});
+  old1Row0Body.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.old1.to.row0", {coefficient01}});
+  old1Row0Body.addInstruction(Instruction{"br", {new0ToRow1Name}});
+
+  BasicBlock new0ToRow1{new0ToRow1Name};
+  new0ToRow1.addInstruction(
+      Instruction{"getelementptr", {coefficientRow1, pattern.row},
+                  coefficient10Address});
+  new0ToRow1.addInstruction(
+      Instruction{"load", {"int", coefficient10Address}, coefficient10});
+  new0ToRow1.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.new0.to.row1", {coefficient10}});
+  new0ToRow1.addInstruction(Instruction{"br", {old1Row1GuardName}});
+
+  BasicBlock old1Row1Guard{old1Row1GuardName};
+  old1Row1Guard.addInstruction(
+      Instruction{"icmp.slt", {row1, cutoff1}, includeOld1Row1});
+  old1Row1Guard.addInstruction(
+      Instruction{"br", {includeOld1Row1, old1Row1BodyName, storeName}});
+
+  BasicBlock old1Row1Body{old1Row1BodyName};
+  old1Row1Body.addInstruction(
+      Instruction{"getelementptr", {coefficientRow1, row1},
+                  coefficient11Address});
+  old1Row1Body.addInstruction(
+      Instruction{"load", {"int", coefficient11Address}, coefficient11});
+  old1Row1Body.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.old1.to.row1", {coefficient11}});
+  old1Row1Body.addInstruction(Instruction{"br", {storeName}});
+
+  BasicBlock store{storeName};
+  store.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel.i32x16.store",
+      {destination0, destination1}});
+  store.addInstruction(Instruction{"add", {column, "16"}, nextColumn});
+  store.addInstruction(Instruction{"br", {columnHeaderName}});
+
+  BasicBlock rowLatch{rowLatchName};
+  rowLatch.addInstruction(Instruction{"add", {pattern.row, "2"}, nextRow});
+  rowLatch.addInstruction(Instruction{"br", {rowBlock->second}});
+
+  auto rowPhiOperands = rowDefinition->second->operands();
+  rowPhiOperands.push_back(nextRow);
+  rowPhiOperands.push_back(rowLatchName);
+  for (auto &instruction : rowHeader->instructions()) {
+    if (instruction.result() == pattern.row && instruction.opcode() == "phi") {
+      instruction =
+          Instruction{"phi", std::move(rowPhiOperands), pattern.row};
+      break;
+    }
+  }
+
+  function.addBlock(std::move(guard));
+  function.addBlock(std::move(setup));
+  function.addBlock(std::move(suffix0Header));
+  function.addBlock(std::move(suffix0Body));
+  function.addBlock(std::move(suffix1Header));
+  function.addBlock(std::move(suffix1Body));
+  function.addBlock(std::move(columnHeader));
+  function.addBlock(std::move(columnBody));
+  function.addBlock(std::move(prefixHeader));
+  function.addBlock(std::move(prefixBody));
+  function.addBlock(std::move(highHeader));
+  function.addBlock(std::move(highBody));
+  function.addBlock(std::move(old0Guard));
+  function.addBlock(std::move(old0Body));
+  function.addBlock(std::move(old1Row0Guard));
+  function.addBlock(std::move(old1Row0Body));
+  function.addBlock(std::move(new0ToRow1));
+  function.addBlock(std::move(old1Row1Guard));
+  function.addBlock(std::move(old1Row1Body));
+  function.addBlock(std::move(store));
+  function.addBlock(std::move(rowLatch));
   return true;
 }
 
@@ -1783,11 +2206,18 @@ void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
   for (auto& function : module.functions()) {
     auto candidate = findCandidate(function);
     if (candidate.has_value()) {
+      std::optional<UniformSuffixPattern> uniformPattern;
       if (useAArch64VectorAccumulator_) {
+        uniformPattern = findUniformSuffixPattern(function, *candidate);
         foldUniformSuffixContribution(function, *candidate);
       }
-      transform(function, *candidate, jamFactor_,
-                useAArch64VectorAccumulator_);
+      const bool transformed =
+          transform(function, *candidate, jamFactor_,
+                    useAArch64VectorAccumulator_);
+      if (transformed && uniformPattern.has_value() &&
+          useAArch64VectorAccumulator_) {
+        buildOrderedTwoRowPanel(function, *candidate, *uniformPattern);
+      }
     }
   }
 }

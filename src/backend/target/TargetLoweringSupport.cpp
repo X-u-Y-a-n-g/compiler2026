@@ -501,6 +501,37 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.ordered.panel.i32x16.init") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]), lowerValueOperand(operands[1]),
+            lowerValueOperand(operands[2], ValueType::int32Type()),
+            lowerValueOperand(operands[3], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.ordered.panel.i32x16.shared") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1], ValueType::int32Type()),
+            lowerValueOperand(operands[2], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.ordered.panel.i32x16.old0.to.row0" ||
+        opcode == "aarch64.neon.ordered.panel.i32x16.old1.to.row0" ||
+        opcode == "aarch64.neon.ordered.panel.i32x16.new0.to.row1" ||
+        opcode == "aarch64.neon.ordered.panel.i32x16.old1.to.row1") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.ordered.panel.i32x16.store") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]), lowerValueOperand(operands[1])});
+      return;
+    }
+
     if (opcode == "aarch64.neon.reduce.mls.i32x8.init") {
       emit(block, opcode, {},
            {lowerValueOperand(operands[0], ValueType::int32Type())});
