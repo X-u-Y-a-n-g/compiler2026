@@ -175,7 +175,8 @@ bool vectorRegistersAreCompatible(const Function &function) {
           opcode == "aarch64.neon.dup.acc.i32x32" ||
           opcode == "aarch64.neon.mla.acc.i32x32" ||
           opcode == "aarch64.neon.store.acc.i32x32" ||
-          opcode.rfind("aarch64.neon.reduce.mls.i32x8.", 0) == 0) {
+          opcode.rfind("aarch64.neon.reduce.mls.i32x8.", 0) == 0 ||
+          opcode.rfind("aarch64.neon.reduce4.mls.i32x8.", 0) == 0) {
         continue;
       }
       return false;
@@ -837,19 +838,18 @@ bool transformScalarInterleave(Function &function,
   BasicBlock guard{guardName};
   guard.addInstruction(
       Instruction{"icmp.sgt", {candidate.bound, "1"}, hasPair});
-  guard.addInstruction(
-      Instruction{"br", {hasPair, prepareName, combineName}});
+  guard.addInstruction(Instruction{"br", {hasPair, prepareName, combineName}});
 
   BasicBlock prepare{prepareName};
-  prepare.addInstruction(Instruction{"ashr", {candidate.bound, "1"}, pairCount});
+  prepare.addInstruction(
+      Instruction{"ashr", {candidate.bound, "1"}, pairCount});
   prepare.addInstruction(Instruction{"shl", {pairCount, "1"}, pairSpan});
   prepare.addInstruction(Instruction{"br", {pairBodyName}});
 
   BasicBlock pairBody{pairBodyName};
   pairBody.addInstruction(
       Instruction{"phi",
-                  {"int", "0", prepareName,
-                   pairIndexBackedge, pairLatchName},
+                  {"int", "0", prepareName, pairIndexBackedge, pairLatchName},
                   pairIndex});
   pairBody.addInstruction(
       Instruction{"phi",
@@ -858,12 +858,12 @@ bool transformScalarInterleave(Function &function,
                   primary});
   pairBody.addInstruction(
       Instruction{"phi",
-                  {"int", "0", prepareName,
-                   secondaryBackedge, pairLatchName},
+                  {"int", "0", prepareName, secondaryBackedge, pairLatchName},
                   secondary});
   pairBody.addInstruction(
-      Instruction{"phi", {"int", pairCount, prepareName, nextRemaining,
-                            pairLatchName}, remaining});
+      Instruction{"phi",
+                  {"int", pairCount, prepareName, nextRemaining, pairLatchName},
+                  remaining});
   pairBody.addInstruction(Instruction{"add", {pairIndex, "1"}, nextIndex});
   if (!interleaveScalarInstructions(pairBody, std::move(firstLane),
                                     std::move(secondLane))) {
@@ -874,25 +874,23 @@ bool transformScalarInterleave(Function &function,
   BasicBlock pairLatch{pairLatchName};
   pairLatch.addInstruction(
       Instruction{"add", {pairIndex, "2"}, pairIndexBackedge});
-  pairLatch.addInstruction(
-      Instruction{"sub", {remaining, "1"}, nextRemaining});
+  pairLatch.addInstruction(Instruction{"sub", {remaining, "1"}, nextRemaining});
   pairLatch.addInstruction(
       Instruction{"icmp.ne", {nextRemaining, "0"}, hasMore});
   pairLatch.addInstruction(
       Instruction{"br", {hasMore, pairBodyName, combineName}});
 
   BasicBlock combine{combineName};
+  combine.addInstruction(Instruction{
+      "phi", {"int", "0", guardName, pairSpan, pairLatchName}, finalIndex});
   combine.addInstruction(
-      Instruction{"phi", {"int", "0", guardName,
-                            pairSpan, pairLatchName},
-                  finalIndex});
-  combine.addInstruction(
-      Instruction{"phi", {"int", candidate.initialAccumulator, guardName,
-                            primaryBackedge, pairLatchName},
+      Instruction{"phi",
+                  {"int", candidate.initialAccumulator, guardName,
+                   primaryBackedge, pairLatchName},
                   finalPrimary});
   combine.addInstruction(
-      Instruction{"phi", {"int", "0", guardName,
-                            secondaryBackedge, pairLatchName},
+      Instruction{"phi",
+                  {"int", "0", guardName, secondaryBackedge, pairLatchName},
                   finalSecondary});
   combine.addInstruction(
       Instruction{"add", {finalPrimary, finalSecondary}, combined});
