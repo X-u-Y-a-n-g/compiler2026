@@ -915,3 +915,20 @@ ARMv8-A `MLA/ADDV` 语义；未复制外部编译器实现。
 pseudo 降低、动态边界差分、60/140 门禁和汇编隔离。技术依据为有序
 in-place triangular recurrence、small register tiling、dependence
 preservation 和 ARMv8-A Advanced SIMD；未复制外部编译器实现。
+
+## 2026-07-28 many_mat 完全重复行摘要静态可用性审查
+
+- 目标形态为对可证明相同的连续源行
+  `A[k][:] = commonRow[:]`，把逐行乘加改写为
+  `(sum C[i][k]) * commonRow[:]`。合法证明只能来自支配目标计算的完整行
+  写入或无逃逸行复制，不能根据 `getarray` 的运行时内容猜测两行相同。
+- 当前 many_mat 中唯一可静态证明相同的连续行，是 A 后半区被完整写成
+  常量 `-1` 的区域。现有 `UniformSuffixPattern` 已把该区间直接折叠为
+  `sum(C[i][k] * -1)` 的标量初值；它既不加载 commonRow，也不执行额外
+  向量乘法，严格优于重复行摘要的一般形式。
+- A 前半区来自逐行 `getarray`，后半区在有序原地递推中又会逐行变成不同的
+  计算结果；没有其他可证明的非恒定 commonRow 区域。B/C 的结构不能作为
+  A 源行相等证明。
+- 状态：B，无新增合法命中，不实现 pass。若以后出现支配目标循环的完整
+  非恒定行复制或可证明相同的静态初始化器，再复用该摘要公式；不使用输入
+  相等、固定规模或用例身份触发。
