@@ -22,6 +22,7 @@ add_library(compiler_lib
   src/midend/pass/AffineModularRecurrencePass.cpp
   src/midend/pass/AArch64IntegerDotReductionPass.cpp
   src/midend/pass/AArch64VectorConstantRemainderPass.cpp
+  src/midend/pass/ArraySummaryDimensionCollapsePass.cpp
   src/midend/pass/ArrayDimensionLayoutPass.cpp
   src/midend/pass/BitwiseIdiomRecognitionPass.cpp
   src/midend/pass/BoundedModuloReductionPass.cpp

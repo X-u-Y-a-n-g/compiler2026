@@ -1,0 +1,71 @@
+const int SIDE = 8;
+int weights[SIDE][SIDE];
+int payload[SIDE][SIDE];
+int scratch[SIDE][SIDE];
+
+void update_grid(int count, int factor[][SIDE], int source[][SIDE],
+                 int destination[][SIDE]) {
+  int row, column, stage;
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      destination[row][column] = 0;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  stage = 0;
+  while (stage < count) {
+    row = 0;
+    while (row < count) {
+      if (factor[row][stage] == 1) {
+        row = row + 1;
+        continue;
+      }
+      column = 0;
+      while (column < count) {
+        destination[row][column] =
+            destination[row][column] * factor[row][stage] +
+            source[stage][column];
+        column = column + 1;
+      }
+      row = row + 1;
+    }
+    stage = stage + 1;
+  }
+}
+
+int main() {
+  int count, row, column, round, answer;
+  count = getint();
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      weights[row][column] = row - column - 2;
+      payload[row][column] = row * 13 + column * 17 - 9;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  round = 0;
+  while (round < 2) {
+    update_grid(count, weights, payload, scratch);
+    update_grid(count, weights, scratch, payload);
+    round = round + 1;
+  }
+  answer = payload[1][2];
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      answer = answer + payload[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(answer);
+  putch(10);
+  return 0;
+}

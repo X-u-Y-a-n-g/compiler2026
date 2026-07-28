@@ -25,6 +25,7 @@
 #include "../../include/compiler/ir/printer/IRPrinter.h"
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
+#include "../../include/compiler/midend/pass/ArraySummaryDimensionCollapsePass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
 #include "../../include/compiler/midend/pass/AArch64VectorConstantRemainderPass.h"
@@ -227,6 +228,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineModularRecurrencePass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::ArraySummaryDimensionCollapsePass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineArrayCopyPropagationPass>());
     passManager.add(

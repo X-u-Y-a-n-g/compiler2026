@@ -1,0 +1,65 @@
+const int LIMIT = 7;
+int scale[LIMIT][LIMIT];
+int state[LIMIT][LIMIT];
+
+void fold_rows(int count, int factor[][LIMIT], int source[][LIMIT],
+               int destination[][LIMIT]) {
+  int row, column, stage;
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      destination[row][column] = 0;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  stage = 0;
+  while (stage < count) {
+    row = 0;
+    while (row < count) {
+      if (factor[row][stage] == 1) {
+        row = row + 1;
+        continue;
+      }
+      column = 0;
+      while (column < count) {
+        destination[row][column] =
+            destination[row][column] * factor[row][stage] +
+            source[stage][column];
+        column = column + 1;
+      }
+      row = row + 1;
+    }
+    stage = stage + 1;
+  }
+}
+
+int main() {
+  int count, row, column, answer;
+  count = getint();
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      scale[row][column] = row - column;
+      state[row][column] = row * 23 + column + 5;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  fold_rows(count, scale, state, state);
+  answer = 0;
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      answer = answer + state[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(answer);
+  putch(10);
+  return 0;
+}

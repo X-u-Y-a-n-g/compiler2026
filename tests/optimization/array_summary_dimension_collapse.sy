@@ -1,0 +1,74 @@
+const int WIDTH = 9;
+int coefficients[WIDTH][WIDTH];
+int left_state[WIDTH][WIDTH];
+int right_state[WIDTH][WIDTH];
+
+void affine_rows(int count, int factor[][WIDTH], int source[][WIDTH],
+                 int destination[][WIDTH]) {
+  int row, column, stage;
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      destination[row][column] = 0;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+
+  stage = 0;
+  while (stage < count) {
+    row = 0;
+    while (row < count) {
+      if (factor[row][stage] == 1) {
+        row = row + 1;
+        continue;
+      }
+      column = 0;
+      while (column < count) {
+        destination[row][column] =
+            destination[row][column] * factor[row][stage] +
+            source[stage][column];
+        column = column + 1;
+      }
+      row = row + 1;
+    }
+    stage = stage + 1;
+  }
+}
+
+int main() {
+  int count, row, column, round, answer;
+  count = getint();
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      coefficients[row][column] = (row * 11 - column * 7) % 6;
+      left_state[row][column] = row * 1073741823 + column * 19 - 31;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+
+  round = 0;
+  while (round < 3) {
+    affine_rows(count, coefficients, left_state, right_state);
+    affine_rows(count, coefficients, right_state, left_state);
+    round = round + 1;
+  }
+
+  answer = 0;
+  row = 0;
+  while (row < count) {
+    column = 0;
+    while (column < count) {
+      answer = answer + left_state[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(answer);
+  putch(10);
+  return 0;
+}
