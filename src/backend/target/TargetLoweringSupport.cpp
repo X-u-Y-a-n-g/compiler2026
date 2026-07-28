@@ -39,12 +39,11 @@ struct ValueBinding {
   int index = -1;
 };
 
-ObjectType parseObjectType(const std::string &text) {
+ObjectType parseObjectType(const std::string& text) {
   ObjectType type;
 
   std::size_t index = text.find('[');
-  const std::string base =
-      index == std::string::npos ? text : text.substr(0, index);
+  const std::string base = index == std::string::npos ? text : text.substr(0, index);
   if (base == "bool") {
     type.scalar = ObjectType::ScalarKind::Bool;
   } else if (base == "float") {
@@ -65,8 +64,8 @@ ObjectType parseObjectType(const std::string &text) {
     if (close == index + 1) {
       type.extents.push_back(std::nullopt);
     } else {
-      type.extents.push_back(static_cast<std::size_t>(std::strtoull(
-          text.substr(index + 1, close - index - 1).c_str(), nullptr, 10)));
+      type.extents.push_back(static_cast<std::size_t>(
+          std::strtoull(text.substr(index + 1, close - index - 1).c_str(), nullptr, 10)));
     }
     index = text.find('[', close + 1);
   }
@@ -74,24 +73,24 @@ ObjectType parseObjectType(const std::string &text) {
   return type;
 }
 
-ValueType scalarValueTypeFromObject(const ObjectType &objectType) {
+ValueType scalarValueTypeFromObject(const ObjectType& objectType) {
   return ValueType::fromScalarObject(objectType);
 }
 
-ValueType parameterValueType(const ObjectType &objectType) {
+ValueType parameterValueType(const ObjectType& objectType) {
   if (objectType.isArray()) {
     return ValueType::pointerTo(objectType);
   }
   return scalarValueTypeFromObject(objectType);
 }
 
-bool isFloatLiteralText(const std::string &text) {
+bool isFloatLiteralText(const std::string& text) {
   return text.find_first_of(".eEpP") != std::string::npos;
 }
 
-bool parseIntegerLiteral(const std::string &text, std::int64_t &value) {
+bool parseIntegerLiteral(const std::string& text, std::int64_t& value) {
   errno = 0;
-  char *end = nullptr;
+  char* end = nullptr;
   const auto parsed = std::strtoll(text.c_str(), &end, 0);
   if (errno == ERANGE || end == nullptr || *end != '\0') {
     return false;
@@ -100,9 +99,9 @@ bool parseIntegerLiteral(const std::string &text, std::int64_t &value) {
   return true;
 }
 
-bool parseFloatLiteral(const std::string &text, double &value) {
+bool parseFloatLiteral(const std::string& text, double& value) {
   errno = 0;
-  char *end = nullptr;
+  char* end = nullptr;
   const auto parsed = std::strtod(text.c_str(), &end);
   if (errno == ERANGE || end == nullptr || *end != '\0') {
     return false;
@@ -111,63 +110,52 @@ bool parseFloatLiteral(const std::string &text, double &value) {
   return true;
 }
 
-std::string stripGlobalPrefix(const std::string &symbol) {
+std::string stripGlobalPrefix(const std::string& symbol) {
   if (!symbol.empty() && symbol.front() == '@') {
     return symbol.substr(1);
   }
   return symbol;
 }
 
-std::unordered_map<std::string, FunctionSignature>
-collectFunctionSignatures(const compiler::ir::core::Module &module) {
+std::unordered_map<std::string, FunctionSignature> collectFunctionSignatures(
+    const compiler::ir::core::Module& module) {
   std::unordered_map<std::string, FunctionSignature> signatures;
 
-  for (const auto &function : module.functions()) {
+  for (const auto& function : module.functions()) {
     FunctionSignature signature;
-    signature.returnType =
-        scalarValueTypeFromObject(parseObjectType(function.returnType()));
+    signature.returnType = scalarValueTypeFromObject(parseObjectType(function.returnType()));
     signature.parameters.reserve(function.parameters().size());
-    for (const auto &parameter : function.parameters()) {
-      signature.parameters.push_back(
-          parameterValueType(parseObjectType(parameter.type)));
+    for (const auto& parameter : function.parameters()) {
+      signature.parameters.push_back(parameterValueType(parseObjectType(parameter.type)));
     }
     signatures.emplace(function.name(), std::move(signature));
   }
 
-  auto addBuiltin = [&](std::string name, ValueType returnType,
-                        std::vector<ValueType> parameters) {
-    signatures.emplace(
-        std::move(name),
-        FunctionSignature{std::move(returnType), std::move(parameters)});
+  auto addBuiltin = [&](std::string name, ValueType returnType, std::vector<ValueType> parameters) {
+    signatures.emplace(std::move(name), FunctionSignature{std::move(returnType), std::move(parameters)});
   };
 
   addBuiltin("getint", ValueType::int32Type(), {});
   addBuiltin("getch", ValueType::int32Type(), {});
   addBuiltin("getfloat", ValueType::float32Type(), {});
-  addBuiltin("getarray", ValueType::int32Type(),
-             {ValueType::pointerTo(parseObjectType("int"))});
-  addBuiltin("getfarray", ValueType::int32Type(),
-             {ValueType::pointerTo(parseObjectType("float"))});
+  addBuiltin("getarray", ValueType::int32Type(), {ValueType::pointerTo(parseObjectType("int"))});
+  addBuiltin("getfarray", ValueType::int32Type(), {ValueType::pointerTo(parseObjectType("float"))});
   addBuiltin("putint", ValueType::voidType(), {ValueType::int32Type()});
   addBuiltin("putch", ValueType::voidType(), {ValueType::int32Type()});
   addBuiltin("putfloat", ValueType::voidType(), {ValueType::float32Type()});
-  addBuiltin(
-      "putarray", ValueType::voidType(),
-      {ValueType::int32Type(), ValueType::pointerTo(parseObjectType("int"))});
-  addBuiltin(
-      "putfarray", ValueType::voidType(),
-      {ValueType::int32Type(), ValueType::pointerTo(parseObjectType("float"))});
+  addBuiltin("putarray", ValueType::voidType(),
+             {ValueType::int32Type(), ValueType::pointerTo(parseObjectType("int"))});
+  addBuiltin("putfarray", ValueType::voidType(),
+             {ValueType::int32Type(), ValueType::pointerTo(parseObjectType("float"))});
   addBuiltin("starttime", ValueType::voidType(), {});
   addBuiltin("stoptime", ValueType::voidType(), {});
-  addBuiltin("_sysy_starttime", ValueType::voidType(),
-             {ValueType::int32Type()});
+  addBuiltin("_sysy_starttime", ValueType::voidType(), {ValueType::int32Type()});
   addBuiltin("_sysy_stoptime", ValueType::voidType(), {ValueType::int32Type()});
 
   return signatures;
 }
 
-ValueType inferImmediateType(const std::string &text,
-                             const std::optional<ValueType> &hint) {
+ValueType inferImmediateType(const std::string& text, const std::optional<ValueType>& hint) {
   if (hint.has_value() && !hint->isVoid()) {
     return *hint;
   }
@@ -178,34 +166,30 @@ ValueType inferImmediateType(const std::string &text,
 }
 
 class FunctionLoweringContext {
-public:
-  FunctionLoweringContext(
-      const compiler::backend::target::TargetInfo &target,
-      const std::unordered_map<std::string, FunctionSignature> &signatures,
-      const std::unordered_map<std::string, ObjectType> &globalTypes,
-      const compiler::ir::core::Function &function)
-      : target_(target), signatures_(signatures), globalTypes_(globalTypes),
-        function_(function) {}
+ public:
+  FunctionLoweringContext(const compiler::backend::target::TargetInfo& target,
+                         const std::unordered_map<std::string, FunctionSignature>& signatures,
+                         const std::unordered_map<std::string, ObjectType>& globalTypes,
+                         const compiler::ir::core::Function& function)
+      : target_(target), signatures_(signatures), globalTypes_(globalTypes), function_(function) {}
 
   MachineFunction run() {
     machineFunction_.name = function_.name();
-    machineFunction_.returnType =
-        scalarValueTypeFromObject(parseObjectType(function_.returnType()));
+    machineFunction_.returnType = scalarValueTypeFromObject(parseObjectType(function_.returnType()));
     machineFunction_.parameters.reserve(function_.parameters().size());
-    for (const auto &parameter : function_.parameters()) {
+    for (const auto& parameter : function_.parameters()) {
       const ObjectType objectType = parseObjectType(parameter.type);
       const ValueType valueType = parameterValueType(objectType);
-      bindings_[parameter.name] =
-          ValueBinding{ValueBinding::Kind::Virtual, valueType, -1};
+      bindings_[parameter.name] = ValueBinding{ValueBinding::Kind::Virtual, valueType, -1};
       machineFunction_.parameters.push_back({parameter.name, valueType, -1});
     }
 
     bool isEntryBlock = true;
-    for (const auto &block : function_.blocks()) {
+    for (const auto& block : function_.blocks()) {
       currentBlockIsEntry_ = isEntryBlock;
       MachineBlock machineBlock;
       machineBlock.name = block.name();
-      for (const auto &instruction : block.instructions()) {
+      for (const auto& instruction : block.instructions()) {
         lowerInstruction(machineBlock, instruction);
       }
       machineFunction_.blocks.push_back(std::move(machineBlock));
@@ -215,14 +199,13 @@ public:
     return machineFunction_;
   }
 
-private:
-  MachineOperand bindVirtualResult(const std::string &name, ValueType type) {
+ private:
+  MachineOperand bindVirtualResult(const std::string& name, ValueType type) {
     bindings_[name] = ValueBinding{ValueBinding::Kind::Virtual, type, -1};
     return MachineOperand::virtualRegister(name, std::move(type));
   }
 
-  int addStackObject(const std::string &name, const ObjectType &objectType,
-                     StackObjectKind kind) {
+  int addStackObject(const std::string& name, const ObjectType& objectType, StackObjectKind kind) {
     StackObject object;
     object.kind = kind;
     object.name = name;
@@ -234,9 +217,9 @@ private:
     return static_cast<int>(machineFunction_.stackObjects.size() - 1);
   }
 
-  ValueType inferIntegerType(const std::vector<std::string> &operands) const {
+  ValueType inferIntegerType(const std::vector<std::string>& operands) const {
     ValueType inferred = ValueType::int32Type();
-    for (const auto &operand : operands) {
+    for (const auto& operand : operands) {
       if (operand.empty() || operand.front() != '%') {
         continue;
       }
@@ -254,7 +237,7 @@ private:
     return inferred;
   }
 
-  ValueType inferValueType(const std::string &operand) const {
+  ValueType inferValueType(const std::string& operand) const {
     if (!operand.empty() && operand.front() == '%') {
       const auto found = bindings_.find(operand);
       if (found != bindings_.end()) {
@@ -273,29 +256,25 @@ private:
     return ValueType::int32Type();
   }
 
-  MachineOperand lowerValueOperand(
-      const std::string &operand,
-      std::optional<ValueType> expectedType = std::nullopt) const {
+  MachineOperand lowerValueOperand(const std::string& operand,
+                                   std::optional<ValueType> expectedType = std::nullopt) const {
     if (!operand.empty() && operand.front() == '%') {
       const auto found = bindings_.find(operand);
       if (found != bindings_.end()) {
         if (found->second.kind == ValueBinding::Kind::FrameIndex) {
-          return MachineOperand::frameIndex(found->second.index,
-                                            found->second.type);
+          return MachineOperand::frameIndex(found->second.index, found->second.type);
         }
         return MachineOperand::virtualRegister(operand, found->second.type);
       }
       return MachineOperand::virtualRegister(
-          operand,
-          expectedType.has_value() ? *expectedType : ValueType::int32Type());
+          operand, expectedType.has_value() ? *expectedType : ValueType::int32Type());
     }
 
     if (!operand.empty() && operand.front() == '@') {
       const std::string symbol = stripGlobalPrefix(operand);
       const auto found = globalTypes_.find(symbol);
       if (found != globalTypes_.end()) {
-        return MachineOperand::globalAddress(
-            symbol, ValueType::pointerTo(found->second));
+        return MachineOperand::globalAddress(symbol, ValueType::pointerTo(found->second));
       }
       return MachineOperand::functionSymbol(symbol);
     }
@@ -312,30 +291,25 @@ private:
     return MachineOperand::immediateInt(value, immediateType);
   }
 
-  void emit(MachineBlock &block, std::string opcode,
+  void emit(MachineBlock& block, std::string opcode, std::vector<MachineOperand> operands) const {
+    block.instructions.push_back(MachineInstruction::target(std::move(opcode), std::move(operands)));
+  }
+
+  void emit(MachineBlock& block, std::string opcode, MachineOperand result,
             std::vector<MachineOperand> operands) const {
     block.instructions.push_back(
-        MachineInstruction::target(std::move(opcode), std::move(operands)));
+        MachineInstruction::target(std::move(opcode), std::move(result), std::move(operands)));
   }
 
-  void emit(MachineBlock &block, std::string opcode, MachineOperand result,
-            std::vector<MachineOperand> operands) const {
-    block.instructions.push_back(MachineInstruction::target(
-        std::move(opcode), std::move(result), std::move(operands)));
-  }
-
-  void lowerInstruction(MachineBlock &block,
-                        const compiler::ir::core::Instruction &instruction) {
-    const std::string &opcode = instruction.opcode();
-    const auto &operands = instruction.operands();
+  void lowerInstruction(MachineBlock& block, const compiler::ir::core::Instruction& instruction) {
+    const std::string& opcode = instruction.opcode();
+    const auto& operands = instruction.operands();
 
     if (opcode == "alloca") {
       const ObjectType objectType = parseObjectType(operands[0]);
-      const int objectIndex = addStackObject(instruction.result(), objectType,
-                                             StackObjectKind::Local);
+      const int objectIndex = addStackObject(instruction.result(), objectType, StackObjectKind::Local);
       bindings_[instruction.result()] =
-          ValueBinding{ValueBinding::Kind::FrameIndex,
-                       ValueType::pointerTo(objectType), objectIndex};
+          ValueBinding{ValueBinding::Kind::FrameIndex, ValueType::pointerTo(objectType), objectIndex};
       return;
     }
 
@@ -352,12 +326,11 @@ private:
       const ValueType resultType = scalarValueTypeFromObject(objectType);
       std::vector<compiler::backend::mir::MachinePhiIncoming> incoming;
       for (std::size_t i = 1; i + 1 < operands.size(); i += 2) {
-        incoming.push_back(
-            {operands[i + 1], lowerValueOperand(operands[i], resultType)});
+        incoming.push_back({operands[i + 1], lowerValueOperand(operands[i], resultType)});
       }
-      block.instructions.push_back(MachineInstruction::phi(
-          bindVirtualResult(instruction.result(), resultType),
-          std::move(incoming)));
+      block.instructions.push_back(
+          MachineInstruction::phi(bindVirtualResult(instruction.result(), resultType),
+                                  std::move(incoming)));
       return;
     }
 
@@ -365,8 +338,7 @@ private:
       const ObjectType objectType = parseObjectType(operands[0]);
       const ValueType valueType = scalarValueTypeFromObject(objectType);
       emit(block, opcode,
-           {lowerValueOperand(operands[1], valueType),
-            lowerValueOperand(operands[2])});
+           {lowerValueOperand(operands[1], valueType), lowerValueOperand(operands[2])});
       return;
     }
 
@@ -376,8 +348,7 @@ private:
       } else {
         emit(block, opcode,
              {lowerValueOperand(operands[0], ValueType::boolType()),
-              MachineOperand::label(operands[1]),
-              MachineOperand::label(operands[2])});
+              MachineOperand::label(operands[1]), MachineOperand::label(operands[2])});
       }
       return;
     }
@@ -385,8 +356,7 @@ private:
     if (opcode == "ret") {
       std::vector<MachineOperand> lowered;
       if (!operands.empty()) {
-        lowered.push_back(
-            lowerValueOperand(operands[0], machineFunction_.returnType));
+        lowered.push_back(lowerValueOperand(operands[0], machineFunction_.returnType));
       }
       emit(block, opcode, std::move(lowered));
       return;
@@ -395,8 +365,7 @@ private:
     if (opcode == "call") {
       const std::string callee = stripGlobalPrefix(operands[0]);
       FunctionSignature signature;
-      if (const auto found = signatures_.find(callee);
-          found != signatures_.end()) {
+      if (const auto found = signatures_.find(callee); found != signatures_.end()) {
         signature = found->second;
       } else {
         signature.returnType = ValueType::int32Type();
@@ -413,8 +382,7 @@ private:
       }
 
       if (instruction.hasResult()) {
-        emit(block, opcode,
-             bindVirtualResult(instruction.result(), signature.returnType),
+        emit(block, opcode, bindVirtualResult(instruction.result(), signature.returnType),
              std::move(lowered));
       } else {
         emit(block, opcode, std::move(lowered));
@@ -422,19 +390,18 @@ private:
       return;
     }
 
-    if (opcode == "gep" || opcode == "gep.linear" ||
-        opcode == "getelementptr" || opcode == "getelementptr.linear") {
+    if (opcode == "gep" || opcode == "gep.linear" || opcode == "getelementptr" ||
+        opcode == "getelementptr.linear") {
       MachineOperand base = lowerValueOperand(operands[0]);
       const ValueType indexType = ValueType::int32Type();
       MachineOperand index = lowerValueOperand(operands[1], indexType);
-      const bool isLinear =
-          opcode == "gep.linear" || opcode == "getelementptr.linear";
+      const bool isLinear = opcode == "gep.linear" || opcode == "getelementptr.linear";
 
-      const std::size_t scale =
-          isLinear ? base.type.pointee.flattenedElementType().size(target_)
-                   : (base.type.pointee.isArray()
-                          ? base.type.pointee.elementType().size(target_)
-                          : base.type.pointee.size(target_));
+      const std::size_t scale = isLinear
+                                    ? base.type.pointee.flattenedElementType().size(target_)
+                                    : (base.type.pointee.isArray()
+                                           ? base.type.pointee.elementType().size(target_)
+                                           : base.type.pointee.size(target_));
       ObjectType resultPointee = base.type.pointee;
       if (isLinear) {
         resultPointee = base.type.pointee.flattenedElementType();
@@ -442,19 +409,15 @@ private:
         resultPointee = base.type.pointee.elementType();
       }
 
-      emit(block, opcode,
-           bindVirtualResult(instruction.result(),
-                             ValueType::pointerTo(resultPointee)),
+      emit(block, opcode, bindVirtualResult(instruction.result(), ValueType::pointerTo(resultPointee)),
            {std::move(base), std::move(index),
-            MachineOperand::immediateInt(static_cast<std::int64_t>(scale),
-                                         ValueType::int64Type())});
+            MachineOperand::immediateInt(static_cast<std::int64_t>(scale), ValueType::int64Type())});
       return;
     }
 
     if (opcode == "neg" || opcode == "fneg") {
-      const ValueType resultType = opcode == "fneg"
-                                       ? ValueType::float32Type()
-                                       : inferValueType(operands[0]);
+      const ValueType resultType =
+          opcode == "fneg" ? ValueType::float32Type() : inferValueType(operands[0]);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
            {lowerValueOperand(operands[0], resultType)});
       return;
@@ -522,7 +485,8 @@ private:
     }
 
     if (opcode == "aarch64.neon.mla.acc.i32x32") {
-      emit(block, opcode, {}, {lowerValueOperand(operands[0])});
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0])});
       return;
     }
 
@@ -545,30 +509,6 @@ private:
     }
 
     if (opcode == "aarch64.neon.reduce.mls.i32x8.finish") {
-      emit(block, opcode,
-           bindVirtualResult(instruction.result(), ValueType::int32Type()), {});
-      return;
-    }
-
-    if (opcode == "aarch64.neon.reduce4.mls.i32x8.init") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0], ValueType::int32Type()),
-            lowerValueOperand(operands[1], ValueType::int32Type()),
-            lowerValueOperand(operands[2], ValueType::int32Type()),
-            lowerValueOperand(operands[3], ValueType::int32Type())});
-      return;
-    }
-
-    if (opcode == "aarch64.neon.reduce4.mls.i32x8.step") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0]), lowerValueOperand(operands[1]),
-            lowerValueOperand(operands[2]), lowerValueOperand(operands[3]),
-            lowerValueOperand(operands[4]),
-            lowerValueOperand(operands[5], ValueType::int32Type())});
-      return;
-    }
-
-    if (opcode.rfind("aarch64.neon.reduce4.mls.i32x8.finish.", 0) == 0) {
       emit(block, opcode,
            bindVirtualResult(instruction.result(), ValueType::int32Type()), {});
       return;
@@ -601,7 +541,7 @@ private:
         opcode == "aarch64.neon.pure.map.srem.i32x4") {
       std::vector<MachineOperand> lowered;
       lowered.reserve(operands.size());
-      for (const auto &operand : operands) {
+      for (const auto& operand : operands) {
         lowered.push_back(lowerValueOperand(operand, ValueType::int32Type()));
       }
       emit(block, opcode, {}, std::move(lowered));
@@ -630,9 +570,8 @@ private:
       return;
     }
 
-    if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
-        opcode == "trunc" || opcode == "sitofp" || opcode == "uitofp" ||
-        opcode == "fptosi") {
+    if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc" ||
+        opcode == "sitofp" || opcode == "uitofp" || opcode == "fptosi") {
       const ObjectType targetObjectType = parseObjectType(operands[1]);
       const ValueType resultType = scalarValueTypeFromObject(targetObjectType);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
@@ -640,15 +579,13 @@ private:
       return;
     }
 
-    if (opcode == "add" || opcode == "sub" || opcode == "mul" ||
-        opcode == "div" || opcode == "mod" || opcode == "sdiv" ||
-        opcode == "srem" || opcode == "and" || opcode == "or" ||
-        opcode == "xor" || opcode == "shl" || opcode == "ashr" ||
+    if (opcode == "add" || opcode == "sub" || opcode == "mul" || opcode == "div" ||
+        opcode == "mod" || opcode == "sdiv" || opcode == "srem" || opcode == "and" ||
+        opcode == "or" || opcode == "xor" || opcode == "shl" || opcode == "ashr" ||
         opcode == "lshr") {
       const ValueType resultType = inferIntegerType(operands);
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
-           {lowerValueOperand(operands[0], resultType),
-            lowerValueOperand(operands[1], resultType)});
+           {lowerValueOperand(operands[0], resultType), lowerValueOperand(operands[1], resultType)});
       return;
     }
 
@@ -661,65 +598,57 @@ private:
       return;
     }
 
-    if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" ||
-        opcode == "fdiv") {
+    if (opcode == "fadd" || opcode == "fsub" || opcode == "fmul" || opcode == "fdiv") {
       const ValueType resultType = ValueType::float32Type();
       emit(block, opcode, bindVirtualResult(instruction.result(), resultType),
-           {lowerValueOperand(operands[0], resultType),
-            lowerValueOperand(operands[1], resultType)});
+           {lowerValueOperand(operands[0], resultType), lowerValueOperand(operands[1], resultType)});
       return;
     }
 
     if (opcode.rfind("icmp.", 0) == 0) {
       const ValueType compareType = inferIntegerType(operands);
-      emit(block, opcode,
-           bindVirtualResult(instruction.result(), ValueType::boolType()),
-           {lowerValueOperand(operands[0], compareType),
-            lowerValueOperand(operands[1], compareType)});
+      emit(block, opcode, bindVirtualResult(instruction.result(), ValueType::boolType()),
+           {lowerValueOperand(operands[0], compareType), lowerValueOperand(operands[1], compareType)});
       return;
     }
 
     if (opcode.rfind("fcmp.", 0) == 0) {
       const ValueType compareType = ValueType::float32Type();
-      emit(block, opcode,
-           bindVirtualResult(instruction.result(), ValueType::boolType()),
-           {lowerValueOperand(operands[0], compareType),
-            lowerValueOperand(operands[1], compareType)});
+      emit(block, opcode, bindVirtualResult(instruction.result(), ValueType::boolType()),
+           {lowerValueOperand(operands[0], compareType), lowerValueOperand(operands[1], compareType)});
     }
   }
 
-  const compiler::backend::target::TargetInfo &target_;
-  const std::unordered_map<std::string, FunctionSignature> &signatures_;
-  const std::unordered_map<std::string, ObjectType> &globalTypes_;
-  const compiler::ir::core::Function &function_;
+  const compiler::backend::target::TargetInfo& target_;
+  const std::unordered_map<std::string, FunctionSignature>& signatures_;
+  const std::unordered_map<std::string, ObjectType>& globalTypes_;
+  const compiler::ir::core::Function& function_;
   std::unordered_map<std::string, ValueBinding> bindings_;
   bool currentBlockIsEntry_ = false;
   MachineFunction machineFunction_;
 };
 
-} // namespace
+}  // namespace
 
-MachineModule
-lowerModuleDefault(const compiler::ir::core::Module &module,
-                   const compiler::backend::target::TargetInfo &target) {
+MachineModule lowerModuleDefault(const compiler::ir::core::Module& module,
+                                 const compiler::backend::target::TargetInfo& target) {
   MachineModule machineModule{target, {}, {}};
 
   std::unordered_map<std::string, ObjectType> globalTypes;
-  for (const auto &global : module.globals()) {
+  for (const auto& global : module.globals()) {
     const ObjectType type = parseObjectType(global.type());
     globalTypes.emplace(global.name(), type);
-    machineModule.globals.push_back(MachineGlobal{
-        global.name(), type, global.initializer(), global.isConst()});
+    machineModule.globals.push_back(
+        MachineGlobal{global.name(), type, global.initializer(), global.isConst()});
   }
 
   const auto signatures = collectFunctionSignatures(module);
-  for (const auto &function : module.functions()) {
+  for (const auto& function : module.functions()) {
     machineModule.functions.push_back(
-        FunctionLoweringContext(target, signatures, globalTypes, function)
-            .run());
+        FunctionLoweringContext(target, signatures, globalTypes, function).run());
   }
 
   return machineModule;
 }
 
-} // namespace compiler::backend::target::detail
+}  // namespace compiler::backend::target::detail

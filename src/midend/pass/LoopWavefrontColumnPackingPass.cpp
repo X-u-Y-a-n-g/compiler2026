@@ -1,7 +1,6 @@
 #include "../../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <optional>
@@ -475,8 +474,7 @@ std::string fresh(std::unordered_set<std::string> &names,
   }
 }
 
-bool applyCandidate(Function &function, const Candidate &candidate,
-                    bool batchFourRows) {
+bool applyCandidate(Function &function, const Candidate &candidate) {
   auto values = valueNames(function);
   auto blocks = blockNames(function);
   auto entry = std::find_if(function.blocks().begin(), function.blocks().end(),
@@ -498,26 +496,6 @@ bool applyCandidate(Function &function, const Candidate &candidate,
   const std::string packHeaderName = fresh(blocks, "wave.pack.header", false);
   const std::string packBodyName = fresh(blocks, "wave.pack.body", false);
   const std::string lowerSetupName = fresh(blocks, "wave.lower.setup", false);
-  const std::string lowerBatchHeaderName =
-      fresh(blocks, "wave.lower.batch.header", false);
-  const std::string lowerBatchBodyName =
-      fresh(blocks, "wave.lower.batch.body", false);
-  const std::string lowerBatchVectorGuardName =
-      fresh(blocks, "wave.lower.batch.vector.guard", false);
-  const std::string lowerBatchVectorPrepareName =
-      fresh(blocks, "wave.lower.batch.vector.prepare", false);
-  const std::string lowerBatchVectorHeaderName =
-      fresh(blocks, "wave.lower.batch.vector.header", false);
-  const std::string lowerBatchVectorBodyName =
-      fresh(blocks, "wave.lower.batch.vector.body", false);
-  const std::string lowerBatchVectorFinishName =
-      fresh(blocks, "wave.lower.batch.vector.finish", false);
-  const std::string lowerBatchTailHeaderName =
-      fresh(blocks, "wave.lower.batch.tail.header", false);
-  const std::string lowerBatchTailBodyName =
-      fresh(blocks, "wave.lower.batch.tail.body", false);
-  const std::string lowerBatchLatchName =
-      fresh(blocks, "wave.lower.batch.latch", false);
   const std::string lowerHeaderName = fresh(blocks, "wave.lower.header", false);
   const std::string lowerBodyName = fresh(blocks, "wave.lower.body", false);
   const std::string lowerKHeaderName =
@@ -560,78 +538,6 @@ bool applyCandidate(Function &function, const Candidate &candidate,
       fresh(values, "wave.pack.destination", true);
   const std::string packKNext = fresh(values, "wave.pack.k.next", true);
   const std::string lowerStart = fresh(values, "wave.lower.start", true);
-  const std::string lowerBatchRemaining =
-      fresh(values, "wave.lower.batch.remaining", true);
-  const std::string lowerBatchRows =
-      fresh(values, "wave.lower.batch.rows", true);
-  const std::string lowerBatchEnd = fresh(values, "wave.lower.batch.end", true);
-  const std::string lowerBatchRow = fresh(values, "wave.lower.batch.row", true);
-  const std::string hasLowerBatch =
-      fresh(values, "wave.lower.batch.has.row", true);
-  std::array<std::string, 4> lowerBatchRowsIndex;
-  std::array<std::string, 4> lowerBatchRowBases;
-  std::array<std::string, 4> lowerBatchDestinations;
-  std::array<std::string, 4> lowerBatchInitials;
-  std::array<std::string, 4> lowerBatchVectorResults;
-  std::array<std::string, 4> lowerBatchTailAccumulators;
-  std::array<std::string, 4> lowerBatchTailNextAccumulators;
-  std::array<std::string, 4> lowerBatchLeftAddresses;
-  std::array<std::string, 4> lowerBatchLeftValues;
-  std::array<std::string, 4> lowerBatchProducts;
-  std::array<std::string, 4> lowerBatchQuotients;
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    const std::string suffix = std::to_string(lane);
-    lowerBatchRowsIndex[lane] =
-        fresh(values, "wave.lower.batch.row.index." + suffix, true);
-    lowerBatchRowBases[lane] =
-        fresh(values, "wave.lower.batch.row.base." + suffix, true);
-    lowerBatchDestinations[lane] =
-        fresh(values, "wave.lower.batch.destination." + suffix, true);
-    lowerBatchInitials[lane] =
-        fresh(values, "wave.lower.batch.initial." + suffix, true);
-    lowerBatchVectorResults[lane] =
-        fresh(values, "wave.lower.batch.vector.result." + suffix, true);
-    lowerBatchTailAccumulators[lane] =
-        fresh(values, "wave.lower.batch.tail.acc." + suffix, true);
-    lowerBatchTailNextAccumulators[lane] =
-        fresh(values, "wave.lower.batch.tail.acc.next." + suffix, true);
-    lowerBatchLeftAddresses[lane] =
-        fresh(values, "wave.lower.batch.left.addr." + suffix, true);
-    lowerBatchLeftValues[lane] =
-        fresh(values, "wave.lower.batch.left." + suffix, true);
-    lowerBatchProducts[lane] =
-        fresh(values, "wave.lower.batch.product." + suffix, true);
-    lowerBatchQuotients[lane] =
-        fresh(values, "wave.lower.batch.quotient." + suffix, true);
-  }
-  const std::string lowerBatchEnoughK =
-      fresh(values, "wave.lower.batch.enough.k", true);
-  const std::string lowerBatchVectorTrips =
-      fresh(values, "wave.lower.batch.vector.trips", true);
-  const std::string lowerBatchVectorIndex =
-      fresh(values, "wave.lower.batch.vector.index", true);
-  const std::string lowerBatchVectorHasWork =
-      fresh(values, "wave.lower.batch.vector.has.work", true);
-  const std::string lowerBatchVectorNext =
-      fresh(values, "wave.lower.batch.vector.next", true);
-  const std::string lowerBatchTailK =
-      fresh(values, "wave.lower.batch.tail.k", true);
-  const std::string lowerBatchTailHasK =
-      fresh(values, "wave.lower.batch.tail.has.k", true);
-  const std::string lowerBatchPackedAddress =
-      fresh(values, "wave.lower.batch.packed.addr", true);
-  const std::string lowerBatchPackedValue =
-      fresh(values, "wave.lower.batch.packed", true);
-  const std::string lowerBatchTailKNext =
-      fresh(values, "wave.lower.batch.tail.k.next", true);
-  const std::string lowerBatchDiagonalRow =
-      fresh(values, "wave.lower.batch.diagonal.row", true);
-  const std::string lowerBatchDiagonalAddress =
-      fresh(values, "wave.lower.batch.diagonal.addr", true);
-  const std::string lowerBatchDiagonal =
-      fresh(values, "wave.lower.batch.diagonal", true);
-  const std::string lowerBatchRowNext =
-      fresh(values, "wave.lower.batch.row.next", true);
   const std::string lowerRow = fresh(values, "wave.lower.row.index", true);
   const std::string hasLowerRow = fresh(values, "wave.lower.has.row", true);
   const std::string lowerRowBase = fresh(values, "wave.lower.row", true);
@@ -776,191 +682,13 @@ bool applyCandidate(Function &function, const Candidate &candidate,
   BasicBlock lowerSetup{lowerSetupName};
   lowerSetup.addInstruction(
       Instruction{"add", {candidate.rowIndex, "1"}, lowerStart});
-  if (batchFourRows) {
-    lowerSetup.addInstruction(
-        Instruction{"sub", {candidate.bound, lowerStart}, lowerBatchRemaining});
-    lowerSetup.addInstruction(
-        Instruction{"and", {lowerBatchRemaining, "-4"}, lowerBatchRows});
-    lowerSetup.addInstruction(
-        Instruction{"add", {lowerStart, lowerBatchRows}, lowerBatchEnd});
-    lowerSetup.addInstruction(Instruction{"br", {lowerBatchHeaderName}});
-  } else {
-    lowerSetup.addInstruction(Instruction{"br", {lowerHeaderName}});
-  }
-
-  BasicBlock lowerBatchHeader{lowerBatchHeaderName};
-  lowerBatchHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", lowerStart, lowerSetupName, lowerBatchRowNext,
-                   lowerBatchLatchName},
-                  lowerBatchRow});
-  lowerBatchHeader.addInstruction(
-      Instruction{"icmp.slt", {lowerBatchRow, lowerBatchEnd}, hasLowerBatch});
-  lowerBatchHeader.addInstruction(
-      Instruction{"br", {hasLowerBatch, lowerBatchBodyName, lowerHeaderName}});
-
-  BasicBlock lowerBatchBody{lowerBatchBodyName};
-  lowerBatchRowsIndex[0] = lowerBatchRow;
-  for (std::size_t lane = 1; lane < 4; ++lane) {
-    lowerBatchBody.addInstruction(
-        Instruction{"add",
-                    {lowerBatchRow, std::to_string(lane)},
-                    lowerBatchRowsIndex[lane]});
-  }
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    lowerBatchBody.addInstruction(
-        Instruction{"getelementptr",
-                    {candidate.matrixBase, lowerBatchRowsIndex[lane]},
-                    lowerBatchRowBases[lane]});
-    lowerBatchBody.addInstruction(
-        Instruction{"getelementptr",
-                    {lowerBatchRowBases[lane], candidate.rowIndex},
-                    lowerBatchDestinations[lane]});
-    lowerBatchBody.addInstruction(
-        Instruction{"load",
-                    {"int", lowerBatchDestinations[lane]},
-                    lowerBatchInitials[lane]});
-  }
-  lowerBatchBody.addInstruction(Instruction{"br", {lowerBatchVectorGuardName}});
-
-  BasicBlock lowerBatchVectorGuard{lowerBatchVectorGuardName};
-  lowerBatchVectorGuard.addInstruction(
-      Instruction{"icmp.sge", {candidate.rowIndex, "8"}, lowerBatchEnoughK});
-  lowerBatchVectorGuard.addInstruction(
-      Instruction{"br",
-                  {lowerBatchEnoughK, lowerBatchVectorPrepareName,
-                   lowerBatchTailHeaderName}});
-
-  BasicBlock lowerBatchVectorPrepare{lowerBatchVectorPrepareName};
-  lowerBatchVectorPrepare.addInstruction(
-      Instruction{"and", {candidate.rowIndex, "-8"}, lowerBatchVectorTrips});
-  lowerBatchVectorPrepare.addInstruction(
-      Instruction{"aarch64.neon.reduce4.mls.i32x8.init",
-                  {lowerBatchInitials[0], lowerBatchInitials[1],
-                   lowerBatchInitials[2], lowerBatchInitials[3]}});
-  lowerBatchVectorPrepare.addInstruction(
-      Instruction{"br", {lowerBatchVectorHeaderName}});
-
-  BasicBlock lowerBatchVectorHeader{lowerBatchVectorHeaderName};
-  lowerBatchVectorHeader.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", lowerBatchVectorPrepareName,
-                   lowerBatchVectorNext, lowerBatchVectorBodyName},
-                  lowerBatchVectorIndex});
-  lowerBatchVectorHeader.addInstruction(
-      Instruction{"icmp.slt",
-                  {lowerBatchVectorIndex, lowerBatchVectorTrips},
-                  lowerBatchVectorHasWork});
-  lowerBatchVectorHeader.addInstruction(
-      Instruction{"br",
-                  {lowerBatchVectorHasWork, lowerBatchVectorBodyName,
-                   lowerBatchVectorFinishName}});
-
-  BasicBlock lowerBatchVectorBody{lowerBatchVectorBodyName};
-  lowerBatchVectorBody.addInstruction(Instruction{
-      "aarch64.neon.reduce4.mls.i32x8.step",
-      {lowerBatchRowBases[0], lowerBatchRowBases[1], lowerBatchRowBases[2],
-       lowerBatchRowBases[3], packed, lowerBatchVectorIndex}});
-  lowerBatchVectorBody.addInstruction(
-      Instruction{"add", {lowerBatchVectorIndex, "8"}, lowerBatchVectorNext});
-  lowerBatchVectorBody.addInstruction(
-      Instruction{"br", {lowerBatchVectorHeaderName}});
-
-  BasicBlock lowerBatchVectorFinish{lowerBatchVectorFinishName};
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    lowerBatchVectorFinish.addInstruction(Instruction{
-        "aarch64.neon.reduce4.mls.i32x8.finish." + std::to_string(lane),
-        {},
-        lowerBatchVectorResults[lane]});
-  }
-  lowerBatchVectorFinish.addInstruction(
-      Instruction{"br", {lowerBatchTailHeaderName}});
-
-  BasicBlock lowerBatchTailHeader{lowerBatchTailHeaderName};
-  lowerBatchTailHeader.addInstruction(Instruction{
-      "phi",
-      {"int", "0", lowerBatchVectorGuardName, lowerBatchVectorTrips,
-       lowerBatchVectorFinishName, lowerBatchTailKNext, lowerBatchTailBodyName},
-      lowerBatchTailK});
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    lowerBatchTailHeader.addInstruction(Instruction{
-        "phi",
-        {"int", lowerBatchInitials[lane], lowerBatchVectorGuardName,
-         lowerBatchVectorResults[lane], lowerBatchVectorFinishName,
-         lowerBatchTailNextAccumulators[lane], lowerBatchTailBodyName},
-        lowerBatchTailAccumulators[lane]});
-  }
-  lowerBatchTailHeader.addInstruction(Instruction{
-      "icmp.slt", {lowerBatchTailK, candidate.rowIndex}, lowerBatchTailHasK});
-  lowerBatchTailHeader.addInstruction(Instruction{
-      "br", {lowerBatchTailHasK, lowerBatchTailBodyName, lowerBatchLatchName}});
-
-  BasicBlock lowerBatchTailBody{lowerBatchTailBodyName};
-  lowerBatchTailBody.addInstruction(Instruction{
-      "getelementptr", {packed, lowerBatchTailK}, lowerBatchPackedAddress});
-  lowerBatchTailBody.addInstruction(Instruction{
-      "load", {"int", lowerBatchPackedAddress}, lowerBatchPackedValue});
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    lowerBatchTailBody.addInstruction(
-        Instruction{"getelementptr",
-                    {lowerBatchRowBases[lane], lowerBatchTailK},
-                    lowerBatchLeftAddresses[lane]});
-    lowerBatchTailBody.addInstruction(
-        Instruction{"load",
-                    {"int", lowerBatchLeftAddresses[lane]},
-                    lowerBatchLeftValues[lane]});
-    lowerBatchTailBody.addInstruction(
-        Instruction{"mul",
-                    {lowerBatchLeftValues[lane], lowerBatchPackedValue},
-                    lowerBatchProducts[lane]});
-    lowerBatchTailBody.addInstruction(Instruction{
-        "sub",
-        {lowerBatchTailAccumulators[lane], lowerBatchProducts[lane]},
-        lowerBatchTailNextAccumulators[lane]});
-  }
-  lowerBatchTailBody.addInstruction(
-      Instruction{"add", {lowerBatchTailK, "1"}, lowerBatchTailKNext});
-  lowerBatchTailBody.addInstruction(
-      Instruction{"br", {lowerBatchTailHeaderName}});
-
-  BasicBlock lowerBatchLatch{lowerBatchLatchName};
-  lowerBatchLatch.addInstruction(
-      Instruction{"getelementptr",
-                  {candidate.matrixBase, candidate.rowIndex},
-                  lowerBatchDiagonalRow});
-  lowerBatchLatch.addInstruction(
-      Instruction{"getelementptr",
-                  {lowerBatchDiagonalRow, candidate.rowIndex},
-                  lowerBatchDiagonalAddress});
-  lowerBatchLatch.addInstruction(Instruction{
-      "load", {"int", lowerBatchDiagonalAddress}, lowerBatchDiagonal});
-  for (std::size_t lane = 0; lane < 4; ++lane) {
-    lowerBatchLatch.addInstruction(
-        Instruction{"sdiv",
-                    {lowerBatchTailAccumulators[lane], lowerBatchDiagonal},
-                    lowerBatchQuotients[lane]});
-    lowerBatchLatch.addInstruction(Instruction{
-        "store",
-        {"int", lowerBatchQuotients[lane], lowerBatchDestinations[lane]}});
-  }
-  lowerBatchLatch.addInstruction(
-      Instruction{"add", {lowerBatchRow, "4"}, lowerBatchRowNext});
-  lowerBatchLatch.addInstruction(Instruction{"br", {lowerBatchHeaderName}});
+  lowerSetup.addInstruction(Instruction{"br", {lowerHeaderName}});
 
   BasicBlock lowerHeader{lowerHeaderName};
-  if (batchFourRows) {
-    lowerHeader.addInstruction(
-        Instruction{"phi",
-                    {"int", lowerBatchEnd, lowerBatchHeaderName, lowerRowNext,
-                     lowerLatchName},
-                    lowerRow});
-  } else {
-    lowerHeader.addInstruction(
-        Instruction{"phi",
-                    {"int", lowerStart, lowerSetupName, lowerRowNext,
-                     lowerLatchName},
-                    lowerRow});
-  }
+  lowerHeader.addInstruction(Instruction{
+      "phi",
+      {"int", lowerStart, lowerSetupName, lowerRowNext, lowerLatchName},
+      lowerRow});
   lowerHeader.addInstruction(
       Instruction{"icmp.slt", {lowerRow, candidate.bound}, hasLowerRow});
   lowerHeader.addInstruction(
@@ -1058,38 +786,6 @@ bool applyCandidate(Function &function, const Candidate &candidate,
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(lowerSetup));
   ++insertion;
-  if (batchFourRows) {
-    insertion =
-        function.blocks().insert(insertion, std::move(lowerBatchHeader));
-    ++insertion;
-    insertion =
-        function.blocks().insert(insertion, std::move(lowerBatchBody));
-    ++insertion;
-    insertion =
-        function.blocks().insert(insertion, std::move(lowerBatchVectorGuard));
-    ++insertion;
-    insertion = function.blocks().insert(insertion,
-                                         std::move(lowerBatchVectorPrepare));
-    ++insertion;
-    insertion = function.blocks().insert(insertion,
-                                         std::move(lowerBatchVectorHeader));
-    ++insertion;
-    insertion =
-        function.blocks().insert(insertion, std::move(lowerBatchVectorBody));
-    ++insertion;
-    insertion = function.blocks().insert(insertion,
-                                         std::move(lowerBatchVectorFinish));
-    ++insertion;
-    insertion = function.blocks().insert(insertion,
-                                         std::move(lowerBatchTailHeader));
-    ++insertion;
-    insertion = function.blocks().insert(insertion,
-                                         std::move(lowerBatchTailBody));
-    ++insertion;
-    insertion =
-        function.blocks().insert(insertion, std::move(lowerBatchLatch));
-    ++insertion;
-  }
   insertion = function.blocks().insert(insertion, std::move(lowerHeader));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(lowerBody));
@@ -1109,8 +805,6 @@ bool applyCandidate(Function &function, const Candidate &candidate,
 void LoopWavefrontColumnPackingPass::run(Module &module) {
   if (std::getenv("COMPILER_DISABLE_LOOP_WAVEFRONT_COLUMN_PACKING") != nullptr)
     return;
-  const bool batchFourRows =
-      std::getenv("COMPILER_DISABLE_LOOP_WAVEFRONT_BATCH4") == nullptr;
   for (auto &function : module.functions()) {
     std::optional<Candidate> candidate;
     for (const auto &block : function.blocks()) {
@@ -1119,7 +813,7 @@ void LoopWavefrontColumnPackingPass::run(Module &module) {
         break;
     }
     if (candidate.has_value())
-      applyCandidate(function, *candidate, batchFourRows);
+      applyCandidate(function, *candidate);
   }
 }
 
