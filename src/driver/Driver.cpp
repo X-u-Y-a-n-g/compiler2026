@@ -42,6 +42,7 @@
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
+#include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
 #include "../../include/compiler/midend/pass/LoopScalarPromotionPass.h"
 #include "../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
@@ -274,6 +275,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(
           std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::LoopWavefrontColumnPackingPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::LoopInterchangeRowUpdatePass>());
       passManager.add(std::make_unique<

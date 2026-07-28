@@ -1,0 +1,82 @@
+int matrix[12][12];
+int sizes[6];
+
+void initialize_matrix(int seed) {
+    int row = 0;
+    while (row < 12) {
+        int column = 0;
+        while (column < 12) {
+            if (row == column) {
+                matrix[row][column] = 100003 + row * 97 + seed;
+            } else {
+                matrix[row][column] =
+                    (row * 17 + column * 13 + seed * 7) % 19 - 9;
+            }
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+void factor(int count, int values[][12]) {
+    int row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < row) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < column) {
+                current = current -
+                    values[row][reduction] *
+                    values[reduction][column - 1];
+                reduction = reduction + 1;
+            }
+            values[row][column] = current / values[column][column];
+            column = column + 1;
+        }
+        column = row;
+        while (column < count) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < row) {
+                current = current -
+                    values[row][reduction] * values[reduction][column];
+                reduction = reduction + 1;
+            }
+            values[row][column] = current;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+int checksum() {
+    int result = 0;
+    int row = 0;
+    while (row < 12) {
+        int column = 0;
+        while (column < 12) {
+            result = result * 31 + matrix[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    return result;
+}
+
+int main() {
+    int index = 0;
+    while (index < 6) {
+        sizes[index] = getint();
+        index = index + 1;
+    }
+    index = 0;
+    while (index < 6) {
+        initialize_matrix(index + 1);
+        factor(sizes[index], matrix);
+        putint(checksum());
+        putch(10);
+        index = index + 1;
+    }
+    return 0;
+}

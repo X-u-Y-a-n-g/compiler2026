@@ -1,0 +1,59 @@
+int matrix[8][8];
+int observations;
+
+int observe(int value) {
+    observations = observations + 1;
+    return value;
+}
+
+void factor_with_effect(int count, int values[][8]) {
+    int row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < row) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < column) {
+                current = current - values[row][reduction] *
+                    observe(values[reduction][column - 1]);
+                reduction = reduction + 1;
+            }
+            values[row][column] = current / values[column][column];
+            column = column + 1;
+        }
+        column = row;
+        while (column < count) {
+            int current = values[row][column];
+            int reduction = 0;
+            while (reduction < row) {
+                current = current - values[row][reduction] *
+                    values[reduction][column];
+                reduction = reduction + 1;
+            }
+            values[row][column] = current;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+int main() {
+    int row = 0;
+    while (row < 8) {
+        int column = 0;
+        while (column < 8) {
+            if (row == column) {
+                matrix[row][column] = 1009 + row;
+            } else {
+                matrix[row][column] = (row * 7 + column * 5) % 11 - 5;
+            }
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    factor_with_effect(8, matrix);
+    putint(observations);
+    putch(10);
+    putarray(64, matrix);
+    return 0;
+}

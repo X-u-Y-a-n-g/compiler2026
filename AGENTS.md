@@ -6,7 +6,8 @@ These rules are mandatory for every compiler optimization in this repository.
 
 - General IR or Machine IR semantics.
 - Control-flow, dominance, loop, data-flow, alias, escape, and effect analysis.
-- Target-independent cost models and documented RISC-V ISA or microarchitecture properties.
+- Target-independent cost models and documented AArch64 ISA or Cortex-A53
+  microarchitecture properties for the active ARM track.
 - Source-language rules that hold for every valid program covered by the transformation.
 
 ## Prohibited optimization inputs
@@ -22,13 +23,18 @@ These rules are mandatory for every compiler optimization in this repository.
 2. Test structurally varied synthetic cases, boundary values, zero-trip loops, aliasing, overflow, and fallback paths as applicable.
 3. Build and evaluate inside `compiler-impl2026-dev` with `/workspace/build/compiler`.
 4. Before publishing a candidate, run all 60 ARM performance cases in `-O1`
-   mode. They must remain 60/60 AC. Run the 140 ARM correctness cases when a
-   change affects the backend, ABI, unoptimized path, frontend/shared semantic
-   code, or another risk makes that channel relevant.
+   mode. They must remain 60/60 AC, except for an already documented evaluator
+   formatting exception whose final assembly and behavior are unchanged from
+   the parent revision; such an exception must be reported explicitly rather
+   than relabeled AC. Run the 140 ARM correctness cases when a change affects
+   the backend, ABI, unoptimized path, frontend/shared semantic code, or
+   another risk makes that channel relevant.
 5. After the local correctness gates pass, commit and push exactly one
    optimization candidate to the repository-owner-designated ARM delivery
    branch. The repository owner submits that pushed revision to the official
    Cortex-A53 platform; local QEMU and LLVM MCA remain diagnostic evidence only.
+   Pushing the locally validated candidate is a prerequisite for that official
+   submission, so do not wait for Cortex-A53 results before pushing it.
 6. Use the official Cortex-A53 result to decide acceptance. Keep and document a
    meaningful target improvement; promptly revert and push an isolated target
    regression, statistically flat result, or wrong result before developing
