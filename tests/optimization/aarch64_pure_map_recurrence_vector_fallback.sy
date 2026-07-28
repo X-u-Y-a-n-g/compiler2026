@@ -1,0 +1,46 @@
+int table[32];
+
+int fold_with_memory(int start, int limit) {
+  int state = 0;
+  int current = start;
+  while (current < limit) {
+    state = (state + table[current % 32] * 3 + 1) % 97;
+    current = current + 1;
+  }
+  return state;
+}
+
+int fold_with_changing_bound(int start, int bound) {
+  int state = bound;
+  int current = start;
+  while (current < state) {
+    state = (state + current - 3) % 97;
+    current = current + 1;
+  }
+  return state;
+}
+
+int fold_with_changing_step(int start, int limit) {
+  int state = 1;
+  int current = start;
+  while (current < limit) {
+    current = current + state;
+    state = (state + current + 1) % 5 + 1;
+  }
+  return state + current;
+}
+
+int main() {
+  int i = 0;
+  while (i < 32) {
+    table[i] = i * i - 17;
+    i = i + 1;
+  }
+  putint(fold_with_memory(0, 31));
+  putch(10);
+  putint(fold_with_changing_bound(0, 10));
+  putch(10);
+  putint(fold_with_changing_step(0, 20));
+  putch(10);
+  return 0;
+}

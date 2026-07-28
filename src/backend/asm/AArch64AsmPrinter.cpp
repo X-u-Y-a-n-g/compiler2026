@@ -1,6 +1,7 @@
 #include "../../../include/compiler/backend/asm/AArch64AsmPrinter.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <cstdint>
@@ -2647,6 +2648,132 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  usra v4.4s, v3.4s, #31\n";
     os << "  mls v2.4s, v4.4s, v1.4s\n";
     os << "  str q2, [x16]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.pure.map.i32x4.init" &&
+      instruction.operands.size() == 4) {
+    for (std::size_t lane = 0; lane < 4; ++lane) {
+      const auto value =
+          integerOperand(os, function, instruction.operands[lane], kImmScratch);
+      if (lane == 0) {
+        os << "  dup v16.4s, " << integerRegister(value, ValueType::int32Type())
+           << '\n';
+      } else {
+        os << "  mov v16.s[" << lane << "], "
+           << integerRegister(value, ValueType::int32Type()) << '\n';
+      }
+    }
+    return;
+  }
+  if (opcode == "aarch64.neon.pure.map.binary.i32x4" &&
+      instruction.operands.size() == 6) {
+    for (const auto& operand : instruction.operands) {
+      if (operand.kind != MachineOperandKind::ImmediateInt) return;
+    }
+    const auto operation = instruction.operands[0].intValue;
+    const auto destination = instruction.operands[1].intValue;
+    const auto lhsImmediate = instruction.operands[2].intValue != 0;
+    const auto lhsValue = instruction.operands[3].intValue;
+    const auto rhsImmediate = instruction.operands[4].intValue != 0;
+    const auto rhsValue = instruction.operands[5].intValue;
+    if (destination < 0 || destination >= 14 ||
+        (!lhsImmediate && (lhsValue < 0 || lhsValue >= 14)) ||
+        (!rhsImmediate && (rhsValue < 0 || rhsValue >= 14))) {
+      return;
+    }
+    const auto vectorRegister = [](std::int64_t slot) {
+      return "v" + std::to_string(16 + slot) + ".4s";
+    };
+    std::string lhs;
+    if (lhsImmediate) {
+      emitImmediate(os, "w16", static_cast<std::int32_t>(lhsValue),
+                    ValueType::int32Type());
+      os << "  dup v30.4s, w16\n";
+      lhs = "v30.4s";
+    } else {
+      lhs = vectorRegister(lhsValue);
+    }
+    std::string rhs;
+    if (rhsImmediate) {
+      emitImmediate(os, "w16", static_cast<std::int32_t>(rhsValue),
+                    ValueType::int32Type());
+      os << "  dup v31.4s, w16\n";
+      rhs = "v31.4s";
+    } else {
+      rhs = vectorRegister(rhsValue);
+    }
+    static const std::array<const char*, 5> operations{"add", "sub", "mul",
+                                                       "smax", "smin"};
+    if (operation < 0 ||
+        operation >= static_cast<std::int64_t>(operations.size())) {
+      return;
+    }
+    os << "  " << operations[operation] << ' ' << vectorRegister(destination)
+       << ", " << lhs << ", " << rhs << '\n';
+    return;
+  }
+  if ((opcode == "aarch64.neon.pure.map.sdiv.i32x4" ||
+       opcode == "aarch64.neon.pure.map.srem.i32x4") &&
+      instruction.operands.size() == 5) {
+    for (const auto& operand : instruction.operands) {
+      if (operand.kind != MachineOperandKind::ImmediateInt) return;
+    }
+    const auto destination = instruction.operands[0].intValue;
+    const auto source = instruction.operands[1].intValue;
+    const auto divisor = instruction.operands[2].intValue;
+    const auto magic = instruction.operands[3].intValue;
+    const auto shift = instruction.operands[4].intValue;
+    if (destination < 0 || destination >= 14 || source < 0 || source >= 14 ||
+        divisor <= 1 || divisor > std::numeric_limits<std::int32_t>::max() ||
+        shift < 0 || shift >= 31) {
+      return;
+    }
+    const auto vectorRegister = [](std::int64_t slot) {
+      return "v" + std::to_string(16 + slot) + ".4s";
+    };
+    const auto vectorBase = [](std::int64_t slot) {
+      return "v" + std::to_string(16 + slot);
+    };
+    const auto sourceRegister = vectorRegister(source);
+    const auto destinationRegister = vectorRegister(destination);
+    emitImmediate(os, "w16", static_cast<std::int32_t>(magic),
+                  ValueType::int32Type());
+    os << "  dup v30.4s, w16\n";
+    os << "  smull2 v31.2d, " << sourceRegister << ", v30.4s\n";
+    os << "  smull v30.2d, " << vectorBase(source) << ".2s, v30.2s\n";
+    os << "  uzp2 " << destinationRegister << ", v30.4s, v31.4s\n";
+    if (static_cast<std::int32_t>(magic) < 0) {
+      os << "  add " << destinationRegister << ", " << destinationRegister
+         << ", " << sourceRegister << '\n';
+    }
+    if (shift == 0) {
+      os << "  mov v31.16b, " << vectorBase(destination) << ".16b\n";
+    } else {
+      os << "  sshr v31.4s, " << destinationRegister << ", #" << shift << '\n';
+    }
+    os << "  usra v31.4s, " << destinationRegister << ", #31\n";
+    os << "  mov " << vectorBase(destination) << ".16b, v31.16b\n";
+    if (opcode == "aarch64.neon.pure.map.srem.i32x4") {
+      os << "  mov v31.16b, " << vectorBase(destination) << ".16b\n";
+      os << "  mov " << vectorBase(destination) << ".16b, "
+         << vectorBase(source) << ".16b\n";
+      emitImmediate(os, "w16", divisor, ValueType::int32Type());
+      os << "  dup v30.4s, w16\n";
+      os << "  mls " << destinationRegister << ", v31.4s, v30.4s\n";
+    }
+    return;
+  }
+  if (opcode == "aarch64.neon.pure.map.extract.i32x4" &&
+      instruction.hasResult && instruction.operands.size() == 2 &&
+      instruction.operands[0].kind == MachineOperandKind::ImmediateInt &&
+      instruction.operands[1].kind == MachineOperandKind::ImmediateInt) {
+    const auto slot = instruction.operands[0].intValue;
+    const auto lane = instruction.operands[1].intValue;
+    if (slot < 0 || slot >= 14 || lane < 0 || lane >= 4) return;
+    const auto destination = resultRegister(instruction.result, kImmScratch);
+    os << "  mov " << integerRegister(destination, ValueType::int32Type())
+       << ", v" << (16 + slot) << ".s[" << lane << "]\n";
+    storeResult(os, function, instruction.result, destination);
     return;
   }
   if (opcode == "aarch64.widened.mul.lhs.i32" &&

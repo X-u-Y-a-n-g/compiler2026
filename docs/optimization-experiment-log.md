@@ -282,17 +282,29 @@
 
 上述两项由 AI 辅助完成有符号除法公式证明、动态移位安全化、调用图与循环收益分析、成组 CFG 内联、晚期常量折叠、合成 fallback、60 项差分回归和汇编消融。技术依据为经典有符号二次幂除法 lowering、过程间内联、标量替换和稀疏常量传播；未复制外部实现。
 
-### 2026-07-28 二维仿射更新的行摘要维度折叠（待平台判定）
+### 2026-07-28 二维仿射更新的行摘要维度折叠（平台确认有效）
 
 - 通用语义条件：被调函数必须先在动态边界 `n` 内完整清零一个二维 i32 目标对象，随后在规范单位步长循环中对完整列维执行 `destination[i][j] = destination[i][j] * factor[i][k] + source[k][j]`；唯一允许的条件跳过必须被 CFG 证明为 `factor[i][k] == 1` 时直接进入行迭代回边。factor/source/destination 必须是互异 GlobalObject，所有调用位于同一个规范循环，摘要对象不得逃逸，调用链外不得有额外写入或未知调用观察。
 - 观察条件：调用链后的二维对象只能不再使用，或由规范双循环进行完整 i32 加法归约；任何额外元素读取、别名实参、未知调用、非完整清零、不同更新表达式或不规范控制流均完整 fallback。触发不读取路径、文件名、函数/变量/全局/块名、固定维度、固定循环次数、输入或输出。
 - 变换：为每个可折叠对象建立一维行和摘要。调用链入口只初始化首用前未定义或零趟循环后仍会被观察的摘要；二维仿射调用改为 `rowSum[i] = rowSum[i] * factor[i][k] + sourceRowSum[k]`，保留 unit-factor 跳过；最终完整二维归约改为一维行和归约。i32 运算按模 `2^32`，加法、乘法的分配律和结合律保证负数、`INT_MIN/MAX` 与回绕值仍等价。
 - 匿名验证：使用 9×9 改名全局与动态 `n` 的正例覆盖负值和 i32 回绕，`n=0/1/2/5/7/9` 均与关闭 pass 的版本输出一致；额外元素读取和 source/destination 别名反例均不命中且候选/关闭汇编逐字一致。
 - 性能集与正确性：AArch64 performance 60 项候选/关闭版本 stdout 全部一致，60 份候选汇编均通过 AArch64 汇编器；最终汇编仅 `01_mm1/2/3` 三项变化。AArch64 correctness `140/140 AC`。
-- 本地诊断：同一容器 QEMU 中三项计时约由 `16.6/49.3/31.7ms` 降至 `1.4/2.0/1.6ms`，主工作量由重复 `O(n^3)` 元素更新降为 `O(n^2)` 行摘要递推；本地结果仅作诊断，最终保留与否等待官方 Cortex-A53。
-- 状态：D，代码完成并通过本地门禁，尚未取得官方平台结果。
+- 本地诊断：同一容器 QEMU 中三项计时约由 `16.6/49.3/31.7ms` 降至 `1.4/2.0/1.6ms`，主工作量由重复 `O(n^3)` 元素更新降为 `O(n^2)` 行摘要递推。
+- 官方 Cortex-A53：仓库所有者回传 `01_mm` 代表项由约 `4s` 降至约 `0.34s`，为数量级改善；完整评测正确。状态升级为 A，保留。
 
 本候选由 AI 辅助完成跨函数 CFG/data-flow、GlobalObject 别名与逃逸、完整归约观察证明、SSA/内存归约改写、匿名反例、60 项差分及 140 项回归。技术依据为经典 aggregate promotion、循环降维以及整数模环上的分配律；未复制外部实现。
+
+### 2026-07-28 AArch64 有序递推中的纯映射四路 NEON 并行化（待平台判定）
+
+- 通用语义条件：只匹配唯一预头、唯一回边、两个 i32 Phi 的规范 `icmp.slt` 循环；一个 Phi 是 induction，另一个是有序 scalar recurrence。循环上界与步长必须是真正 loop-invariant，循环体不得有调用、内存访问或其他副作用。recurrence 中必须恰有一个仅依赖 induction 的纯映射 DAG，支持模 `2^32` 的 `add/sub/mul`、signed `icmp+select` min/max 和正常量 `sdiv/srem`；其余 recurrence 保持原指令顺序。任何额外 Phi、动态除数、内存、变化上界/步长或不可分析节点均 fallback。
+- 变换：guard 精确计算包装后的连续四个 induction 值并逐 lane 检查原 signed 上界；四个纯映射值用 `v16..v29` 并行计算，常量有符号除余使用通用 signed magic widening multiply；随后提取四个 lane，严格按 lane 0→1→2→3 执行原 scalar recurrence。标量尾部与所有 fallback 保留，因此没有把 C/SysY signed remainder 错误重结合为整段总和。
+- 参考方案审查：拒绝直接将 `state=(state+f(x))%M` 化为 `sum(f)%M`，因为 signed remainder 遇到负中间值不满足该重结合；同时 h-4 映射含 i32 乘法回绕，不能在缺少精确分段和 wrap 证明时使用普通整数 `floor_sum`。本候选只并行无副作用映射，保留 loop-carried state 的观察顺序。
+- 合成验证：匿名正例覆盖负起点、`INT_MIN` 邻域、接近 `INT_MAX` 但回绕前退出、零趟、1/3/4/5 趟、非单位正步长和映射内部溢出；2000 组确定性随机输入与关闭版本逐字对拍。fallback 覆盖内存读、递推上界和递推步长，候选与关闭版本最终汇编逐字一致。最初一组 `INT_MAX` 边界自身会在退出前回绕并产生近 `2^32` 周期，已修正为回绕前越过上界的有效终止边界。
+- 隔离与门禁：最终 ARM performance `60/60 AC`，AArch64 correctness `140/140 AC`；60 份最终汇编仅 h-4 三份同构纯映射递推变化，其余 57 份逐字一致，全部通过 GNU AArch64 汇编、静态链接和 QEMU 执行。
+- 热路径：原循环每四次迭代需要执行 12 次标量 `SDIV`；候选把纯映射中的 8 次除余改为两组 NEON widening-multiply/remainder 序列，只保留四次按序 state remainder。QEMU 三项约退化 `20%–32%`，主要反映软件模拟 NEON 成本；此前真实 A53 与 QEMU 对 NEON 候选曾出现相反结论，因此这里只作为风险信号，不作为平台结论。
+- 状态：D。候选尚未提交；若发布并由官方 Cortex-A53 证明三项稳定改善则保留，否则独立撤回，不与 h-5 或 many_mat 的后续候选混合。
+
+本候选由 AI 辅助完成参考公式反例审查、SSA 依赖切片、loop-invariant 合法性证明、四路有序 recurrence 克隆、通用 signed magic 向量 lowering、随机/边界/fallback 差分、60/60 与 140/140 回归。技术依据为经典 loop distribution、SLP/vectorization、Hacker's Delight signed division 和 ARMv8-A Advanced SIMD 语义；未使用路径、测试/函数/变量/全局/块名、固定公开规模、输入或输出作为触发条件。
 
 ## 7. 违规并已删除（E）
 

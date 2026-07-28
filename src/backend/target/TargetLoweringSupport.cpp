@@ -527,6 +527,35 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.pure.map.i32x4.init") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type()),
+            lowerValueOperand(operands[1], ValueType::int32Type()),
+            lowerValueOperand(operands[2], ValueType::int32Type()),
+            lowerValueOperand(operands[3], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.pure.map.binary.i32x4" ||
+        opcode == "aarch64.neon.pure.map.sdiv.i32x4" ||
+        opcode == "aarch64.neon.pure.map.srem.i32x4") {
+      std::vector<MachineOperand> lowered;
+      lowered.reserve(operands.size());
+      for (const auto& operand : operands) {
+        lowered.push_back(lowerValueOperand(operand, ValueType::int32Type()));
+      }
+      emit(block, opcode, {}, std::move(lowered));
+      return;
+    }
+
+    if (opcode == "aarch64.neon.pure.map.extract.i32x4") {
+      emit(block, opcode,
+           bindVirtualResult(instruction.result(), ValueType::int32Type()),
+           {lowerValueOperand(operands[0], ValueType::int32Type()),
+            lowerValueOperand(operands[1], ValueType::int32Type())});
+      return;
+    }
+
     if (opcode == "aarch64.widened.mul.lhs.i32" ||
         opcode == "aarch64.widened.mul.rhs.i32") {
       emit(block, opcode, {},

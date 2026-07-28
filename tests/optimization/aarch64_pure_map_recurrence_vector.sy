@@ -1,0 +1,38 @@
+int choose_larger(int a, int b) {
+  if (a < b) {
+    return b;
+  }
+  return a;
+}
+
+int mapped_value(int x) {
+  int first = choose_larger(x, 123456789 - x);
+  int second = choose_larger(first, 70000000 - first);
+  int value = first * 7;
+  value = value / 37;
+  value = value * 41 + second;
+  return value % 1009;
+}
+
+int ordered_fold(int start, int limit, int step) {
+  int state = -12345;
+  int current = start;
+  while (current < limit) {
+    state = (state + mapped_value(current) - 5) % 10007;
+    current = current + step;
+  }
+  return state;
+}
+
+int main() {
+  int cases = getint();
+  while (cases > 0) {
+    int start = getint();
+    int limit = getint();
+    int step = getint();
+    putint(ordered_fold(start, limit, step));
+    putch(10);
+    cases = cases - 1;
+  }
+  return 0;
+}
