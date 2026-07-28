@@ -300,6 +300,7 @@ bool isEssential(const Instruction& instruction) {
          opcode == "aarch64.neon.mla.acc.i32x32" ||
          opcode == "aarch64.neon.store.acc.i32x32" ||
          opcode.rfind("aarch64.neon.ordered.panel.i32x16.", 0) == 0 ||
+         opcode.rfind("aarch64.neon.square.sum.i32.", 0) == 0 ||
          opcode == "aarch64.neon.reduce.mls.i32x8.init" ||
          opcode == "aarch64.neon.reduce.mls.i32x8.step" ||
          opcode == "aarch64.neon.srem.i32x4.init" ||

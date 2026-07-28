@@ -2685,6 +2685,53 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q14, q15, [" << row1 << ", #32]\n";
     return;
   }
+  if (opcode == "aarch64.neon.square.sum.i32.init" &&
+      instruction.operands.empty()) {
+    for (int vector = 16; vector <= 19; ++vector) {
+      os << "  movi v" << vector << ".2d, #0\n";
+    }
+    return;
+  }
+  const auto emitSquareSum = [&](int firstResult) {
+    for (int lane = 0; lane < 8; ++lane) {
+      os << "  mla v" << 16 + (lane & 3) << ".4s, v"
+         << firstResult + lane << ".4s, v" << firstResult + lane
+         << ".4s\n";
+    }
+  };
+  if (opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" &&
+      instruction.operands.empty()) {
+    emitSquareSum(20);
+    return;
+  }
+  if (opcode ==
+          "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2" &&
+      instruction.operands.empty()) {
+    emitSquareSum(8);
+    return;
+  }
+  if (opcode == "aarch64.neon.square.sum.i32.accumulate.scalar" &&
+      instruction.operands.size() == 1) {
+    const auto value =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  movi v31.2d, #0\n";
+    os << "  mov v31.s[0], "
+       << integerRegister(value, ValueType::int32Type()) << '\n';
+    os << "  mla v16.4s, v31.4s, v31.4s\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.square.sum.i32.finish" &&
+      instruction.hasResult && instruction.operands.empty()) {
+    const auto destination = resultRegister(instruction.result, kImmScratch);
+    os << "  add v16.4s, v16.4s, v17.4s\n";
+    os << "  add v18.4s, v18.4s, v19.4s\n";
+    os << "  add v16.4s, v16.4s, v18.4s\n";
+    os << "  addv s16, v16.4s\n";
+    os << "  fmov "
+       << integerRegister(destination, ValueType::int32Type()) << ", s16\n";
+    storeResult(os, function, instruction.result, destination);
+    return;
+  }
   if (opcode == "aarch64.neon.reduce.mls.i32x8.init" &&
       instruction.operands.size() == 1) {
     const auto initial = integerOperand(os, function, instruction.operands[0],

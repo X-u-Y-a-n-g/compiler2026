@@ -1,0 +1,95 @@
+int A[64][64];
+int B[64][64];
+int C[64][64];
+
+int main() {
+    int n = getint();
+    int repeat = getint();
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            A[i][j] = i * 17 - j * 9 + 3;
+            B[i][j] = j * 13 - i * 5 - 7;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        if (i >= n / 2) {
+            int j = 0;
+            while (j < n) {
+                A[i][j] = -1;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        if (i < n / 2) {
+            int j = 0;
+            while (j < n) {
+                B[i][j] = -1;
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            C[i][j] = A[i][j] * 2 + B[i][j] * 3;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int value = C[i][j];
+            C[i][j] = (value * value + 7) / 3;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int k = 0;
+            int sum = 0;
+            while (k < n) {
+                sum = sum + C[i][k] * A[k][j];
+                k = k + 1;
+            }
+            A[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    int total = 0;
+    int r = 0;
+    while (r < repeat) {
+        i = 0;
+        while (i < n) {
+            int j = 0;
+            while (j < n) {
+                total = total + A[i][j] * A[i][j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        r = r + 1;
+    }
+    putint(total);
+    putch(10);
+    return 0;
+}

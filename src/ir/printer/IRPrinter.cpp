@@ -435,6 +435,10 @@ ValueType inferInstructionResultType(const compiler::ir::core::Instruction& inst
   if (opcode == "select") {
     return inferValueType(operands[1], state, globals);
   }
+  if (opcode == "aarch64.neon.square.sum.i32.finish" ||
+      opcode == "aarch64.neon.reduce.mls.i32x8.finish") {
+    return ValueType::int32Type();
+  }
   if (opcode.rfind("icmp.", 0) == 0 || opcode.rfind("fcmp.", 0) == 0) {
     return ValueType::boolType();
   }
@@ -648,6 +652,21 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
   }
   if (opcode == "aarch64.neon.ordered.panel.i32x16.store") {
     os << opcode << " ptr " << operands[0] << ", ptr " << operands[1];
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.square.sum.i32.init" ||
+      opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" ||
+      opcode ==
+          "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2") {
+    os << opcode;
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.square.sum.i32.accumulate.scalar") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.square.sum.i32.finish") {
+    os << opcode;
     return os.str();
   }
 

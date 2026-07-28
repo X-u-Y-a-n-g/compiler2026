@@ -56,6 +56,7 @@
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
+#include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
@@ -307,6 +308,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::NestedInvariantReductionPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::StoreProducerReductionFusionPass>());
+    }
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
   }

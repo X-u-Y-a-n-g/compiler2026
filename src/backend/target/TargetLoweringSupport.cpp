@@ -532,6 +532,26 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.square.sum.i32.init" ||
+        opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" ||
+        opcode ==
+            "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2") {
+      emit(block, opcode, {}, {});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.square.sum.i32.accumulate.scalar") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.square.sum.i32.finish") {
+      emit(block, opcode,
+           bindVirtualResult(instruction.result(), ValueType::int32Type()), {});
+      return;
+    }
+
     if (opcode == "aarch64.neon.reduce.mls.i32x8.init") {
       emit(block, opcode, {},
            {lowerValueOperand(operands[0], ValueType::int32Type())});
