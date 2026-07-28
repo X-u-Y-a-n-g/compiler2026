@@ -778,3 +778,44 @@ summary、linear reduction splitting、scalar expansion 和 ARMv8-A NEON
 Advanced SIMD pseudo、动态回退、边界差分、60/140 门禁和汇编隔离。技术
 依据为标准 strip-mining、register blocking、modular integer reduction 和
 ARMv8-A `LDP/MLA/STP` 语义；未复制外部编译器实现。
+
+## 2026-07-28 AArch64 相邻 producer/consumer 二维循环融合（待平台判定）
+
+- 通用条件：`AdjacentProducerConsumerLoopFusionPass` 只处理两个相邻的
+  规范二维循环巢。两层循环都必须从零开始、单位递增、具有相同动态上界，
+  中间只允许空 CFG 桥接块。producer 每次迭代只向一个二维全局对象的
+  `[outer][inner]` 元素写一次，不能读取该对象；其他读取必须来自不同的、
+  可解析的全局对象。consumer 只能读取并覆盖同一元素，局部标量槽不得逃逸，
+  不能有调用、额外外部 load/store、未知副作用或循环携带依赖。地址等价由
+  递归 GEP 路径和归纳槽证明，不读取路径、测试/函数/变量/全局/基本块名称、
+  固定维度、输入或输出。
+- 变换：把 consumer 最终 store 的纯 SSA 依赖切片克隆到 producer 的元素
+  store 位置，以 producer 的待写值直接替代 consumer 对同一元素的 load；
+  删除 producer 的中间 store、consumer 的再次 load 和第二个完整循环巢。
+  只允许无陷阱的整数纯运算；除法/余数的除数必须是可证明非零的常量，
+  有符号除法额外拒绝 `-1`，避免改变 `INT_MIN / -1` 行为。consumer 内部
+  非逃逸标量槽先做顺序 store-to-load 转发。消融开关为
+  `COMPILER_DISABLE_ADJACENT_PRODUCER_CONSUMER_LOOP_FUSION=1`，且该 pass
+  仅接入 AArch64 `-O1`。
+- 合成验证：正例在动态边界 `0/1/2/7/8` 上的候选、关闭版与 O0 输出一致，
+  并覆盖 i32 回绕输入；同函数两个独立 producer/consumer 对均被融合。
+  consumer 额外读取另一全局对象的 alias/dependence fallback 候选与关闭版
+  汇编逐字一致。正例最终汇编由 `147→124` 行，多匹配正例由 `208→164`
+  行，fallback 均为 `146` 行。
+- 完整门禁与隔离：公开 ARM performance 候选与关闭版均编译、GNU 汇编、
+  静态链接并执行。57 项逐字 AC；`h-4-01/02/03` 是父提交已有的终端空行
+  格式差异，候选和关闭版 stdout 哈希、最终汇编逐字一致。60 份最终汇编
+  只有 `many_mat_cal-1/2/3` 改变，每项静态指令 `406→389`；三份完整输入
+  的 stdout 与返回值逐项一致。该 pass 不进入 O0，未重复运行不受影响的
+  140 项 correctness。
+- 本地诊断：不同输入和交错轮次的 QEMU 波动较大；公开三项单轮合计
+  `1.675375s→1.782045s`，候选偏慢约 `6.4%`，其中主要差异来自第一项
+  单轮异常，不能描述为本地提速。变换确定删除一次完整矩阵写回、再次读取和
+  一套双层循环控制，但最终是否抵消更长的单元素依赖链由 Cortex-A53 判定。
+- 状态：D。作为 `1020e51` 已接受基线之上的独立候选发布；官方三项合计
+  稳定改善且完整评测正确则保留，持平、退化或错误则立即独立回退。
+
+本候选由 AI 辅助完成 CFG/归纳识别、GEP 对应与对象级无别名证明、局部标量
+转发、纯 SSA 切片克隆、多匹配/边界/fallback、完整 ARM 门禁和汇编隔离。
+技术依据为经典 loop fusion、producer-consumer forwarding、dependence
+analysis 和 scalar replacement；未复制外部编译器实现。

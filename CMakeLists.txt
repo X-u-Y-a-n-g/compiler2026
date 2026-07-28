@@ -20,6 +20,7 @@ add_library(compiler_lib
   src/midend/analysis/FunctionEffectAnalysis.cpp
   src/midend/pass/AffineArrayCopyPropagationPass.cpp
   src/midend/pass/AffineModularRecurrencePass.cpp
+  src/midend/pass/AdjacentProducerConsumerLoopFusionPass.cpp
   src/midend/pass/AArch64IntegerDotReductionPass.cpp
   src/midend/pass/AArch64PureMapRecurrenceVectorizationPass.cpp
   src/midend/pass/AArch64VectorConstantRemainderPass.cpp

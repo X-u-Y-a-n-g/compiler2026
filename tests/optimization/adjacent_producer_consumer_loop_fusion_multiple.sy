@@ -1,0 +1,66 @@
+int A[8][8];
+int B[8][8];
+int C[8][8];
+int D[8][8];
+
+int main() {
+    int n = getint();
+    int i = 0;
+    while (i < n) {
+        getarray(A[i]);
+        getarray(B[i]);
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            C[i][j] = A[i][j] + B[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            C[i][j] = C[i][j] * 2;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            D[i][j] = A[i][j] - B[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            D[i][j] = D[i][j] * 3 + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    int sum = 0;
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            sum = sum + C[i][j] + D[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(sum);
+    putch(10);
+    return 0;
+}

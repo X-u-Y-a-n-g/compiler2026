@@ -1,0 +1,49 @@
+int X[8][8];
+int Y[8][8];
+int Z[8][8];
+
+int main() {
+    int n = getint();
+    int i = 0;
+    while (i < n) {
+        getarray(X[i]);
+        getarray(Y[i]);
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            Z[i][j] = X[i][j] * 2 + Y[i][j] * 3;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int value = Z[i][j];
+            value = (value * value + 7) / 3;
+            Z[i][j] = value;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    int sum = 0;
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            sum = sum + Z[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(sum);
+    putch(10);
+    return 0;
+}
