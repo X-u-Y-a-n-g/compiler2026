@@ -616,6 +616,11 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     return os.str();
   }
 
+  if (opcode == "aarch64.neon.splat.acc.i32x32") {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
+
   if (opcode == "aarch64.neon.dup.acc.i32x32") {
     os << opcode << " i32 " << operands[0];
     return os.str();

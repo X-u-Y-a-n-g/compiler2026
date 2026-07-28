@@ -172,6 +172,7 @@ bool vectorRegistersAreCompatible(const Function &function) {
           opcode == "aarch64.neon.load.acc.i32x32" ||
           opcode == "aarch64.neon.mls.acc.i32x32" ||
           opcode == "aarch64.neon.zero.acc.i32x32" ||
+          opcode == "aarch64.neon.splat.acc.i32x32" ||
           opcode == "aarch64.neon.dup.acc.i32x32" ||
           opcode == "aarch64.neon.mla.acc.i32x32" ||
           opcode == "aarch64.neon.store.acc.i32x32" ||

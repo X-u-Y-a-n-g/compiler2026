@@ -478,6 +478,12 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.splat.acc.i32x32") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
+      return;
+    }
+
     if (opcode == "aarch64.neon.dup.acc.i32x32") {
       emit(block, opcode, {},
            {lowerValueOperand(operands[0], ValueType::int32Type())});

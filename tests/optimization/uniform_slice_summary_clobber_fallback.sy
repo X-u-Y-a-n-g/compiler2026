@@ -1,0 +1,61 @@
+int values[40][40];
+int weights[40][40];
+
+int main() {
+    int count = getint();
+    int row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            values[row][column] = row * 9 - column * 5 + 1;
+            weights[row][column] = row * 3 + column * 7 - 11;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        if (row >= count / 4) {
+            int column = 0;
+            while (column < count) {
+                values[row][column] = 6;
+                column = column + 1;
+            }
+        }
+        row = row + 1;
+    }
+
+    values[count - 1][0] = values[count - 1][0] + 1;
+
+    row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            int reduction = 0;
+            int sum = 0;
+            while (reduction < count) {
+                sum = sum + weights[row][reduction] *
+                    values[reduction][column];
+                reduction = reduction + 1;
+            }
+            values[row][column] = sum;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    int result = 0;
+    row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            result = result * 17 + values[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

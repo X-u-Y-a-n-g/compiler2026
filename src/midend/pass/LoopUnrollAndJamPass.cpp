@@ -1,6 +1,9 @@
 #include "../../../include/compiler/midend/pass/LoopUnrollAndJamPass.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <optional>
 #include <string>
@@ -54,6 +57,7 @@ struct Candidate {
   std::string outerBound;
   std::string reductionType;
   std::string reductionIdentity;
+  std::string destination;
 };
 
 using DefinitionMap = std::unordered_map<std::string, const Instruction*>;
@@ -553,7 +557,7 @@ std::optional<Candidate> findCandidate(const Function& function) {
         innerHeaderName,       innerBodyName,         innerExitName,
         outerCondition->slot,  innerCondition->slot,  reductions[0].first,
         outerCondition->value, outerCondition->bound, *reductionType,
-        reductions[0].second};
+        reductions[0].second, *destination};
   }
   return std::nullopt;
 }
@@ -589,6 +593,636 @@ std::string freshName(std::unordered_set<std::string>& names,
       return candidate;
     }
   }
+}
+
+struct PhiLoop {
+  std::string body;
+  std::string latch;
+  std::string exit;
+  std::string bound;
+};
+
+struct UniformSuffixPattern {
+  std::string row;
+  std::string coefficientMatrix;
+  std::int32_t fillValue = 0;
+  std::int32_t thresholdDivisor = 0;
+};
+
+std::unordered_map<std::string, std::string>
+definitionBlocks(const Function &function) {
+  std::unordered_map<std::string, std::string> result;
+  for (const auto &block : function.blocks()) {
+    for (const auto &instruction : block.instructions()) {
+      if (instruction.hasResult())
+        result.emplace(instruction.result(), block.name());
+    }
+  }
+  return result;
+}
+
+bool isIntegerValue(const std::string &value, long long expected) {
+  long long parsed = 0;
+  return detail::parseIntegerLiteral(value, parsed) && parsed == expected;
+}
+
+std::optional<std::int32_t>
+constantIntValue(const std::string &value, const DefinitionMap &definitions,
+                 std::unordered_set<std::string> &visiting) {
+  long long literal = 0;
+  if (detail::parseIntegerLiteral(value, literal)) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(literal));
+  }
+  if (value.empty() || value.front() != '%' || !visiting.insert(value).second) {
+    return std::nullopt;
+  }
+  const auto found = definitions.find(value);
+  if (found == definitions.end())
+    return std::nullopt;
+  const auto &instruction = *found->second;
+  if (instruction.opcode() == "neg" && instruction.operands().size() == 1) {
+    auto operandVisiting = visiting;
+    const auto operand = constantIntValue(instruction.operands()[0],
+                                          definitions, operandVisiting);
+    if (!operand.has_value())
+      return std::nullopt;
+    return static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(*operand));
+  }
+  if ((instruction.opcode() != "add" && instruction.opcode() != "sub" &&
+       instruction.opcode() != "mul") ||
+      instruction.operands().size() != 2) {
+    return std::nullopt;
+  }
+  auto lhsVisiting = visiting;
+  auto rhsVisiting = visiting;
+  const auto lhs =
+      constantIntValue(instruction.operands()[0], definitions, lhsVisiting);
+  const auto rhs =
+      constantIntValue(instruction.operands()[1], definitions, rhsVisiting);
+  if (!lhs.has_value() || !rhs.has_value())
+    return std::nullopt;
+  const auto left = static_cast<std::uint32_t>(*lhs);
+  const auto right = static_cast<std::uint32_t>(*rhs);
+  std::uint32_t result = 0;
+  if (instruction.opcode() == "add")
+    result = left + right;
+  if (instruction.opcode() == "sub")
+    result = left - right;
+  if (instruction.opcode() == "mul")
+    result = left * right;
+  return static_cast<std::int32_t>(result);
+}
+
+std::optional<std::int32_t> constantIntValue(const std::string &value,
+                                             const DefinitionMap &definitions) {
+  std::unordered_set<std::string> visiting;
+  return constantIntValue(value, definitions, visiting);
+}
+
+std::string resolveEmptyForwarder(const Function &function, const CFG &cfg,
+                                  std::string name) {
+  std::unordered_set<std::string> visited;
+  while (visited.insert(name).second) {
+    const auto *block = findBlock(function, cfg, name);
+    if (block == nullptr || block->instructions().size() != 1 ||
+        block->terminator() == nullptr ||
+        block->terminator()->opcode() != "br" ||
+        block->terminator()->operands().size() != 1) {
+      break;
+    }
+    name = block->terminator()->operands()[0];
+  }
+  return name;
+}
+
+bool canReachBlock(const Function &function, const CFG &cfg,
+                   const std::string &start, const std::string &target) {
+  const auto startFound = cfg.index.find(start);
+  const auto targetFound = cfg.index.find(target);
+  if (startFound == cfg.index.end() || targetFound == cfg.index.end()) {
+    return false;
+  }
+  std::vector<bool> visited(function.blocks().size(), false);
+  std::vector<std::size_t> worklist{startFound->second};
+  while (!worklist.empty()) {
+    const auto blockIndex = worklist.back();
+    worklist.pop_back();
+    if (blockIndex == targetFound->second)
+      return true;
+    if (visited[blockIndex])
+      continue;
+    visited[blockIndex] = true;
+    const auto *terminator = function.blocks()[blockIndex].terminator();
+    if (terminator == nullptr || terminator->opcode() != "br")
+      continue;
+    const auto &operands = terminator->operands();
+    const std::size_t first = operands.size() == 1 ? 0 : 1;
+    for (std::size_t index = first; index < operands.size(); ++index) {
+      const auto found = cfg.index.find(operands[index]);
+      if (found != cfg.index.end() && !visited[found->second]) {
+        worklist.push_back(found->second);
+      }
+    }
+  }
+  return false;
+}
+
+bool canReachBlockAvoiding(const Function &function, const CFG &cfg,
+                           const std::string &start, const std::string &target,
+                           const std::string &forbidden) {
+  const auto startFound = cfg.index.find(start);
+  const auto targetFound = cfg.index.find(target);
+  const auto forbiddenFound = cfg.index.find(forbidden);
+  if (startFound == cfg.index.end() || targetFound == cfg.index.end() ||
+      forbiddenFound == cfg.index.end()) {
+    return false;
+  }
+  std::vector<bool> visited(function.blocks().size(), false);
+  std::vector<std::size_t> worklist{startFound->second};
+  while (!worklist.empty()) {
+    const auto blockIndex = worklist.back();
+    worklist.pop_back();
+    if (blockIndex == forbiddenFound->second &&
+        blockIndex != targetFound->second) {
+      continue;
+    }
+    if (blockIndex == targetFound->second)
+      return true;
+    if (visited[blockIndex])
+      continue;
+    visited[blockIndex] = true;
+    const auto *terminator = function.blocks()[blockIndex].terminator();
+    if (terminator == nullptr || terminator->opcode() != "br")
+      continue;
+    const auto &operands = terminator->operands();
+    const std::size_t first = operands.size() == 1 ? 0 : 1;
+    for (std::size_t index = first; index < operands.size(); ++index) {
+      const auto found = cfg.index.find(operands[index]);
+      if (found != cfg.index.end() && !visited[found->second]) {
+        worklist.push_back(found->second);
+      }
+    }
+  }
+  return false;
+}
+
+std::optional<PhiLoop> canonicalPhiLoop(
+    const Function &function, const CFG &cfg, const DefinitionMap &definitions,
+    const std::unordered_map<std::string, std::string> &definitionBlock,
+    const std::string &induction, const std::string &expectedBound) {
+  const auto phiFound = definitions.find(induction);
+  const auto headerFound = definitionBlock.find(induction);
+  if (phiFound == definitions.end() || headerFound == definitionBlock.end() ||
+      phiFound->second->opcode() != "phi" ||
+      phiFound->second->operands().size() != 5) {
+    return std::nullopt;
+  }
+  const auto &operands = phiFound->second->operands();
+  std::string latch;
+  std::string next;
+  if (isIntegerValue(operands[1], 0)) {
+    next = operands[3];
+    latch = operands[4];
+  } else if (isIntegerValue(operands[3], 0)) {
+    next = operands[1];
+    latch = operands[2];
+  } else {
+    return std::nullopt;
+  }
+  const auto nextFound = definitions.find(next);
+  const auto nextBlock = definitionBlock.find(next);
+  if (nextFound == definitions.end() || nextBlock == definitionBlock.end() ||
+      nextBlock->second != latch || nextFound->second->opcode() != "add" ||
+      nextFound->second->operands().size() != 2 ||
+      !((nextFound->second->operands()[0] == induction &&
+         isIntegerValue(nextFound->second->operands()[1], 1)) ||
+        (nextFound->second->operands()[1] == induction &&
+         isIntegerValue(nextFound->second->operands()[0], 1)))) {
+    return std::nullopt;
+  }
+  const auto *header = findBlock(function, cfg, headerFound->second);
+  const auto *latchBlock = findBlock(function, cfg, latch);
+  if (header == nullptr || latchBlock == nullptr ||
+      header->terminator() == nullptr || latchBlock->terminator() == nullptr ||
+      header->terminator()->opcode() != "br" ||
+      header->terminator()->operands().size() != 3 ||
+      latchBlock->terminator()->opcode() != "br" ||
+      latchBlock->terminator()->operands() !=
+          std::vector<std::string>{header->name()}) {
+    return std::nullopt;
+  }
+  const auto condition = definitions.find(header->terminator()->operands()[0]);
+  if (condition == definitions.end() ||
+      condition->second->opcode() != "icmp.slt" ||
+      condition->second->operands().size() != 2 ||
+      condition->second->operands()[0] != induction ||
+      condition->second->operands()[1] != expectedBound) {
+    return std::nullopt;
+  }
+  return PhiLoop{header->terminator()->operands()[1], latch,
+                 header->terminator()->operands()[2], expectedBound};
+}
+
+std::optional<UniformSuffixPattern>
+findUniformSuffixPattern(const Function &function, const Candidate &candidate) {
+  const auto cfg = buildCFG(function);
+  const auto definitions = buildDefinitions(function);
+  const auto scalarSlots = collectScalarSlots(function);
+  const auto definitionBlock = definitionBlocks(function);
+  const auto destination = pointerPath(candidate.destination, definitions);
+  const auto *innerBody = findBlock(function, cfg, candidate.innerBody);
+  if (!destination.has_value() || destination->indices.size() != 2 ||
+      innerBody == nullptr ||
+      !isValueLoadedFromSlot(destination->indices[1], candidate.outerSlot,
+                             definitions)) {
+    return std::nullopt;
+  }
+  const std::string row = destination->indices[0];
+
+  struct LoadPath {
+    std::string result;
+    PointerPath path;
+  };
+  std::vector<LoadPath> arrayLoads;
+  for (const auto &instruction : innerBody->instructions()) {
+    if (instruction.opcode() == "call")
+      return std::nullopt;
+    if (instruction.opcode() == "store" &&
+        !isStoreTo(instruction, candidate.innerSlot) &&
+        !isStoreTo(instruction, candidate.reductionSlot)) {
+      return std::nullopt;
+    }
+    if (instruction.opcode() != "load" || instruction.operands().size() != 2 ||
+        scalarSlots.find(instruction.operands()[1]) != scalarSlots.end()) {
+      continue;
+    }
+    const auto path = pointerPath(instruction.operands()[1], definitions);
+    if (!path.has_value() || path->indices.size() != 2)
+      return std::nullopt;
+    arrayLoads.push_back({instruction.result(), *path});
+  }
+  if (arrayLoads.size() != 2)
+    return std::nullopt;
+  const LoadPath *sourceLoad = nullptr;
+  const LoadPath *coefficientLoad = nullptr;
+  for (const auto &load : arrayLoads) {
+    if (load.path.base == destination->base &&
+        isValueLoadedFromSlot(load.path.indices[0], candidate.innerSlot,
+                              definitions) &&
+        isValueLoadedFromSlot(load.path.indices[1], candidate.outerSlot,
+                              definitions)) {
+      sourceLoad = &load;
+    } else if (load.path.base != destination->base &&
+               load.path.indices[0] == row &&
+               isValueLoadedFromSlot(load.path.indices[1], candidate.innerSlot,
+                                     definitions)) {
+      coefficientLoad = &load;
+    }
+  }
+  if (sourceLoad == nullptr || coefficientLoad == nullptr)
+    return std::nullopt;
+
+  const auto accumulator =
+      reductionLoadResult(*innerBody, candidate.reductionSlot);
+  const Instruction *product = nullptr;
+  const Instruction *sum = nullptr;
+  if (!accumulator.has_value())
+    return std::nullopt;
+  for (const auto &instruction : innerBody->instructions()) {
+    if (instruction.opcode() == "mul" && instruction.operands().size() == 2 &&
+        ((instruction.operands()[0] == sourceLoad->result &&
+          instruction.operands()[1] == coefficientLoad->result) ||
+         (instruction.operands()[1] == sourceLoad->result &&
+          instruction.operands()[0] == coefficientLoad->result))) {
+      if (product != nullptr)
+        return std::nullopt;
+      product = &instruction;
+    }
+  }
+  if (product == nullptr)
+    return std::nullopt;
+  for (const auto &instruction : innerBody->instructions()) {
+    if (instruction.opcode() == "add" && instruction.operands().size() == 2 &&
+        ((instruction.operands()[0] == *accumulator &&
+          instruction.operands()[1] == product->result()) ||
+         (instruction.operands()[1] == *accumulator &&
+          instruction.operands()[0] == product->result()))) {
+      if (sum != nullptr)
+        return std::nullopt;
+      sum = &instruction;
+    }
+  }
+  bool storesSum = false;
+  if (sum == nullptr)
+    return std::nullopt;
+  for (const auto &instruction : innerBody->instructions()) {
+    if (isStoreTo(instruction, candidate.reductionSlot) &&
+        instruction.operands()[1] == sum->result()) {
+      storesSum = true;
+    }
+  }
+  if (!storesSum)
+    return std::nullopt;
+
+  const auto candidateHeader = cfg.index.find(candidate.outerHeader);
+  if (candidateHeader == cfg.index.end())
+    return std::nullopt;
+  std::string candidatePreheader;
+  for (const auto &predecessor : cfg.predecessors[candidateHeader->second]) {
+    if (predecessor != candidate.innerExit)
+      candidatePreheader = predecessor;
+  }
+  const auto rowLoop = canonicalPhiLoop(
+      function, cfg, definitions, definitionBlock, row, candidate.outerBound);
+  if (candidatePreheader.empty() || !rowLoop.has_value() ||
+      rowLoop->body != candidatePreheader) {
+    return std::nullopt;
+  }
+
+  for (const auto &block : function.blocks()) {
+    for (const auto &store : block.instructions()) {
+      if (store.opcode() != "store" || store.operands().size() != 3)
+        continue;
+      const auto path = pointerPath(store.operands()[2], definitions);
+      if (!path.has_value() || path->base != destination->base ||
+          path->indices.size() != 2) {
+        continue;
+      }
+      const auto fillValue = constantIntValue(store.operands()[1], definitions);
+      const auto columnLoad = definitions.find(path->indices[1]);
+      if (!fillValue.has_value() || columnLoad == definitions.end() ||
+          columnLoad->second->opcode() != "load" ||
+          columnLoad->second->operands().size() != 2 ||
+          block.terminator() == nullptr ||
+          block.terminator()->opcode() != "br" ||
+          block.terminator()->operands().size() != 1) {
+        continue;
+      }
+      const std::string columnSlot = columnLoad->second->operands()[1];
+      if (!hasUnitUpdate(block, columnSlot, definitions))
+        continue;
+      const std::string columnHeaderName = block.terminator()->operands()[0];
+      const auto *columnHeader = findBlock(function, cfg, columnHeaderName);
+      const auto columnCondition =
+          columnHeader == nullptr ? std::optional<LoopCondition>{}
+                                  : loopCondition(*columnHeader, definitions);
+      if (!columnCondition.has_value() || columnCondition->slot != columnSlot ||
+          columnCondition->bound != candidate.outerBound ||
+          columnHeader->terminator()->operands()[1] != block.name()) {
+        continue;
+      }
+      const std::string outerLatch = resolveEmptyForwarder(
+          function, cfg, columnHeader->terminator()->operands()[2]);
+      const auto columnHeaderIndex = cfg.index.find(columnHeaderName);
+      if (columnHeaderIndex == cfg.index.end() ||
+          cfg.predecessors[columnHeaderIndex->second].size() != 2) {
+        continue;
+      }
+      std::string columnPreheader;
+      for (const auto &predecessor :
+           cfg.predecessors[columnHeaderIndex->second]) {
+        if (predecessor != block.name())
+          columnPreheader = predecessor;
+      }
+      const auto *setup = findBlock(function, cfg, columnPreheader);
+      const auto setupIndex = cfg.index.find(columnPreheader);
+      if (setup == nullptr || setupIndex == cfg.index.end() ||
+          !hasConstantStore(*setup, columnSlot, "0") ||
+          cfg.predecessors[setupIndex->second].size() != 1) {
+        continue;
+      }
+      const std::string fillBranchName =
+          cfg.predecessors[setupIndex->second].front();
+      const auto *fillBranch = findBlock(function, cfg, fillBranchName);
+      if (fillBranch == nullptr || fillBranch->terminator() == nullptr ||
+          fillBranch->terminator()->opcode() != "br" ||
+          fillBranch->terminator()->operands().size() != 3) {
+        continue;
+      }
+      const auto &branch = fillBranch->terminator()->operands();
+      const bool fillsOnTrue = branch[1] == columnPreheader;
+      if ((!fillsOnTrue && branch[2] != columnPreheader) ||
+          resolveEmptyForwarder(function, cfg,
+                                fillsOnTrue ? branch[2] : branch[1]) !=
+              outerLatch) {
+        continue;
+      }
+      const auto comparison = definitions.find(branch[0]);
+      if (comparison == definitions.end() ||
+          comparison->second->operands().size() != 2) {
+        continue;
+      }
+      const std::string fillRow = path->indices[0];
+      std::string threshold;
+      if (fillsOnTrue && comparison->second->opcode() == "icmp.sge" &&
+          comparison->second->operands()[0] == fillRow) {
+        threshold = comparison->second->operands()[1];
+      } else if (!fillsOnTrue && comparison->second->opcode() == "icmp.slt" &&
+                 comparison->second->operands()[0] == fillRow) {
+        threshold = comparison->second->operands()[1];
+      } else {
+        continue;
+      }
+      const auto thresholdDefinition = definitions.find(threshold);
+      if (thresholdDefinition == definitions.end() ||
+          thresholdDefinition->second->opcode() != "sdiv" ||
+          thresholdDefinition->second->operands().size() != 2 ||
+          thresholdDefinition->second->operands()[0] != candidate.outerBound) {
+        continue;
+      }
+      long long divisor = 0;
+      if (!detail::parseIntegerLiteral(
+              thresholdDefinition->second->operands()[1], divisor) ||
+          divisor <= 0 || divisor > INT32_MAX) {
+        continue;
+      }
+      const auto fillRowLoop =
+          canonicalPhiLoop(function, cfg, definitions, definitionBlock, fillRow,
+                           candidate.outerBound);
+      if (!fillRowLoop.has_value() || fillRowLoop->body != fillBranchName ||
+          fillRowLoop->latch != outerLatch ||
+          valueDependsOn(store.operands()[1], fillRow, definitions) ||
+          valueDependsOn(store.operands()[1], path->indices[1], definitions)) {
+        continue;
+      }
+      const std::string rawFillExit = fillRowLoop->exit;
+      const std::string fillExit =
+          resolveEmptyForwarder(function, cfg, rawFillExit);
+      if (!canReachBlock(function, cfg, fillExit, candidatePreheader) ||
+          canReachBlockAvoiding(function, cfg, function.blocks().front().name(),
+                                candidatePreheader, rawFillExit)) {
+        continue;
+      }
+      bool clobbered = false;
+      for (std::size_t index = 0;
+           index < function.blocks().size() && !clobbered; ++index) {
+        const auto &name = function.blocks()[index].name();
+        if (name == candidatePreheader ||
+            !canReachBlockAvoiding(function, cfg, fillExit, name,
+                                   candidatePreheader) ||
+            !canReachBlock(function, cfg, name, candidatePreheader)) {
+          continue;
+        }
+        for (const auto &instruction :
+             function.blocks()[index].instructions()) {
+          if (instruction.opcode() == "call") {
+            clobbered = true;
+            break;
+          }
+          if (instruction.opcode() != "store" ||
+              instruction.operands().size() != 3) {
+            continue;
+          }
+          if (scalarSlots.find(instruction.operands()[2]) !=
+              scalarSlots.end()) {
+            continue;
+          }
+          const auto storedPath =
+              pointerPath(instruction.operands()[2], definitions);
+          if (!storedPath.has_value() ||
+              storedPath->base == destination->base) {
+            clobbered = true;
+            break;
+          }
+        }
+      }
+      if (!clobbered) {
+        return UniformSuffixPattern{row, coefficientLoad->path.base, *fillValue,
+                                    static_cast<std::int32_t>(divisor)};
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+bool foldUniformSuffixContribution(Function &function, Candidate &candidate) {
+  if (std::getenv("COMPILER_DISABLE_UNIFORM_SUFFIX_CONTRIBUTION_FOLDING") !=
+      nullptr) {
+    return false;
+  }
+  const auto pattern = findUniformSuffixPattern(function, candidate);
+  if (!pattern.has_value())
+    return false;
+  const auto cfg = buildCFG(function);
+  const auto definitions = buildDefinitions(function);
+  const auto headerIndex = cfg.index.find(candidate.outerHeader);
+  if (headerIndex == cfg.index.end())
+    return false;
+  std::string preheaderName;
+  for (const auto &predecessor : cfg.predecessors[headerIndex->second]) {
+    if (predecessor != candidate.innerExit)
+      preheaderName = predecessor;
+  }
+  auto *preheader = findBlock(function, preheaderName);
+  auto *outerBody = findBlock(function, candidate.outerBody);
+  auto *innerHeader = findBlock(function, candidate.innerHeader);
+  if (preheader == nullptr || outerBody == nullptr || innerHeader == nullptr ||
+      preheader->terminator() == nullptr ||
+      preheader->terminator()->operands() !=
+          std::vector<std::string>{candidate.outerHeader}) {
+    return false;
+  }
+  std::optional<std::size_t> identityStore;
+  for (std::size_t index = 0; index < outerBody->instructions().size();
+       ++index) {
+    const auto &instruction = outerBody->instructions()[index];
+    if (isStoreTo(instruction, candidate.reductionSlot) &&
+        instruction.operands()[1] == candidate.reductionIdentity) {
+      if (identityStore.has_value())
+        return false;
+      identityStore = index;
+    }
+  }
+  const auto innerCondition = loopCondition(*innerHeader, definitions);
+  std::optional<std::size_t> innerCompare;
+  if (innerCondition.has_value()) {
+    for (std::size_t index = 0; index < innerHeader->instructions().size();
+         ++index) {
+      const auto &instruction = innerHeader->instructions()[index];
+      if (instruction.opcode() == "icmp.slt" &&
+          instruction.result() == innerHeader->terminator()->operands()[0] &&
+          instruction.operands().size() == 2 &&
+          instruction.operands()[1] == innerCondition->bound) {
+        innerCompare = index;
+      }
+    }
+  }
+  if (!identityStore.has_value() || !innerCompare.has_value())
+    return false;
+
+  auto valueNames = collectValueNames(function);
+  auto blockNames = collectBlockNames(function);
+  const auto threshold = freshName(valueNames, "%uniform.slice.threshold");
+  const auto below = freshName(valueNames, "%uniform.slice.below");
+  const auto cutoff = freshName(valueNames, "%uniform.slice.cutoff");
+  const auto suffixHeader = freshName(blockNames, "uniform.slice.header");
+  const auto suffixBody = freshName(blockNames, "uniform.slice.body");
+  const auto suffixK = freshName(valueNames, "%uniform.slice.k");
+  const auto suffixAcc = freshName(valueNames, "%uniform.slice.acc");
+  const auto hasK = freshName(valueNames, "%uniform.slice.has.k");
+  const auto coefficientRow = freshName(valueNames, "%uniform.slice.row");
+  const auto coefficientAddress =
+      freshName(valueNames, "%uniform.slice.address");
+  const auto coefficient = freshName(valueNames, "%uniform.slice.coefficient");
+  const auto product = freshName(valueNames, "%uniform.slice.product");
+  const auto nextAcc = freshName(valueNames, "%uniform.slice.acc.next");
+  const auto nextK = freshName(valueNames, "%uniform.slice.k.next");
+
+  auto &preheaderCode = preheader->instructions();
+  auto insertion = preheaderCode.end() - 1;
+  insertion = preheaderCode.insert(
+      insertion, Instruction{"sdiv",
+                             {candidate.outerBound,
+                              std::to_string(pattern->thresholdDivisor)},
+                             threshold});
+  ++insertion;
+  insertion = preheaderCode.insert(
+      insertion, Instruction{"icmp.slt", {pattern->row, threshold}, below});
+  ++insertion;
+  insertion = preheaderCode.insert(
+      insertion,
+      Instruction{"select", {below, threshold, pattern->row}, cutoff});
+  ++insertion;
+  preheaderCode.insert(insertion,
+                       Instruction{"getelementptr",
+                                   {pattern->coefficientMatrix, pattern->row},
+                                   coefficientRow});
+  preheaderCode.back() = Instruction{"br", {suffixHeader}};
+
+  BasicBlock header{suffixHeader};
+  header.addInstruction(Instruction{
+      "phi", {"int", cutoff, preheaderName, nextK, suffixBody}, suffixK});
+  header.addInstruction(Instruction{
+      "phi", {"int", "0", preheaderName, nextAcc, suffixBody}, suffixAcc});
+  header.addInstruction(
+      Instruction{"icmp.slt", {suffixK, candidate.outerBound}, hasK});
+  header.addInstruction(
+      Instruction{"br", {hasK, suffixBody, candidate.outerHeader}});
+  BasicBlock body{suffixBody};
+  body.addInstruction(Instruction{
+      "getelementptr", {coefficientRow, suffixK}, coefficientAddress});
+  body.addInstruction(
+      Instruction{"load", {"int", coefficientAddress}, coefficient});
+  body.addInstruction(Instruction{
+      "mul", {coefficient, std::to_string(pattern->fillValue)}, product});
+  body.addInstruction(Instruction{"add", {suffixAcc, product}, nextAcc});
+  body.addInstruction(Instruction{"add", {suffixK, "1"}, nextK});
+  body.addInstruction(Instruction{"br", {suffixHeader}});
+
+  auto identityOperands = outerBody->instructions()[*identityStore].operands();
+  identityOperands[1] = suffixAcc;
+  outerBody->instructions()[*identityStore] =
+      Instruction{"store", std::move(identityOperands)};
+  auto compareOperands = innerHeader->instructions()[*innerCompare].operands();
+  compareOperands[1] = cutoff;
+  const auto compareResult =
+      innerHeader->instructions()[*innerCompare].result();
+  innerHeader->instructions()[*innerCompare] =
+      Instruction{"icmp.slt", std::move(compareOperands), compareResult};
+  candidate.reductionIdentity = suffixAcc;
+  function.addBlock(std::move(header));
+  function.addBlock(std::move(body));
+  return true;
 }
 
 std::vector<BasicBlock> cloneTailBlocks(
@@ -990,6 +1624,13 @@ bool collapseJammedAddReductionToNeon(
   innerExit.instructions() = std::move(vectorExit);
 
   auto& outerInstructions = outerBody.instructions();
+  std::string initialValue;
+  for (const auto& instruction : outerInstructions) {
+    if (!isStoreTo(instruction, reductionSlots[0])) continue;
+    if (!initialValue.empty()) return fail("multiple accumulator initializers");
+    initialValue = instruction.operands()[1];
+  }
+  if (initialValue.empty()) return fail("missing accumulator initializer");
   std::vector<Instruction> vectorOuter;
   for (auto& instruction : outerInstructions) {
     if (isStoreTo(instruction, reductionSlots[0]) ||
@@ -1002,8 +1643,13 @@ bool collapseJammedAddReductionToNeon(
       continue;
     }
     if (instruction.isTerminator()) {
-      vectorOuter.emplace_back("aarch64.neon.zero.acc.i32x32",
-                               std::vector<std::string>{});
+      if (isIntegerValue(initialValue, 0)) {
+        vectorOuter.emplace_back("aarch64.neon.zero.acc.i32x32",
+                                 std::vector<std::string>{});
+      } else {
+        vectorOuter.emplace_back("aarch64.neon.splat.acc.i32x32",
+                                 std::vector<std::string>{initialValue});
+      }
     }
     vectorOuter.push_back(std::move(instruction));
   }
@@ -1135,8 +1781,11 @@ bool transform(Function& function, const Candidate& candidate, int jamFactor,
 void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
   if (jamFactor_ < 2) return;
   for (auto& function : module.functions()) {
-    const auto candidate = findCandidate(function);
+    auto candidate = findCandidate(function);
     if (candidate.has_value()) {
+      if (useAArch64VectorAccumulator_) {
+        foldUniformSuffixContribution(function, *candidate);
+      }
       transform(function, *candidate, jamFactor_,
                 useAArch64VectorAccumulator_);
     }

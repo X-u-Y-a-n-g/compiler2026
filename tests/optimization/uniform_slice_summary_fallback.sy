@@ -1,0 +1,54 @@
+int source[9][9];
+int coefficient[9][9];
+
+void initialize(int count) {
+    int row = 0;
+    while (row < 9) {
+        int column = 0;
+        while (column < 9) {
+            source[row][column] = row - column + 2;
+            coefficient[row][column] = (row * 5 + column * 3) % 7 - 3;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        if (row >= count / 3) {
+            int column = 0;
+            while (column < count) {
+                source[row][column] = row - 3;
+                column = column + 1;
+            }
+        }
+        row = row + 1;
+    }
+}
+
+void multiply_in_place(int count) {
+    int row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            int reduction = 0;
+            int sum = 0;
+            while (reduction < count) {
+                sum = sum + coefficient[row][reduction] *
+                    source[reduction][column];
+                reduction = reduction + 1;
+            }
+            source[row][column] = sum;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+}
+
+int main() {
+    int count = getint();
+    initialize(count);
+    multiply_in_place(count);
+    putarray(81, source[0]);
+    return 0;
+}

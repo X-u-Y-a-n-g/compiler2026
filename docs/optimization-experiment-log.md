@@ -693,3 +693,42 @@ array packing、loop vectorization 与 ARMv8-A NEON `LDP/MLS/ADDV`；未复制
 本候选与回退由 AI 辅助完成实现、消融、全套门禁、平台结果记录和退化归因。
 技术依据为 loop strip-mining、SLP/register blocking 与 ARMv8-A NEON；未
 复制外部实现。
+
+## 2026-07-28 AArch64 统一矩阵后缀贡献折叠（待平台判定）
+
+- 通用条件：只处理规范的原地二维 i32 线性归约
+  `destination[row][column] = sum_k coefficient[row][k] *
+  destination[k][column]`。目标与系数必须是两个不同的 GlobalObject；行、
+  列和归约循环均为零起始、单位递增且共享动态上界。此前同一目标对象必须由
+  完整行/列循环把 `row >= count / D` 的矩形后缀填为任意可常量折叠的 i32
+  值，其中 `D` 是任意正整数。填充退出到归约入口之间出现调用、未知 store
+  或对目标 GlobalObject 的额外 store 均 fallback。匹配不读取源码路径、
+  测试/函数/变量/全局/基本块名称、固定矩阵规模、固定填充值、输入或输出。
+- 变换：对每个输出行计算 `cutoff=max(row,count/D)`，先用一个 O(n) 标量
+  归约得到 `base=sum(k=cutoff..count-1) coefficient[row][k]*fillValue`，再把
+  现有 32 列 NEON 累加器用 `base` 广播初始化，并把原 k 循环上界收紧为
+  `cutoff`。在处理第 row 行前，所有 `k>=row` 的目标行尚未被原地更新；结合
+  已证明的统一后缀，这一折叠保持每个输出元素的 i32 模 2^32 乘加结果。
+  消融开关为
+  `COMPILER_DISABLE_UNIFORM_SUFFIX_CONTRIBUTION_FOLDING=1`。
+- 合成验证：匿名 40×40 正例使用动态 count、除数 3 和常量表达式 `0-3`；
+  对 `-1/0/1/2/3/5/31/32/39/40` 逐一比较 O0、候选 O1 和关闭版 O1，输出
+  全部一致。另有依赖行号的非统一填充 fallback，以及除数 4、常量填充后对
+  同对象额外写入的 clobber fallback；还覆盖了填充循环不支配归约入口的
+  条件旁路 fallback。三者候选/关闭版最终汇编逐字一致。
+- 隔离与正确性：ARM 60 项均成功编译、GNU AArch64 汇编、静态链接和 QEMU
+  执行；候选与关闭版 stdout/返回值 60/60 一致，最终汇编只改变
+  `many_mat_cal-1/2/3`。使用与当前 140 个源文件逐字一致的官方输出数据，
+  AArch64 correctness 为 `140/140 AC`。
+- 本地诊断：三项完整全量轮次的计时区间合计
+  `0.275015s→0.187573s`，下降约 `31.8%`；三项输出分别与关闭版逐字一致。
+  QEMU 只作诊断，最终收益由仓库所有者提交远端版本后的官方 Cortex-A53
+  结果决定。
+- 状态：D。作为单一候选提交并推送到 `zct-arm-no-magic`；平台稳定改善则
+  保留并升级为 A，持平、退化或错误则独立回退后再开发 blocked TRMM/TRSM。
+
+本候选由 AI 辅助完成统一后缀数据流识别、原地更新时序证明、CFG/SSA 改写、
+NEON 非零累加器初始化 pseudo、别名与 clobber fallback、匿名边界测试、
+60 项隔离和 140 项正确性回归。技术依据为经典 loop invariant region
+summary、linear reduction splitting、scalar expansion 和 ARMv8-A NEON
+广播语义；未复制外部编译器源码。

@@ -1,0 +1,62 @@
+int matrix[40][40];
+int factors[40][40];
+
+int main() {
+    int count = getint();
+    int perform_fill = getint();
+    int row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            matrix[row][column] = row * 4 + column * 3 - 7;
+            factors[row][column] = row * 5 - column * 2 + 9;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    if (perform_fill != 0) {
+        row = 0;
+        while (row < count) {
+            if (row >= count / 5) {
+                int column = 0;
+                while (column < count) {
+                    matrix[row][column] = -2;
+                    column = column + 1;
+                }
+            }
+            row = row + 1;
+        }
+    }
+
+    row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            int reduction = 0;
+            int sum = 0;
+            while (reduction < count) {
+                sum = sum + factors[row][reduction] *
+                    matrix[reduction][column];
+                reduction = reduction + 1;
+            }
+            matrix[row][column] = sum;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    int result = 0;
+    row = 0;
+    while (row < 40) {
+        int column = 0;
+        while (column < 40) {
+            result = result * 13 + matrix[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

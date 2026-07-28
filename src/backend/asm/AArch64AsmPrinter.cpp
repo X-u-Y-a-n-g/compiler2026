@@ -2548,6 +2548,16 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  movi v27.4s, #0\n";
     return;
   }
+  if (opcode == "aarch64.neon.splat.acc.i32x32" &&
+      instruction.operands.size() == 1) {
+    const auto initial =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    for (int vector = 20; vector <= 27; ++vector) {
+      os << "  dup v" << vector << ".4s, "
+         << integerRegister(initial, ValueType::int32Type()) << '\n';
+    }
+    return;
+  }
   if (opcode == "aarch64.neon.dup.acc.i32x32" &&
       instruction.operands.size() == 1) {
     const auto coefficient =
