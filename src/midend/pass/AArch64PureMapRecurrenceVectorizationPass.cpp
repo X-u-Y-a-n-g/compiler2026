@@ -61,6 +61,11 @@ struct VectorOperation {
   SignedMagic magic;
 };
 
+struct OrderedModularFold {
+  std::int32_t increment = 0;
+  std::int32_t modulus = 0;
+};
+
 struct Candidate {
   std::string header;
   std::string body;
@@ -75,6 +80,7 @@ struct Candidate {
   int mapRootSlot = 0;
   std::vector<VectorOperation> vectorOperations;
   std::vector<const Instruction *> recurrenceInstructions;
+  std::optional<OrderedModularFold> orderedModularFold;
 };
 
 DefinitionMap definitionsOf(const Function &function) {
@@ -547,6 +553,37 @@ std::optional<Candidate> matchCandidate(const Function &function) {
       continue;
     }
 
+    std::optional<OrderedModularFold> orderedModularFold;
+    if (recurrenceInstructions.size() == 3 &&
+        recurrenceInstructions[0]->opcode() == "add" &&
+        recurrenceInstructions[0]->operands().size() == 2 &&
+        recurrenceInstructions[1]->opcode() == "add" &&
+        recurrenceInstructions[1]->operands().size() == 2 &&
+        recurrenceInstructions[2]->opcode() == "srem" &&
+        recurrenceInstructions[2]->operands().size() == 2 &&
+        recurrenceInstructions[2]->operands()[0] ==
+            recurrenceInstructions[1]->result()) {
+      const auto &first = recurrenceInstructions[0]->operands();
+      const bool firstMatches =
+          (first[0] == statePhi->result() && first[1] == mapRoot) ||
+          (first[1] == statePhi->result() && first[0] == mapRoot);
+      const auto &second = recurrenceInstructions[1]->operands();
+      std::string incrementOperand;
+      if (second[0] == recurrenceInstructions[0]->result()) {
+        incrementOperand = second[1];
+      } else if (second[1] == recurrenceInstructions[0]->result()) {
+        incrementOperand = second[0];
+      }
+      std::int32_t increment = 0;
+      std::int32_t modulus = 0;
+      if (firstMatches && parseI32(incrementOperand, increment) &&
+          increment > 0 &&
+          parseI32(recurrenceInstructions[2]->operands()[1], modulus) &&
+          modulus > 0) {
+        orderedModularFold = OrderedModularFold{increment, modulus};
+      }
+    }
+
     return Candidate{header.name(),
                      bodyName,
                      preheaderName,
@@ -559,7 +596,8 @@ std::optional<Candidate> matchCandidate(const Function &function) {
                      mapRoot,
                      rootSlot->second,
                      std::move(operations),
-                     std::move(recurrenceInstructions)};
+                     std::move(recurrenceInstructions),
+                     orderedModularFold};
   }
   return std::nullopt;
 }
@@ -632,6 +670,17 @@ bool transform(Function &function, const Candidate &candidate) {
   const auto c3 = freshName(valueNames, "%pure.map.c3");
   const auto c12 = freshName(valueNames, "%pure.map.c12");
   const auto all = freshName(valueNames, "%pure.map.all");
+  const bool foldOrderedModularRecurrence =
+      candidate.orderedModularFold.has_value() &&
+      std::getenv("COMPILER_DISABLE_ORDERED_MODULAR_FOLD4") == nullptr;
+  const auto foldedName =
+      foldOrderedModularRecurrence
+          ? freshName(blockNames, "pure.map.ordered.modular.fold")
+          : std::string{};
+  const auto orderedFallbackName =
+      foldOrderedModularRecurrence
+          ? freshName(blockNames, "pure.map.ordered.modular.fallback")
+          : std::string{};
   std::vector<std::string> laneValues;
   for (int lane = 0; lane < kVectorWidth; ++lane) {
     laneValues.push_back(freshName(valueNames, "%pure.map.lane"));
@@ -684,35 +733,126 @@ bool transform(Function &function, const Candidate &candidate) {
         laneValues[lane]});
   }
 
-  std::string currentState = candidate.state;
-  for (int lane = 0; lane < kVectorWidth; ++lane) {
-    std::unordered_map<std::string, std::string> replacements{
-        {candidate.state, currentState}, {candidate.mapRoot, laneValues[lane]}};
-    for (const auto *instruction : candidate.recurrenceInstructions) {
-      auto operands = instruction->operands();
-      for (auto &operand : operands) {
-        const auto found = replacements.find(operand);
-        if (found != replacements.end()) {
-          operand = found->second;
+  BasicBlock foldedBody{foldedName};
+  BasicBlock orderedFallbackBody{orderedFallbackName};
+  std::vector<std::pair<std::string, std::string>> vectorStates;
+  const auto appendSequentialRecurrence = [&](BasicBlock &block) {
+    std::string currentState = candidate.state;
+    for (int lane = 0; lane < kVectorWidth; ++lane) {
+      std::unordered_map<std::string, std::string> replacements{
+          {candidate.state, currentState},
+          {candidate.mapRoot, laneValues[lane]}};
+      for (const auto *instruction : candidate.recurrenceInstructions) {
+        auto operands = instruction->operands();
+        for (auto &operand : operands) {
+          const auto found = replacements.find(operand);
+          if (found != replacements.end()) {
+            operand = found->second;
+          }
         }
+        const auto result = freshName(valueNames, "%pure.map.recurrence");
+        replacements[instruction->result()] = result;
+        block.addInstruction(
+            Instruction{instruction->opcode(), std::move(operands), result});
       }
-      const auto result = freshName(valueNames, "%pure.map.recurrence");
-      replacements[instruction->result()] = result;
-      vectorBody.addInstruction(
-          Instruction{instruction->opcode(), std::move(operands), result});
+      currentState = replacements.at(candidate.stateBackedge);
     }
-    currentState = replacements.at(candidate.stateBackedge);
+    return currentState;
+  };
+  if (foldOrderedModularRecurrence) {
+    const auto stateNonnegative =
+        freshName(valueNames, "%pure.map.ordered.state.nonnegative");
+    std::string safe = stateNonnegative;
+    vectorBody.addInstruction(
+        Instruction{"icmp.sge", {candidate.state, "0"}, stateNonnegative});
+    for (const auto &laneValue : laneValues) {
+      const auto laneNonnegative =
+          freshName(valueNames, "%pure.map.ordered.lane.nonnegative");
+      const auto nextSafe =
+          freshName(valueNames, "%pure.map.ordered.nonnegative");
+      vectorBody.addInstruction(
+          Instruction{"icmp.sge", {laneValue, "0"}, laneNonnegative});
+      vectorBody.addInstruction(Instruction{"and", {safe, laneNonnegative},
+                                            nextSafe});
+      safe = nextSafe;
+    }
+    const auto state64 =
+        freshName(valueNames, "%pure.map.ordered.state64");
+    vectorBody.addInstruction(
+        Instruction{"sext", {candidate.state, "long"}, state64});
+    std::string total64 = state64;
+    for (const auto &laneValue : laneValues) {
+      const auto lane64 =
+          freshName(valueNames, "%pure.map.ordered.lane64");
+      const auto nextTotal =
+          freshName(valueNames, "%pure.map.ordered.total64");
+      vectorBody.addInstruction(
+          Instruction{"sext", {laneValue, "long"}, lane64});
+      vectorBody.addInstruction(
+          Instruction{"add", {total64, lane64}, nextTotal});
+      total64 = nextTotal;
+    }
+    const auto incrementedTotal =
+        freshName(valueNames, "%pure.map.ordered.incremented64");
+    vectorBody.addInstruction(Instruction{
+        "add",
+        {total64,
+         std::to_string(static_cast<std::int64_t>(
+             candidate.orderedModularFold->increment) *
+                        kVectorWidth)},
+        incrementedTotal});
+    const auto fitsI32 =
+        freshName(valueNames, "%pure.map.ordered.fits.i32");
+    const auto canFold =
+        freshName(valueNames, "%pure.map.ordered.can.fold");
+    vectorBody.addInstruction(
+        Instruction{"icmp.sle", {incrementedTotal, "2147483647"}, fitsI32});
+    vectorBody.addInstruction(Instruction{"and", {safe, fitsI32}, canFold});
+    vectorBody.addInstruction(
+        Instruction{"add", {x3, candidate.step}, x4});
+    vectorBody.addInstruction(
+        Instruction{"br", {canFold, foldedName, orderedFallbackName}});
+
+    const auto remainder64 =
+        freshName(valueNames, "%pure.map.ordered.remainder64");
+    const auto foldedState =
+        freshName(valueNames, "%pure.map.ordered.state");
+    foldedBody.addInstruction(
+        Instruction{"srem",
+                    {incrementedTotal,
+                     std::to_string(candidate.orderedModularFold->modulus)},
+                    remainder64});
+    foldedBody.addInstruction(
+        Instruction{"trunc", {remainder64, "int"}, foldedState});
+    foldedBody.addInstruction(Instruction{"br", {candidate.header}});
+    vectorStates.emplace_back(foldedState, foldedName);
+
+    const auto fallbackState =
+        appendSequentialRecurrence(orderedFallbackBody);
+    orderedFallbackBody.addInstruction(
+        Instruction{"br", {candidate.header}});
+    vectorStates.emplace_back(fallbackState, orderedFallbackName);
+  } else {
+    const auto currentState = appendSequentialRecurrence(vectorBody);
+    vectorBody.addInstruction(
+        Instruction{"add", {x3, candidate.step}, x4});
+    vectorBody.addInstruction(Instruction{"br", {candidate.header}});
+    vectorStates.emplace_back(currentState, vectorName);
   }
-  vectorBody.addInstruction(Instruction{"add", {x3, candidate.step}, x4});
-  vectorBody.addInstruction(Instruction{"br", {candidate.header}});
 
   for (std::size_t index = 0; index < 2; ++index) {
-    const auto &phi = header->instructions()[index];
+    auto phi = header->instructions()[index];
     if (phi.result() == candidate.induction) {
-      header->instructions()[index] = appendPhiIncoming(phi, x4, vectorName);
+      for (const auto &[state, predecessor] : vectorStates) {
+        (void)state;
+        phi = appendPhiIncoming(phi, x4, predecessor);
+      }
+      header->instructions()[index] = std::move(phi);
     } else if (phi.result() == candidate.state) {
-      header->instructions()[index] =
-          appendPhiIncoming(phi, currentState, vectorName);
+      for (const auto &[state, predecessor] : vectorStates) {
+        phi = appendPhiIncoming(phi, state, predecessor);
+      }
+      header->instructions()[index] = std::move(phi);
     } else {
       return false;
     }
@@ -726,7 +866,13 @@ bool transform(Function &function, const Candidate &candidate) {
   }
   position = function.blocks().insert(position, std::move(guard));
   ++position;
-  function.blocks().insert(position, std::move(vectorBody));
+  position = function.blocks().insert(position, std::move(vectorBody));
+  if (foldOrderedModularRecurrence) {
+    ++position;
+    position = function.blocks().insert(position, std::move(foldedBody));
+    ++position;
+    function.blocks().insert(position, std::move(orderedFallbackBody));
+  }
   return true;
 }
 

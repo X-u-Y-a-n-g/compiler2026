@@ -1,0 +1,34 @@
+int mapped(int x) {
+    int mixed = x * 17 - 23;
+    return mixed % 97;
+}
+
+int reduce_range(int initial, int begin, int end, int step) {
+    int state = initial;
+    int x = begin;
+    while (x < end) {
+        state = (state + mapped(x) + 5) % 1009;
+        x = x + step;
+    }
+    return state;
+}
+
+int main() {
+    // Nonnegative mapped values exercise the four-iteration folded path.
+    putint(reduce_range(0, 6, 91, 3));
+    putch(10);
+    // Negative mapped values exercise the ordered vector fallback.
+    putint(reduce_range(0, -11, 37, 2));
+    putch(10);
+    // A large initial state makes the widened total fail the i32-fit guard.
+    putint(reduce_range(2147483640, 6, 31, 3));
+    putch(10);
+    // Zero, scalar-only and vector-plus-tail trip counts.
+    putint(reduce_range(-7, 9, 9, 1));
+    putch(10);
+    putint(reduce_range(3, 9, 12, 1));
+    putch(10);
+    putint(reduce_range(4, 9, 18, 1));
+    putch(10);
+    return 0;
+}
