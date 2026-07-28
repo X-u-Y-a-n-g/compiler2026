@@ -654,6 +654,32 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     os << opcode << " ptr " << operands[0] << ", ptr " << operands[1];
     return os.str();
   }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.begin") {
+    os << opcode;
+    for (std::size_t index = 0; index < operands.size(); ++index) {
+      os << (index == 0 ? " " : ", ")
+         << (index < 4 ? "ptr " : "i32 ") << operands[index];
+    }
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared") {
+    os << opcode << " ptr " << operands[0];
+    for (std::size_t index = 1; index < operands.size(); ++index) {
+      os << ", i32 " << operands[index];
+    }
+    return os.str();
+  }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
+    os << opcode;
+    for (std::size_t index = 0; index < operands.size(); ++index) {
+      os << (index == 0 ? " ptr " : ", ptr ") << operands[index];
+    }
+    return os.str();
+  }
+  if (opcode.rfind("aarch64.neon.ordered.panel4.i32x8.", 0) == 0) {
+    os << opcode << " i32 " << operands[0];
+    return os.str();
+  }
   if (opcode == "aarch64.neon.square.sum.i32.init" ||
       opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" ||
       opcode ==

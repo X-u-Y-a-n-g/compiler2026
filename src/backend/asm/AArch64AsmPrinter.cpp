@@ -2685,6 +2685,72 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q14, q15, [" << row1 << ", #32]\n";
     return;
   }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.begin") {
+    for (int row = 0; row < 4; ++row) {
+      const auto address =
+          integerOperand(os, function, instruction.operands[row],
+                         kAddrScratch);
+      os << "  ldp q" << row * 2 << ", q" << row * 2 + 1 << ", ["
+         << address << "]\n";
+    }
+    for (int row = 0; row < 4; ++row) {
+      const auto initial =
+          integerOperand(os, function, instruction.operands[4 + row],
+                         kImmScratch);
+      for (int vector = 8 + row * 2; vector < 10 + row * 2; ++vector) {
+        os << "  dup v" << vector << ".4s, "
+           << integerRegister(initial, ValueType::int32Type()) << '\n';
+      }
+    }
+    return;
+  }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared") {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q22, q23, [" << source << "]\n";
+    for (int row = 0; row < 4; ++row) {
+      const auto coefficient =
+          integerOperand(os, function, instruction.operands[1 + row],
+                         kImmScratch);
+      os << "  dup v20.4s, "
+         << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+      os << "  mla v" << 8 + row * 2 << ".4s, v22.4s, v20.4s\n";
+      os << "  mla v" << 9 + row * 2 << ".4s, v23.4s, v20.4s\n";
+    }
+    return;
+  }
+  for (int destination = 0; destination < 4; ++destination) {
+    for (int source = 0; source < 4; ++source) {
+      const std::string version = source < destination ? "new" : "old";
+      const std::string expected =
+          "aarch64.neon.ordered.panel4.i32x8." + version +
+          std::to_string(source) + ".to.row" +
+          std::to_string(destination);
+      if (opcode != expected || instruction.operands.size() != 1) continue;
+      const auto coefficient =
+          integerOperand(os, function, instruction.operands[0], kImmScratch);
+      os << "  dup v20.4s, "
+         << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+      const int destinationFirst = 8 + destination * 2;
+      const int sourceFirst =
+          source < destination ? 8 + source * 2 : source * 2;
+      os << "  mla v" << destinationFirst << ".4s, v" << sourceFirst
+         << ".4s, v20.4s\n";
+      os << "  mla v" << destinationFirst + 1 << ".4s, v"
+         << sourceFirst + 1 << ".4s, v20.4s\n";
+      return;
+    }
+  }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
+    for (int row = 0; row < 4; ++row) {
+      const auto address =
+          integerOperand(os, function, instruction.operands[row],
+                         kAddrScratch);
+      os << "  stp q" << 8 + row * 2 << ", q" << 9 + row * 2 << ", ["
+         << address << "]\n";
+    }
+    return;
+  }
   if (opcode == "aarch64.neon.square.sum.i32.init" &&
       instruction.operands.empty()) {
     for (int vector = 16; vector <= 19; ++vector) {
