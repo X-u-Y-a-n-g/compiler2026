@@ -1,0 +1,86 @@
+int values[16];
+int side[16];
+int matrix[8][8];
+
+int add_one(int value) {
+  int result = 0;
+  while (result < value) {
+    result = result + 1;
+  }
+  return result + 1;
+}
+
+int forwarded(int count) {
+  int index;
+  values[0] = 2147483647;
+  index = 1;
+  while (index < count) {
+    values[index] = values[index - 1] + 1;
+    index = index + 1;
+  }
+  return values[count - 1];
+}
+
+int two_store_fallback(int count) {
+  int index;
+  side[0] = 3;
+  index = 1;
+  while (index < count) {
+    side[index] = side[index - 1] + 2;
+    values[index] = side[index];
+    index = index + 1;
+  }
+  return side[count - 1];
+}
+
+int call_fallback(int count) {
+  int index;
+  side[0] = 7;
+  index = 1;
+  while (index < count) {
+    side[index] = add_one(side[index - 1]);
+    index = index + 1;
+  }
+  return side[count - 1];
+}
+
+int non_unit_fallback(int count) {
+  int index;
+  values[0] = 5;
+  index = 2;
+  while (index < count) {
+    values[index] = values[index - 2] + 3;
+    index = index + 2;
+  }
+  return values[count - 2];
+}
+
+int varying_prefix_fallback(int count) {
+  int index;
+  int row;
+  matrix[0][0] = 9;
+  index = 1;
+  row = 0;
+  while (index < count) {
+    matrix[row][index] = matrix[row][index - 1] + 1;
+    index = index + 1;
+    row = row + 1;
+  }
+  return matrix[count - 2][count - 1];
+}
+
+int main() {
+  putint(forwarded(1));
+  putch(10);
+  putint(forwarded(4));
+  putch(10);
+  putint(two_store_fallback(5));
+  putch(10);
+  putint(call_fallback(5));
+  putch(10);
+  putint(non_unit_fallback(6));
+  putch(10);
+  putint(varying_prefix_fallback(4));
+  putch(10);
+  return 0;
+}

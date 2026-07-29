@@ -38,11 +38,14 @@
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
+#include "../../include/compiler/midend/pass/DeadPrefixIterationEliminationPass.h"
 #include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/GuardedInitializationSinkingPass.h"
+#include "../../include/compiler/midend/pass/IdempotentIterationCollapsePass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
 #include "../../include/compiler/midend/pass/LoopScalarPromotionPass.h"
@@ -56,6 +59,7 @@
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
+#include "../../include/compiler/midend/pass/RecursiveMemoizationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
 #include "../../include/compiler/midend/pass/StackAggregateInitPruningPass.h"
@@ -202,6 +206,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv("COMPILER_DISABLE_RECURSIVE_MEMOIZATION") == nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::RecursiveMemoizationPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::GlobalScalarLocalizationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
@@ -238,6 +248,16 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(std::make_unique<
                       compiler::midend::pass::ArraySummaryDimensionCollapsePass>());
+      if (std::getenv("COMPILER_DISABLE_IDEMPOTENT_ITERATION_COLLAPSE") ==
+          nullptr) {
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::IdempotentIterationCollapsePass>());
+      }
+      if (std::getenv("COMPILER_DISABLE_DEAD_PREFIX_ITERATION_ELIMINATION") ==
+          nullptr) {
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::DeadPrefixIterationEliminationPass>());
+      }
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineArrayCopyPropagationPass>());
@@ -299,6 +319,14 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicLoopBoundPass>());
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv(
+            "COMPILER_DISABLE_LOOP_CARRIED_STORE_LOAD_FORWARDING") ==
+            nullptr) {
+      passManager.add(std::make_unique<compiler::midend::pass::
+                                          LoopCarriedStoreToLoadForwardingPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
     if (invocation.options().target == "aarch64" ||

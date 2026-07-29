@@ -32,12 +32,15 @@ add_library(compiler_lib
   src/midend/pass/ConstantArgumentPropagationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
+  src/midend/pass/DeadPrefixIterationEliminationPass.cpp
   src/midend/pass/DivRemPairStrengthReductionPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/GuardedInitializationSinkingPass.cpp
+  src/midend/pass/IdempotentIterationCollapsePass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopCarriedStoreToLoadForwardingPass.cpp
   src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopWavefrontColumnPackingPass.cpp
   src/midend/pass/LoopScalarPromotionPass.cpp
@@ -51,6 +54,7 @@ add_library(compiler_lib
   src/midend/pass/RedundantLoadEliminationPass.cpp
   src/midend/pass/RedundantStoreEliminationPass.cpp
   src/midend/pass/RecursiveInliningPass.cpp
+  src/midend/pass/RecursiveMemoizationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/StoreProducerReductionFusionPass.cpp
   src/midend/pass/StackAggregateInitPruningPass.cpp
