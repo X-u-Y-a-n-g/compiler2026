@@ -679,6 +679,11 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     }
     return os.str();
   }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared.packed") {
+    os << opcode << " ptr " << operands[0] << ", ptr " << operands[1]
+       << ", i32 " << operands[2];
+    return os.str();
+  }
   if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
     os << opcode;
     for (std::size_t index = 0; index < operands.size(); ++index) {

@@ -1,0 +1,63 @@
+int data_grid[48][48];
+int factor_grid[48][48];
+int still_live[48][48];
+
+int main() {
+    int count = getint();
+    int row = 0;
+    while (row < 48) {
+        int column = 0;
+        while (column < 48) {
+            data_grid[row][column] =
+                (row * 9 + column * 5 + 3) % 19 - 9;
+            factor_grid[row][column] =
+                (row * 7 - column * 11 + 13) % 15 - 7;
+            still_live[row][column] = row - column;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        if (row >= count / 3) {
+            int column = 0;
+            while (column < count) {
+                data_grid[row][column] = 0 - 2;
+                column = column + 1;
+            }
+        }
+        row = row + 1;
+    }
+
+    row = 0;
+    while (row < count) {
+        int column = 0;
+        while (column < count) {
+            int reduction = 0;
+            int sum = 0;
+            while (reduction < count) {
+                sum = sum + factor_grid[row][reduction] *
+                    data_grid[reduction][column];
+                reduction = reduction + 1;
+            }
+            data_grid[row][column] = sum;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+
+    int result = still_live[count % 48][(count * 5 + 1) % 48];
+    row = 0;
+    while (row < 48) {
+        int column = 0;
+        while (column < 48) {
+            result = result * 29 + data_grid[row][column];
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

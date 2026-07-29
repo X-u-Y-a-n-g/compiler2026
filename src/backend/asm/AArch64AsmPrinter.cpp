@@ -2755,6 +2755,27 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     }
     return;
   }
+  if (opcode ==
+          "aarch64.neon.ordered.panel4.i32x8.shared.packed" &&
+      instruction.operands.size() == 3) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto coefficientBase =
+        integerOperand(os, function, instruction.operands[1], kHiddenScratch);
+    const auto index =
+        integerOperand(os, function, instruction.operands[2], kImmScratch);
+    os << "  add x18, " << coefficientBase << ", "
+       << integerRegister(index, ValueType::int32Type()) << ", sxtw #4\n";
+    os << "  ldp q22, q23, [" << source << "]\n";
+    os << "  ldr q20, [x18]\n";
+    for (int row = 0; row < 4; ++row) {
+      os << "  mla v" << 8 + row * 2 << ".4s, v22.4s, v20.s[" << row
+         << "]\n";
+      os << "  mla v" << 9 + row * 2 << ".4s, v23.4s, v20.s[" << row
+         << "]\n";
+    }
+    return;
+  }
   for (int destination = 0; destination < 4; ++destination) {
     for (int source = 0; source < 4; ++source) {
       const std::string version = source < destination ? "new" : "old";
