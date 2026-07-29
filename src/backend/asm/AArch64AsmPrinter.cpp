@@ -2157,6 +2157,34 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
              frameBaseOffset(function, instruction.operands[0].intValue));
     storeResult(os, function, instruction.result, dst); return;
   }
+  if (opcode == "aarch64.zero.stack.range" &&
+      instruction.operands.size() == 3) {
+    const auto& base = instruction.operands[0];
+    const long long byteOffset = instruction.operands[1].intValue;
+    const long long byteSize = instruction.operands[2].intValue;
+    const long long frameOffset =
+        frameBaseOffset(function, -stackObject(function, base.index).offset) +
+        byteOffset;
+    const long long lastPairOffset = frameOffset + byteSize - 32;
+    const bool directPairOffsets =
+        frameOffset >= -1024 && lastPairOffset <= 1008 &&
+        frameOffset % 16 == 0;
+    const std::string rangeBase =
+        directPairOffsets ? frameBaseRegister(function) : kAddrScratch;
+    if (!directPairOffsets) {
+      emitAddImmediate(os, kAddrScratch, frameBaseRegister(function),
+                       frameOffset);
+    }
+    os << "  movi v18.4s, #0\n";
+    for (long long offset = 0; offset < byteSize; offset += 32) {
+      const long long pairOffset =
+          directPairOffsets ? frameOffset + offset : offset;
+      os << "  stp q18, q18, [" << rangeBase;
+      if (pairOffset != 0) os << ", #" << pairOffset;
+      os << "]\n";
+    }
+    return;
+  }
   if (opcode == "spill.reload" || opcode == "frame.load") {
     const auto& frame = instruction.operands[0];
     emitLoad(os, instruction.result.text, instruction.result.type, frameBaseRegister(function),

@@ -1214,9 +1214,57 @@ elimination、scalar evolution 和 must-overwrite data-flow；未复制外部实
 - 本地诊断：三项 sort 的单轮 QEMU timer 合计约
   `0.316623s→0.302587s`，进一步下降约 `4.43%`。QEMU 只作为方向证据，
   最终去留等待 Cortex-A53 结果。
-- 状态：D，本地门禁完成，等待官方平台判定。
+- 官方 Cortex-A53：仓库所有者确认继续小幅改善，当前三项为
+  `0.74/0.04/0.12s`，相对上一候选的 `0.89/0.04/0.12s`，第一项下降约
+  `16.9%`，其余两项持平；截图中的领先参考为 `0.14/0.01/0.02s`。截图
+  SHA-256 为
+  `e17d8c2bf0a88ac07992a2442528d707c897c8bf13881402893d57759cdc575a`。
+- 状态：A，官方平台确认有效，提交 `709c947` 保留。
 
 本候选由 AI 辅助完成局部对象逃逸检查、支配分析、无环守卫区域验证、共同
 继续块选择、指令保序移动、匿名 fallback、60/140 门禁和汇编隔离。技术
 依据为经典 code sinking、partial dead code elimination 和 control
 dependence；未复制外部编译器实现。
+
+## 2026-07-29 AArch64 连续对齐栈零 Store 的 NEON 范围合并候选
+
+- 通用条件：在寄存器分配和栈帧布局完成后，只匹配同一基本块中连续出现的
+  `store.indexed` Machine IR。每条 Store 必须写入 i32 立即数零，基址必须
+  是同一个 `FrameIndex`/`StackObject`，下标和 scale 必须是固定立即数且
+  字节地址严格以 4 递增；区间不得超过该栈对象的已分配大小。只有实际栈
+  地址可由最终 frame layout 证明为 16 字节对齐、且至少存在连续 8 个元素
+  时才转换。转换只处理完整 32 字节块，尾部 Store 原样保留；单个 pseudo
+  最多覆盖 256 字节。匹配不读取源码、函数、变量、块或用例名称，也不使用
+  固定公开数组长度、输入或输出。消融开关为
+  `COMPILER_DISABLE_AARCH64_STACK_ZERO_RANGE_COMBINING=1`。
+- 变换：以保留 SIMD scratch `v18/q18` 生成零向量，再按每 32 字节一条
+  `stp q18, q18` 精确覆盖原 Store 区间；最终 frame-base 偏移全部位于 pair
+  immediate 编码范围时直接以 `sp/x29` 为基址，否则才以保留地址 scratch
+  `x16` 一次物化范围首地址。`v18` 不与现有文本级向量填充使用的 `v16/v17`
+  或其它 NEON 规则的 scratch 集合重叠。该 pseudo 在 AArch64 AsmPrinter 中
+  直接 lowering，不是对最终汇编做正则替换。
+- 精确性依据：被替换的 Store 在同一基本块中连续且目标字节互不重叠，之间
+  没有可观察访问；NEON Store 写入完全相同的零位模式，覆盖起止地址与原
+  i32 Store 集合严格相同。对象边界、16 字节对齐、32 字节整块和 AArch64
+  保留 scratch 条件均在转换前验证；非零值、短区间、未知/非连续下标、不同
+  对象、越界或未证明对齐均完整 fallback。
+- 匿名验证：24 元素对齐零数组由 24 条标量零 Store 合并为一次 `movi` 和
+  三条 `stp q`；9 元素但未证明 16 字节对齐的数组、7 元素短区间和 8 元素
+  非零初始化均保持标量路径。候选和关闭版均经静态链接后由 QEMU 执行，输出
+  逐字一致；两份汇编均通过 GNU AArch64 汇编器。
+- 汇编隔离与门禁：候选/关闭版分别生成并执行全部 60 项 ARM performance，
+  均为 `57 AC + 3` 个既有 h-4 末尾空行格式差异；h-4 候选与关闭汇编逐字
+  一致。60 份最终汇编只有 `03_sort1/2/3` 变化，每份把 16 条 `str wzr` 和
+  16 次重复栈地址物化替换为一次 `movi` 和两条直接 frame-base `stp q`。
+  AArch64 correctness 为 `140/140 AC`。
+- 本地诊断：最终 direct frame-base lowering 的五轮交错 QEMU 中，三项
+  sort 合计中位数约 `39.922→39.262ms`，下降约 `1.65%`；均值约
+  `39.898→39.336ms`，下降约 `1.41%`。该结果只作为静态工作量削减的辅助
+  证据，真实去留等待官方
+  Cortex-A53 平台判定。
+- 状态：D，本地门禁完成，等待仓库所有者提交后的官方平台结果。
+
+本候选由 AI 辅助完成 Machine IR 连续区间识别、最终栈偏移与对象边界验证、
+保留 SIMD scratch 选择、pseudo lowering、匿名正反例、60/140 门禁和汇编
+消融。技术依据为 AArch64 Advanced SIMD 零向量构造、成对 Store 和经典
+store combining；未复制外部编译器实现。

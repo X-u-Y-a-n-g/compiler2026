@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 #include <limits>
 #include <optional>
@@ -447,6 +448,136 @@ void combinePostRAPairedI32Loads(MachineFunction& function) {
   }
 }
 
+struct StackZeroStore {
+  MachineOperand base;
+  long long byteOffset = 0;
+};
+
+std::optional<StackZeroStore> indexedStackZeroStore(
+    const MachineInstruction& instruction) {
+  if (instruction.opcode != "store.indexed" ||
+      instruction.operands.size() != 4 ||
+      instruction.operands[0].kind != MachineOperandKind::ImmediateInt ||
+      instruction.operands[0].intValue != 0 ||
+      !instruction.operands[0].type.isInt32() ||
+      (instruction.operands[1].kind != MachineOperandKind::FrameIndex &&
+       instruction.operands[1].kind != MachineOperandKind::StackObject) ||
+      instruction.operands[2].kind != MachineOperandKind::ImmediateInt ||
+      instruction.operands[3].kind != MachineOperandKind::ImmediateInt ||
+      instruction.operands[3].intValue != 4) {
+    return std::nullopt;
+  }
+  const __int128 offset =
+      static_cast<__int128>(instruction.operands[2].intValue) * 4;
+  if (offset < 0 || offset > std::numeric_limits<long long>::max()) {
+    return std::nullopt;
+  }
+  return StackZeroStore{instruction.operands[1],
+                        static_cast<long long>(offset)};
+}
+
+bool sameStackObject(const MachineOperand& lhs, const MachineOperand& rhs) {
+  return lhs.kind == rhs.kind && lhs.index == rhs.index;
+}
+
+long long stackObjectFrameOffset(const MachineFunction& function,
+                                 const MachineOperand& base) {
+  const auto& object =
+      function.stackObjects[static_cast<std::size_t>(base.index)];
+  const long long cfaOffset = -static_cast<long long>(object.offset);
+  return function.usesFramePointer
+             ? cfaOffset
+             : static_cast<long long>(function.frameSize) + cfaOffset;
+}
+
+std::size_t combinePostRAStackZeroRanges(MachineFunction& function) {
+  constexpr std::size_t kStoresPerChunk = 8;
+  constexpr std::size_t kBytesPerStore = 4;
+  constexpr std::size_t kMaximumBytesPerPseudo = 256;
+
+  std::size_t combinedStores = 0;
+  for (auto& block : function.blocks) {
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(block.instructions.size());
+    for (std::size_t index = 0; index < block.instructions.size();) {
+      const auto first = indexedStackZeroStore(block.instructions[index]);
+      if (!first.has_value()) {
+        rewritten.push_back(std::move(block.instructions[index++]));
+        continue;
+      }
+
+      std::size_t runEnd = index + 1;
+      long long expectedOffset = first->byteOffset;
+      while (runEnd < block.instructions.size()) {
+        if (expectedOffset >
+            std::numeric_limits<long long>::max() -
+                static_cast<long long>(kBytesPerStore)) {
+          break;
+        }
+        expectedOffset += kBytesPerStore;
+        const auto next = indexedStackZeroStore(block.instructions[runEnd]);
+        if (!next.has_value() ||
+            !sameStackObject(first->base, next->base) ||
+            next->byteOffset != expectedOffset) {
+          break;
+        }
+        ++runEnd;
+      }
+
+      const std::size_t runStores = runEnd - index;
+      std::size_t vectorStores =
+          (runStores / kStoresPerChunk) * kStoresPerChunk;
+      if (first->base.index < 0 ||
+          static_cast<std::size_t>(first->base.index) >=
+              function.stackObjects.size()) {
+        vectorStores = 0;
+      } else {
+        const auto& object = function.stackObjects[static_cast<std::size_t>(
+            first->base.index)];
+        const auto byteCount = vectorStores * kBytesPerStore;
+        if (first->byteOffset < 0 ||
+            static_cast<unsigned long long>(first->byteOffset) + byteCount >
+                object.size) {
+          vectorStores = 0;
+        } else {
+          const long long frameOffset =
+              stackObjectFrameOffset(function, first->base) +
+              first->byteOffset;
+          if (frameOffset % 16 != 0) vectorStores = 0;
+        }
+      }
+
+      std::size_t emittedStores = 0;
+      while (emittedStores < vectorStores) {
+        const std::size_t remainingBytes =
+            (vectorStores - emittedStores) * kBytesPerStore;
+        const std::size_t byteCount =
+            std::min(remainingBytes, kMaximumBytesPerPseudo);
+        rewritten.push_back(MachineInstruction::target(
+            "aarch64.zero.stack.range",
+            {first->base,
+             MachineOperand::immediateInt(
+                 first->byteOffset +
+                     static_cast<long long>(emittedStores * kBytesPerStore),
+                 compiler::backend::mir::ValueType::int64Type()),
+             MachineOperand::immediateInt(
+                 static_cast<long long>(byteCount),
+                 compiler::backend::mir::ValueType::int64Type())}));
+        emittedStores += byteCount / kBytesPerStore;
+      }
+      combinedStores += vectorStores;
+
+      for (std::size_t scalar = index + vectorStores; scalar < runEnd;
+           ++scalar) {
+        rewritten.push_back(std::move(block.instructions[scalar]));
+      }
+      index = runEnd;
+    }
+    block.instructions = std::move(rewritten);
+  }
+  return combinedStores;
+}
+
 bool isZeroImmediate(const MachineOperand& operand) {
   return operand.kind == MachineOperandKind::ImmediateInt &&
          operand.intValue == 0;
@@ -601,10 +732,19 @@ void AArch64InstructionCombining::run(
 void AArch64InstructionCombining::runPostRA(
     compiler::backend::mir::MachineModule& module) const {
   if (module.target.name() != "aarch64") return;
+  std::size_t combinedZeroStores = 0;
   for (auto& function : module.functions) {
     combinePostRAPairedI32Loads(function);
+    if (std::getenv("COMPILER_DISABLE_AARCH64_STACK_ZERO_RANGE_COMBINING") ==
+        nullptr) {
+      combinedZeroStores += combinePostRAStackZeroRanges(function);
+    }
     combinePostRACountedBranches(function);
     redirectPostRANoOpBlocks(function);
+  }
+  if (std::getenv("COMPILER_AARCH64_STACK_ZERO_RANGE_STATS") != nullptr) {
+    std::cerr << "aarch64-stack-zero-range: combined-i32-stores="
+              << combinedZeroStores << '\n';
   }
 }
 
