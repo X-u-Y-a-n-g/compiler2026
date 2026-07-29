@@ -41,6 +41,7 @@
 #include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
+#include "../../include/compiler/midend/pass/GuardedInitializationSinkingPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
@@ -318,6 +319,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         nullptr) {
       passManager.add(std::make_unique<
                       compiler::midend::pass::StackAggregateInitPruningPass>());
+    }
+    if (std::getenv("COMPILER_DISABLE_GUARDED_INITIALIZATION_SINKING") ==
+        nullptr) {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::GuardedInitializationSinkingPass>());
     }
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());

@@ -1,0 +1,86 @@
+int guarded_sum(int mode) {
+  int values[7] = {1, 2, 3, 4, 5, 6, 7};
+  int i;
+  int sum;
+  if (mode < 0) {
+    return 11;
+  }
+  if (mode == 0) {
+    return 13;
+  }
+  i = 0;
+  sum = 0;
+  while (i < 7) {
+    sum = sum + values[i];
+    i = i + 1;
+  }
+  return sum + mode;
+}
+
+int read_in_guard(int mode) {
+  int values[5] = {2, 3, 5, 7, 11};
+  int first = values[0];
+  int i;
+  int sum;
+  if (mode < 0) {
+    return first;
+  }
+  i = 0;
+  sum = 0;
+  while (i < 5) {
+    sum = sum + values[i];
+    i = i + 1;
+  }
+  return sum;
+}
+
+int sum_pointer(int values[], int count) {
+  int i = 0;
+  int sum = 0;
+  while (i < count) {
+    sum = sum + values[i];
+    i = i + 1;
+  }
+  return sum;
+}
+
+int escaped_before_guard(int mode) {
+  int values[4] = {4, 3, 2, 1};
+  int sum = sum_pointer(values, 4);
+  if (mode == 0) {
+    return 9;
+  }
+  return sum;
+}
+
+int loop_in_guard(int count) {
+  int values[3] = {6, 7, 8};
+  int i = 0;
+  while (i < count) {
+    i = i + 1;
+  }
+  if (count < 0) {
+    return 5;
+  }
+  return values[2];
+}
+
+int main() {
+  putint(guarded_sum(-1));
+  putch(10);
+  putint(guarded_sum(0));
+  putch(10);
+  putint(guarded_sum(2));
+  putch(10);
+  putint(read_in_guard(-1));
+  putch(10);
+  putint(read_in_guard(1));
+  putch(10);
+  putint(escaped_before_guard(0));
+  putch(10);
+  putint(escaped_before_guard(1));
+  putch(10);
+  putint(loop_in_guard(2));
+  putch(10);
+  return 0;
+}
