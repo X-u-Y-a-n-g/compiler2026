@@ -1541,3 +1541,38 @@ NEON 路径生成、匿名正负回绕语义验证、60/140 门禁和汇编隔�
 汇编隔离。技术依据为经典 demand-driven computation、program slicing、
 last-writer analysis 与 affine index analysis；未复制外部实现，也未使用
 路径、用例/函数/全局/块名、固定公开尺寸、输入或输出触发优化。
+
+### 2026-07-30 不可观察全局数组的对象级死写删除（待平台判定）
+
+- 通用证明：只分析非 const 全局数组，并在每个函数内对该对象经
+  `cast/GEP` 形成的派生指针求固定点闭包。派生地址的所有用途必须都是继续
+  派生地址或作为普通 store 的唯一地址操作数；出现任意 load、调用实参、
+  返回、store 值、Phi/select 或其他未知用途，就对整个对象保守回退。对象
+  至少有一次 store 才会变换，且不删除全局对象本身。
+- 变换：删除已证明没有可观察者的全部 store，保留调用和其他有副作用计算；
+  随后的通用 DCE 再删除只服务于这些 store 的纯地址和值计算。消融开关为
+  `COMPILER_DISABLE_DEAD_GLOBAL_ARRAY_STORES=1`，统计开关为
+  `COMPILER_DEAD_GLOBAL_ARRAY_STORE_STATS=1`。
+- 匿名验证：正例同时写入一个随后求和的数组和一个从未读取的数组，后者唯一
+  store 被删除，输出为 `527`；读取反例与把地址传给 `putarray` 的逃逸反例
+  均报告 `objects=0 stores=0`，输出分别为 `493` 和两行完整数组。三项
+  AArch64 编译、静态链接和 QEMU 对拍均 AC。
+- 隔离：ARM performance 60 份统计只在 `sl1/sl2/sl3` 各删除一个全局对象
+  的一个静态 store，最终汇编也只有这三份变化。其余 57 份与关闭版逐字
+  一致。correctness 139 份快速扫描中只有 `65_color` 和 `86_long_code2`
+  命中，两项单独输出对拍 AC；最终完整 correctness 为 `140/140 AC`。
+- 本地性能：同一编译器严格开关 A/B 中，关闭版三项为
+  `2.777129/0.875069/0.418219s`，候选为
+  `2.523019/0.696066/0.331604s`；合计 `4.070417→3.550689s`，下降约
+  `12.77%`，三项方向一致。完整门禁的独立候选轮次三项合计为
+  `2.695884s`，但不与前述配对 A/B 混算。
+- 完整门禁：performance 为 `57 AC + 3` 个父提交已有的 h-4 末尾格式
+  差异，没有新增失败；AArch64 correctness 为 `140/140 AC`。
+- 状态：D。门禁完成后推送到所有者指定的 `wz-arm`，等待 Cortex-A53
+  复核。
+
+本候选由 AI 辅助完成全模块派生指针闭包、对象级逃逸/读取证明、匿名正反例、
+60 份汇编消融、完整 60/140 门禁和开关 A/B。技术依据为经典 whole-program
+dead store elimination、escape analysis、use-def closure 与 dead code
+elimination；未复制外部实现，也未使用路径、用例/函数/变量/全局/块名、
+固定公开尺寸、输入、输出或写入常量触发优化。

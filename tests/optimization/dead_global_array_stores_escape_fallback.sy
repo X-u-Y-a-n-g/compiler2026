@@ -1,0 +1,16 @@
+int observed[64];
+int retained[64];
+
+int main() {
+    int count = getint();
+    int index = 0;
+    while (index < count) {
+        observed[index] = index + 2;
+        retained[index] = 7 - index;
+        index = index + 1;
+    }
+
+    putarray(count, retained);
+    putarray(count, observed);
+    return 0;
+}

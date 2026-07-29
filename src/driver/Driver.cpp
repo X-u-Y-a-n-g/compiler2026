@@ -38,6 +38,7 @@
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
+#include "../../include/compiler/midend/pass/DeadGlobalArrayStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/DeadPrefixIterationEliminationPass.h"
 #include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
@@ -353,6 +354,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         nullptr) {
       passManager.add(std::make_unique<
                       compiler::midend::pass::GuardedInitializationSinkingPass>());
+    }
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::
+                          DeadGlobalArrayStoreEliminationPass>());
     }
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());
