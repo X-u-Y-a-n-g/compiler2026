@@ -1,0 +1,22 @@
+int values[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+void update_in_place() {
+    int i = 0;
+    while (i < 8) {
+        values[i] = values[i] + 1;
+        i = i + 1;
+    }
+}
+
+int main() {
+    int remaining = 4;
+    while (remaining > 0) {
+        update_in_place();
+        remaining = remaining - 1;
+    }
+    putint(values[0]);
+    putch(32);
+    putint(values[7]);
+    putch(10);
+    return 0;
+}

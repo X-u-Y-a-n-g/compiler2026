@@ -1,0 +1,39 @@
+int source[8] = {3, 1, 4, 1, 5, 9, 2, 6};
+int output[8];
+int state;
+int reset;
+int produced;
+
+int transform() {
+    int i = 0;
+    int sum = 0;
+    while (i < 8) {
+        int value = source[i] + state + reset;
+        output[i] = value;
+        sum = sum + value;
+        i = i + 1;
+    }
+    state = state * 3 % 7;
+    produced = i;
+    return sum;
+}
+
+int main() {
+    int remaining = 9;
+    int result = 0;
+    state = 0;
+    while (remaining > 0) {
+        reset = 0;
+        result = transform();
+        remaining = remaining - 1;
+    }
+    putint(state);
+    putch(32);
+    putint(result);
+    putch(32);
+    putint(produced);
+    putch(32);
+    putint(output[5]);
+    putch(10);
+    return 0;
+}
