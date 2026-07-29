@@ -54,6 +54,7 @@ add_library(compiler_lib
   src/midend/pass/RedundantLoadEliminationPass.cpp
   src/midend/pass/RedundantStoreEliminationPass.cpp
   src/midend/pass/RecursiveInliningPass.cpp
+  src/midend/pass/RecursiveMemoizationPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/StoreProducerReductionFusionPass.cpp
   src/midend/pass/StackAggregateInitPruningPass.cpp

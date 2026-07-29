@@ -59,6 +59,7 @@
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
+#include "../../include/compiler/midend/pass/RecursiveMemoizationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
 #include "../../include/compiler/midend/pass/StackAggregateInitPruningPass.h"
@@ -205,6 +206,12 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv("COMPILER_DISABLE_RECURSIVE_MEMOIZATION") == nullptr) {
+      passManager.add(
+          std::make_unique<compiler::midend::pass::RecursiveMemoizationPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::GlobalScalarLocalizationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
