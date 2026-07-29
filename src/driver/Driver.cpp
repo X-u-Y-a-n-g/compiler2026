@@ -57,6 +57,7 @@
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
+#include "../../include/compiler/midend/pass/StackAggregateInitPruningPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
@@ -312,6 +313,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(std::make_unique<
                       compiler::midend::pass::StoreProducerReductionFusionPass>());
+    }
+    if (std::getenv("COMPILER_DISABLE_STACK_AGGREGATE_INIT_PRUNING") ==
+        nullptr) {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::StackAggregateInitPruningPass>());
     }
     passManager.add(std::make_unique<compiler::midend::pass::DeadCodeEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::TrivialBlockEliminationPass>());

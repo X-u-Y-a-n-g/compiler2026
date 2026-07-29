@@ -52,6 +52,7 @@ add_library(compiler_lib
   src/midend/pass/RecursiveInliningPass.cpp
   src/midend/pass/RemainderComparisonPass.cpp
   src/midend/pass/StoreProducerReductionFusionPass.cpp
+  src/midend/pass/StackAggregateInitPruningPass.cpp
   src/midend/pass/TailRecursionEliminationPass.cpp
   src/midend/pass/TrivialBlockEliminationPass.cpp
   src/midend/pass/WidenedModularMultiplyPass.cpp
