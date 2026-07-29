@@ -1,0 +1,156 @@
+int source[16];
+int output[16];
+int alias_data[16];
+int iv_output[16];
+int factor[16];
+int seed[16];
+int seeded_output[16];
+int partial_output[16];
+int conditional_output[16];
+int effect_count;
+
+void touch_state() {
+  effect_count = effect_count + 1;
+}
+
+void call_fallback(int repeat) {
+  int round = 0;
+  while (round < repeat) {
+    touch_state();
+    round = round + 1;
+  }
+}
+
+void overwrite_only(int repeat, int count, int input[], int result[]) {
+  int round = 0;
+  while (round < repeat) {
+    int i = 0;
+    while (i < count) {
+      result[i] = input[i] * 3 + 1;
+      i = i + 1;
+    }
+    round = round + 1;
+  }
+}
+
+void alias_fallback(int repeat, int count, int input[], int result[]) {
+  int round = 0;
+  while (round < repeat) {
+    int i = 0;
+    while (i < count) {
+      result[i] = input[i] + 1;
+      i = i + 1;
+    }
+    round = round + 1;
+  }
+}
+
+void induction_fallback(int repeat, int result[]) {
+  int round = 0;
+  while (round < repeat) {
+    result[0] = round;
+    round = round + 1;
+  }
+}
+
+void update_seeded(int count, int scale[], int result[]) {
+  int i = 0;
+  while (i < count) {
+    result[i] = result[i] * scale[i] + 1;
+    i = i + 1;
+  }
+}
+
+int sum4(int data[]) {
+  return data[0] + data[1] + data[2] + data[3];
+}
+
+int main() {
+  int i;
+  int j;
+  int seeded_round;
+  int partial_round;
+  int conditional_round;
+  i = 0;
+  while (i < 4) {
+    source[i] = i + 1;
+    output[i] = 7;
+    alias_data[i] = i + 1;
+    factor[i] = i + 2;
+    seed[i] = i + 1;
+    seeded_output[i] = 0;
+    partial_output[i] = 0;
+    conditional_output[i] = 0;
+    i = i + 1;
+  }
+
+  overwrite_only(0, 4, source, output);
+  putint(sum4(output));
+  putch(10);
+  overwrite_only(3, 4, source, output);
+  putint(sum4(output));
+  putch(10);
+
+  output[0] = 7;
+  output[1] = 7;
+  output[2] = 7;
+  output[3] = 7;
+  overwrite_only(-3, 4, source, output);
+  putint(sum4(output));
+  putch(10);
+
+  alias_fallback(3, 4, alias_data, alias_data);
+  putint(sum4(alias_data));
+  putch(10);
+
+  induction_fallback(4, iv_output);
+  putint(iv_output[0]);
+  putch(10);
+
+  seeded_round = 0;
+  while (seeded_round < 4) {
+    j = 0;
+    while (j < 4) {
+      seeded_output[j] = seed[j];
+      j = j + 1;
+    }
+    update_seeded(4, factor, seeded_output);
+    seeded_round = seeded_round + 1;
+  }
+  putint(sum4(seeded_output));
+  putch(10);
+
+  partial_round = 0;
+  while (partial_round < 4) {
+    j = 0;
+    while (j < 2) {
+      partial_output[j] = seed[j];
+      j = j + 1;
+    }
+    update_seeded(4, factor, partial_output);
+    partial_round = partial_round + 1;
+  }
+  putint(sum4(partial_output));
+  putch(10);
+
+  conditional_round = 0;
+  while (conditional_round < 4) {
+    j = 0;
+    while (j < 4) {
+      if (j != 2) {
+        conditional_output[j] = seed[j];
+      }
+      j = j + 1;
+    }
+    update_seeded(4, factor, conditional_output);
+    conditional_round = conditional_round + 1;
+  }
+  putint(sum4(conditional_output));
+  putch(10);
+
+  effect_count = 0;
+  call_fallback(3);
+  putint(effect_count);
+  putch(10);
+  return 0;
+}

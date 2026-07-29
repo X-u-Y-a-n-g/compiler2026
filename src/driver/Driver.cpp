@@ -42,6 +42,7 @@
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/GuardedInitializationSinkingPass.h"
+#include "../../include/compiler/midend/pass/IdempotentIterationCollapsePass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
@@ -239,6 +240,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(std::make_unique<
                       compiler::midend::pass::ArraySummaryDimensionCollapsePass>());
+      if (std::getenv("COMPILER_DISABLE_IDEMPOTENT_ITERATION_COLLAPSE") ==
+          nullptr) {
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::IdempotentIterationCollapsePass>());
+      }
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::AffineArrayCopyPropagationPass>());

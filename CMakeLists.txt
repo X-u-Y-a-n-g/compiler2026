@@ -36,6 +36,7 @@ add_library(compiler_lib
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalScalarLocalizationPass.cpp
   src/midend/pass/GuardedInitializationSinkingPass.cpp
+  src/midend/pass/IdempotentIterationCollapsePass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
   src/midend/pass/LoopCarriedStoreToLoadForwardingPass.cpp
