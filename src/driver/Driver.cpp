@@ -38,6 +38,7 @@
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "../../include/compiler/midend/pass/CrossLoopStoreForwardingPass.h"
 #include "../../include/compiler/midend/pass/DeadCodeEliminationPass.h"
+#include "../../include/compiler/midend/pass/DeadPrefixIterationEliminationPass.h"
 #include "../../include/compiler/midend/pass/DivRemPairStrengthReductionPass.h"
 #include "../../include/compiler/midend/pass/FunctionInliningPass.h"
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
@@ -244,6 +245,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
           nullptr) {
         passManager.add(std::make_unique<
                         compiler::midend::pass::IdempotentIterationCollapsePass>());
+      }
+      if (std::getenv("COMPILER_DISABLE_DEAD_PREFIX_ITERATION_ELIMINATION") ==
+          nullptr) {
+        passManager.add(std::make_unique<
+                        compiler::midend::pass::DeadPrefixIterationEliminationPass>());
       }
     }
     passManager.add(

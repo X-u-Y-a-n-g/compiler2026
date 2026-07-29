@@ -32,6 +32,7 @@ add_library(compiler_lib
   src/midend/pass/ConstantArgumentPropagationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
   src/midend/pass/DeadCodeEliminationPass.cpp
+  src/midend/pass/DeadPrefixIterationEliminationPass.cpp
   src/midend/pass/DivRemPairStrengthReductionPass.cpp
   src/midend/pass/FunctionInliningPass.cpp
   src/midend/pass/GlobalScalarLocalizationPass.cpp
