@@ -2536,6 +2536,42 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  mls v27.4s, v30.4s, v29.4s\n";
     return;
   }
+  if (opcode == "aarch64.neon.load.coeff.i32x8" &&
+      instruction.operands.size() == 1) {
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  ldp q16, q17, [" << address << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.neon.mls.acc.i32x32.k8.by.element" &&
+      instruction.operands.size() == 2) {
+    const auto source0 =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto source1 =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  sub x17, " << source1 << ", " << source0 << '\n';
+    os << "  mov x18, " << source0 << '\n';
+    for (int lane = 0; lane < 8; ++lane) {
+      const int coefficientVector = lane < 4 ? 16 : 17;
+      const int coefficientLane = lane % 4;
+      for (int pair = 0; pair < 4; ++pair) {
+        const int offset = pair * 32;
+        os << "  ldp q28, q30, [x18";
+        if (offset != 0)
+          os << ", #" << offset;
+        os << "]\n";
+        os << "  mls v" << 20 + pair * 2
+           << ".4s, v28.4s, v" << coefficientVector << ".s["
+           << coefficientLane << "]\n";
+        os << "  mls v" << 21 + pair * 2
+           << ".4s, v30.4s, v" << coefficientVector << ".s["
+           << coefficientLane << "]\n";
+      }
+      if (lane != 7)
+        os << "  add x18, x18, x17\n";
+    }
+    return;
+  }
   if (opcode == "aarch64.neon.zero.acc.i32x32" &&
       instruction.operands.empty()) {
     os << "  movi v20.4s, #0\n";

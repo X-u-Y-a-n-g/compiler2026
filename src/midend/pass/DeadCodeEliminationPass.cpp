@@ -294,6 +294,8 @@ bool isEssential(const Instruction& instruction) {
          opcode == "aarch64.neon.store.acc.i32x8" ||
          opcode == "aarch64.neon.load.acc.i32x32" ||
          opcode == "aarch64.neon.mls.acc.i32x32" ||
+         opcode == "aarch64.neon.load.coeff.i32x8" ||
+         opcode == "aarch64.neon.mls.acc.i32x32.k8.by.element" ||
          opcode == "aarch64.neon.zero.acc.i32x32" ||
          opcode == "aarch64.neon.splat.acc.i32x32" ||
          opcode == "aarch64.neon.dup.acc.i32x32" ||

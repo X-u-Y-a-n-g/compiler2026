@@ -473,6 +473,18 @@ class FunctionLoweringContext {
       return;
     }
 
+    if (opcode == "aarch64.neon.load.coeff.i32x8") {
+      emit(block, opcode, {}, {lowerValueOperand(operands[0])});
+      return;
+    }
+
+    if (opcode == "aarch64.neon.mls.acc.i32x32.k8.by.element") {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1])});
+      return;
+    }
+
     if (opcode == "aarch64.neon.zero.acc.i32x32") {
       emit(block, opcode, {});
       return;
