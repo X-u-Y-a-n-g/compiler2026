@@ -1649,9 +1649,10 @@ bool buildOrderedTwoRowPanel(Function &function, const Candidate &candidate,
   return true;
 }
 
-bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
-                               const UniformSuffixPattern &pattern) {
-  if (std::getenv("COMPILER_DISABLE_ORDERED_FOUR_ROW_PANEL8") != nullptr) {
+bool buildOrderedFourRowPanel16Lazy(Function &function,
+                                    const Candidate &candidate,
+                                    const UniformSuffixPattern &pattern) {
+  if (std::getenv("COMPILER_DISABLE_ORDERED_FOUR_ROW_PANEL16_LAZY") != nullptr) {
     return false;
   }
   const auto definitions = buildDefinitions(function);
@@ -1675,10 +1676,10 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
   auto value = [&](const std::string &stem) {
-    return freshName(valueNames, "%ordered.panel4x8." + stem);
+    return freshName(valueNames, "%ordered.panel4x16.lazy." + stem);
   };
   auto block = [&](const std::string &stem) {
-    return freshName(blockNames, "ordered.panel4x8." + stem);
+    return freshName(blockNames, "ordered.panel4x16.lazy." + stem);
   };
 
   std::array<std::string, 4> rows{pattern.row, value("row1"), value("row2"),
@@ -1793,7 +1794,7 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
   guard.addInstruction(
       Instruction{"icmp.slt", {rows[3], candidate.outerBound}, hasRow3});
   guard.addInstruction(
-      Instruction{"srem", {candidate.outerBound, "8"}, columnRemainder});
+      Instruction{"srem", {candidate.outerBound, "16"}, columnRemainder});
   guard.addInstruction(
       Instruction{"icmp.eq", {columnRemainder, "0"}, fullColumns});
   guard.addInstruction(Instruction{"and", {hasRow3, fullColumns}, usePanel});
@@ -1879,7 +1880,7 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
         "getelementptr", {destinationRows[row], column}, destinations[row]});
   }
   columnBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x8.begin",
+      "aarch64.neon.ordered.panel4.i32x16.lazy.begin",
       {destinations[0], destinations[1], destinations[2], destinations[3],
        suffixAcc[0], suffixAcc[1], suffixAcc[2], suffixAcc[3]}});
   columnBody.addInstruction(
@@ -1912,7 +1913,7 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
         prefixCoefficient[row]});
   }
   prefixBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x8.shared",
+      "aarch64.neon.ordered.panel4.i32x16.lazy.shared",
       {prefixSource, prefixCoefficient[0], prefixCoefficient[1],
        prefixCoefficient[2], prefixCoefficient[3]}});
   prefixBody.addInstruction(
@@ -1944,7 +1945,7 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
         "load", {"int", highCoefficientAddress[row]}, highCoefficient[row]});
   }
   highBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x8.shared",
+      "aarch64.neon.ordered.panel4.i32x16.lazy.shared",
       {highSource, highCoefficient[0], highCoefficient[1],
        highCoefficient[2], highCoefficient[3]}});
   highBody.addInstruction(Instruction{"add", {highK, "1"}, highNextK});
@@ -1975,12 +1976,18 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
       dependencyBody.addInstruction(Instruction{
           "load", {"int", dependencyAddresses[destination][source]},
           dependencyCoefficients[destination][source]});
-      const std::string version = source < destination ? "new" : "old";
+      const bool useNewValue = source < destination;
+      const std::string version = useNewValue ? "new" : "old";
+      std::vector<std::string> operands;
+      if (!useNewValue) {
+        operands.push_back(destinations[source]);
+      }
+      operands.push_back(dependencyCoefficients[destination][source]);
       dependencyBody.addInstruction(Instruction{
-          "aarch64.neon.ordered.panel4.i32x8." + version +
+          "aarch64.neon.ordered.panel4.i32x16.lazy." + version +
               std::to_string(source) + ".to.row" +
               std::to_string(destination),
-          {dependencyCoefficients[destination][source]}});
+          std::move(operands)});
       dependencyBody.addInstruction(Instruction{"br", {next}});
       generated.push_back(std::move(dependencyBody));
     }
@@ -1988,9 +1995,9 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
 
   BasicBlock store{storeName};
   store.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x8.store",
+      "aarch64.neon.ordered.panel4.i32x16.lazy.store",
       {destinations[0], destinations[1], destinations[2], destinations[3]}});
-  store.addInstruction(Instruction{"add", {column, "8"}, nextColumn});
+  store.addInstruction(Instruction{"add", {column, "16"}, nextColumn});
   store.addInstruction(Instruction{"br", {columnHeaderName}});
   generated.push_back(std::move(store));
 
@@ -2588,7 +2595,7 @@ void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
       if (transformed && uniformPattern.has_value() &&
           useAArch64VectorAccumulator_) {
         if (buildOrderedTwoRowPanel(function, *candidate, *uniformPattern)) {
-          buildOrderedFourRowPanel8(function, *candidate, *uniformPattern);
+          buildOrderedFourRowPanel16Lazy(function, *candidate, *uniformPattern);
         }
       }
     }

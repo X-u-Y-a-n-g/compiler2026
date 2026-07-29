@@ -391,7 +391,7 @@ bool transform(Function& function, const ReductionScan& scan) {
           opcode != "aarch64.neon.mla.acc.i32x32" &&
           opcode != "aarch64.neon.store.acc.i32x32" &&
           opcode.rfind("aarch64.neon.ordered.panel.i32x16.", 0) != 0 &&
-          opcode.rfind("aarch64.neon.ordered.panel4.i32x8.", 0) != 0) {
+          opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.", 0) != 0) {
         return false;
       }
       if (instruction.opcode() == "aarch64.neon.store.acc.i32x32") {
@@ -412,7 +412,7 @@ bool transform(Function& function, const ReductionScan& scan) {
         }
         ++vectorStores;
       } else if (instruction.opcode() ==
-                 "aarch64.neon.ordered.panel4.i32x8.store") {
+                 "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
         if (instruction.operands().size() != 4) return false;
         for (const auto& operand : instruction.operands()) {
           if (pointerRoot(operand, definitions) != scan.matrixRoot) {
@@ -483,9 +483,9 @@ bool transform(Function& function, const ReductionScan& scan) {
         rewritten.emplace_back(
             "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2");
       } else if (instruction.opcode() ==
-                 "aarch64.neon.ordered.panel4.i32x8.store") {
+                 "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
         rewritten.emplace_back(
-            "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2");
+            "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16");
       } else if (scalarStores[block.name()].find(index) !=
                  scalarStores[block.name()].end()) {
         rewritten.emplace_back(

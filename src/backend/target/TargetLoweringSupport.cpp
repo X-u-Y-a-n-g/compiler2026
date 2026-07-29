@@ -532,7 +532,7 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x8.begin") {
+    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
       emit(block, opcode,
            {lowerValueOperand(operands[0]),
             lowerValueOperand(operands[1]),
@@ -545,7 +545,7 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared") {
+    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
       std::vector<MachineOperand> lowered{lowerValueOperand(operands[0])};
       lowered.reserve(operands.size());
       for (std::size_t index = 1; index < operands.size(); ++index) {
@@ -556,7 +556,7 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
+    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
       std::vector<MachineOperand> lowered;
       lowered.reserve(operands.size());
       for (const auto& operand : operands) {
@@ -566,7 +566,16 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode.rfind("aarch64.neon.ordered.panel4.i32x8.", 0) == 0) {
+    if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.old", 0) ==
+        0) {
+      emit(block, opcode,
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.new", 0) ==
+        0) {
       emit(block, opcode,
            {lowerValueOperand(operands[0], ValueType::int32Type())});
       return;
@@ -575,7 +584,9 @@ class FunctionLoweringContext {
     if (opcode == "aarch64.neon.square.sum.i32.init" ||
         opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" ||
         opcode ==
-            "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2") {
+            "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2" ||
+        opcode ==
+            "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16") {
       emit(block, opcode, {}, {});
       return;
     }

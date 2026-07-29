@@ -654,7 +654,7 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     os << opcode << " ptr " << operands[0] << ", ptr " << operands[1];
     return os.str();
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.begin") {
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
     os << opcode;
     for (std::size_t index = 0; index < operands.size(); ++index) {
       os << (index == 0 ? " " : ", ")
@@ -662,28 +662,34 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     }
     return os.str();
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared") {
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
     os << opcode << " ptr " << operands[0];
     for (std::size_t index = 1; index < operands.size(); ++index) {
       os << ", i32 " << operands[index];
     }
     return os.str();
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
     os << opcode;
     for (std::size_t index = 0; index < operands.size(); ++index) {
       os << (index == 0 ? " ptr " : ", ptr ") << operands[index];
     }
     return os.str();
   }
-  if (opcode.rfind("aarch64.neon.ordered.panel4.i32x8.", 0) == 0) {
+  if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.old", 0) == 0) {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
+  if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.new", 0) == 0) {
     os << opcode << " i32 " << operands[0];
     return os.str();
   }
   if (opcode == "aarch64.neon.square.sum.i32.init" ||
       opcode == "aarch64.neon.square.sum.i32.accumulate.i32x32" ||
       opcode ==
-          "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2") {
+          "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2" ||
+      opcode ==
+          "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16") {
     os << opcode;
     return os.str();
   }

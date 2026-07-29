@@ -2685,37 +2685,33 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q14, q15, [" << row1 << ", #32]\n";
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.begin") {
-    for (int row = 0; row < 4; ++row) {
-      const auto address =
-          integerOperand(os, function, instruction.operands[row],
-                         kAddrScratch);
-      os << "  ldp q" << row * 2 << ", q" << row * 2 + 1 << ", ["
-         << address << "]\n";
-    }
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
     for (int row = 0; row < 4; ++row) {
       const auto initial =
           integerOperand(os, function, instruction.operands[4 + row],
                          kImmScratch);
-      for (int vector = 8 + row * 2; vector < 10 + row * 2; ++vector) {
+      for (int vector = row * 4; vector < row * 4 + 4; ++vector) {
         os << "  dup v" << vector << ".4s, "
            << integerRegister(initial, ValueType::int32Type()) << '\n';
       }
     }
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.shared") {
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
     const auto source =
         integerOperand(os, function, instruction.operands[0], kAddrScratch);
-    os << "  ldp q22, q23, [" << source << "]\n";
+    os << "  ldp q21, q22, [" << source << "]\n";
+    os << "  ldp q23, q24, [" << source << ", #32]\n";
     for (int row = 0; row < 4; ++row) {
       const auto coefficient =
           integerOperand(os, function, instruction.operands[1 + row],
                          kImmScratch);
       os << "  dup v20.4s, "
          << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      os << "  mla v" << 8 + row * 2 << ".4s, v22.4s, v20.4s\n";
-      os << "  mla v" << 9 + row * 2 << ".4s, v23.4s, v20.4s\n";
+      for (int vector = 0; vector < 4; ++vector) {
+        os << "  mla v" << row * 4 + vector << ".4s, v"
+           << 21 + vector << ".4s, v20.4s\n";
+      }
     }
     return;
   }
@@ -2723,31 +2719,48 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     for (int source = 0; source < 4; ++source) {
       const std::string version = source < destination ? "new" : "old";
       const std::string expected =
-          "aarch64.neon.ordered.panel4.i32x8." + version +
+          "aarch64.neon.ordered.panel4.i32x16.lazy." + version +
           std::to_string(source) + ".to.row" +
           std::to_string(destination);
-      if (opcode != expected || instruction.operands.size() != 1) continue;
+      const bool useNewValue = source < destination;
+      const std::size_t expectedOperands = useNewValue ? 1 : 2;
+      if (opcode != expected ||
+          instruction.operands.size() != expectedOperands) {
+        continue;
+      }
+      int sourceFirst = source * 4;
+      std::size_t coefficientIndex = 0;
+      if (!useNewValue) {
+        const auto sourceAddress =
+            integerOperand(os, function, instruction.operands[0],
+                           kAddrScratch);
+        os << "  ldp q21, q22, [" << sourceAddress << "]\n";
+        os << "  ldp q23, q24, [" << sourceAddress << ", #32]\n";
+        sourceFirst = 21;
+        coefficientIndex = 1;
+      }
       const auto coefficient =
-          integerOperand(os, function, instruction.operands[0], kImmScratch);
+          integerOperand(os, function,
+                         instruction.operands[coefficientIndex], kImmScratch);
       os << "  dup v20.4s, "
          << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      const int destinationFirst = 8 + destination * 2;
-      const int sourceFirst =
-          source < destination ? 8 + source * 2 : source * 2;
-      os << "  mla v" << destinationFirst << ".4s, v" << sourceFirst
-         << ".4s, v20.4s\n";
-      os << "  mla v" << destinationFirst + 1 << ".4s, v"
-         << sourceFirst + 1 << ".4s, v20.4s\n";
+      const int destinationFirst = destination * 4;
+      for (int vector = 0; vector < 4; ++vector) {
+        os << "  mla v" << destinationFirst + vector << ".4s, v"
+           << sourceFirst + vector << ".4s, v20.4s\n";
+      }
       return;
     }
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
+  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
     for (int row = 0; row < 4; ++row) {
       const auto address =
           integerOperand(os, function, instruction.operands[row],
                          kAddrScratch);
-      os << "  stp q" << 8 + row * 2 << ", q" << 9 + row * 2 << ", ["
+      os << "  stp q" << row * 4 << ", q" << row * 4 + 1 << ", ["
          << address << "]\n";
+      os << "  stp q" << row * 4 + 2 << ", q" << row * 4 + 3 << ", ["
+         << address << ", #32]\n";
     }
     return;
   }
@@ -2774,6 +2787,15 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
           "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2" &&
       instruction.operands.empty()) {
     emitSquareSum(8);
+    return;
+  }
+  if (opcode ==
+          "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16" &&
+      instruction.operands.empty()) {
+    for (int vector = 0; vector < 16; ++vector) {
+      os << "  mla v" << 16 + (vector & 3) << ".4s, v" << vector
+         << ".4s, v" << vector << ".4s\n";
+    }
     return;
   }
   if (opcode == "aarch64.neon.square.sum.i32.accumulate.scalar" &&
