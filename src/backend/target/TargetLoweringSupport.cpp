@@ -556,15 +556,6 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode ==
-        "aarch64.neon.ordered.panel4.i32x8.shared.packed") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0]),
-            lowerValueOperand(operands[1]),
-            lowerValueOperand(operands[2], ValueType::int32Type())});
-      return;
-    }
-
     if (opcode == "aarch64.neon.ordered.panel4.i32x8.store") {
       std::vector<MachineOperand> lowered;
       lowered.reserve(operands.size());

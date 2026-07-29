@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
-#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -23,7 +22,6 @@ namespace {
 using compiler::ir::core::BasicBlock;
 using compiler::ir::core::Function;
 using compiler::ir::core::Instruction;
-using compiler::ir::core::Module;
 
 bool isGepOpcode(const std::string& opcode) {
   return opcode == "getelementptr" || opcode == "getelementptr.linear" ||
@@ -44,15 +42,6 @@ struct LoopCondition {
 struct PointerPath {
   std::string base;
   std::vector<std::string> indices;
-};
-
-struct MatrixShape {
-  std::size_t rows = 0;
-  std::size_t columns = 0;
-};
-
-struct PanelCoefficientScratch {
-  std::string base;
 };
 
 struct Candidate {
@@ -777,134 +766,6 @@ bool canReachBlockAvoiding(const Function &function, const CFG &cfg,
     }
   }
   return false;
-}
-
-std::optional<MatrixShape> parseIntMatrixShape(const std::string &type) {
-  const auto firstOpen = type.find('[');
-  const auto firstClose =
-      firstOpen == std::string::npos ? std::string::npos
-                                     : type.find(']', firstOpen + 1);
-  const auto secondOpen =
-      firstClose == std::string::npos ? std::string::npos
-                                      : type.find('[', firstClose + 1);
-  const auto secondClose =
-      secondOpen == std::string::npos ? std::string::npos
-                                      : type.find(']', secondOpen + 1);
-  if (firstOpen == std::string::npos || firstClose == std::string::npos ||
-      secondOpen == std::string::npos || secondClose == std::string::npos ||
-      type.find('[', secondClose + 1) != std::string::npos ||
-      type.substr(0, firstOpen) != "int") {
-    return std::nullopt;
-  }
-  long long rows = 0;
-  long long columns = 0;
-  if (!detail::parseIntegerLiteral(
-          type.substr(firstOpen + 1, firstClose - firstOpen - 1), rows) ||
-      !detail::parseIntegerLiteral(
-          type.substr(secondOpen + 1, secondClose - secondOpen - 1),
-          columns) ||
-      rows <= 0 || columns <= 0) {
-    return std::nullopt;
-  }
-  return MatrixShape{static_cast<std::size_t>(rows),
-                     static_cast<std::size_t>(columns)};
-}
-
-bool instructionReferencesBase(const Instruction &instruction,
-                               const std::string &base,
-                               const DefinitionMap &definitions) {
-  for (const auto &operand : instruction.operands()) {
-    if (valueDependsOn(operand, base, definitions)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool functionReferencesBase(const Function &function, const std::string &base) {
-  const auto definitions = buildDefinitions(function);
-  for (const auto &block : function.blocks()) {
-    for (const auto &instruction : block.instructions()) {
-      if (instructionReferencesBase(instruction, base, definitions)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-bool baseIsDeadFrom(const Function &function, const std::string &start,
-                    const std::string &base) {
-  const auto cfg = buildCFG(function);
-  if (cfg.index.find(start) == cfg.index.end()) {
-    return false;
-  }
-  const auto definitions = buildDefinitions(function);
-  for (const auto &block : function.blocks()) {
-    if (!canReachBlock(function, cfg, start, block.name())) {
-      continue;
-    }
-    for (const auto &instruction : block.instructions()) {
-      if (instructionReferencesBase(instruction, base, definitions)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-std::optional<PanelCoefficientScratch> findPanelCoefficientScratch(
-    const Module &module, const Function &target, const Candidate &candidate,
-    const UniformSuffixPattern &pattern) {
-  if (std::getenv("COMPILER_DISABLE_FOUR_ROW_COEFFICIENT_PACKING") != nullptr) {
-    return std::nullopt;
-  }
-  std::optional<MatrixShape> coefficientShape;
-  for (const auto &global : module.globals()) {
-    if ("@" + global.name() == pattern.coefficientMatrix) {
-      coefficientShape = parseIntMatrixShape(global.type());
-      break;
-    }
-  }
-  if (!coefficientShape.has_value()) {
-    return std::nullopt;
-  }
-  const auto maximum = std::numeric_limits<std::size_t>::max();
-  if (coefficientShape->columns > maximum / 4) {
-    return std::nullopt;
-  }
-  const auto requiredElements = coefficientShape->columns * 4;
-
-  for (const auto &global : module.globals()) {
-    const std::string base = "@" + global.name();
-    const auto shape = parseIntMatrixShape(global.type());
-    const auto capacity =
-        shape.has_value() && shape->rows > maximum / shape->columns
-            ? maximum
-            : (shape.has_value() ? shape->rows * shape->columns : 0);
-    if (global.isConst() || !shape.has_value() ||
-        base == pattern.coefficientMatrix ||
-        base == pattern.destinationMatrix ||
-        capacity < requiredElements) {
-      continue;
-    }
-    bool usable = true;
-    for (const auto &function : module.functions()) {
-      if (&function == &target) {
-        if (!baseIsDeadFrom(function, candidate.outerHeader, base)) {
-          usable = false;
-          break;
-        }
-      } else if (functionReferencesBase(function, base)) {
-        usable = false;
-        break;
-      }
-    }
-    if (usable) {
-      return PanelCoefficientScratch{base};
-    }
-  }
-  return std::nullopt;
 }
 
 std::optional<PhiLoop> canonicalPhiLoop(
@@ -1789,13 +1650,10 @@ bool buildOrderedTwoRowPanel(Function &function, const Candidate &candidate,
 }
 
 bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
-                               const UniformSuffixPattern &pattern,
-                               const std::optional<PanelCoefficientScratch>
-                                   &coefficientScratch) {
+                               const UniformSuffixPattern &pattern) {
   if (std::getenv("COMPILER_DISABLE_ORDERED_FOUR_ROW_PANEL8") != nullptr) {
     return false;
   }
-  const bool usePackedCoefficients = coefficientScratch.has_value();
   const auto definitions = buildDefinitions(function);
   const auto definitionBlock = definitionBlocks(function);
   const auto rowDefinition = definitions.find(pattern.row);
@@ -1859,8 +1717,6 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
 
   const auto guardName = block("guard");
   const auto setupName = block("setup");
-  const auto packHeaderName = block("pack.header");
-  const auto packBodyName = block("pack.body");
   const auto columnHeaderName = block("column.header");
   const auto columnBodyName = block("column.body");
   const auto prefixHeaderName = block("prefix.header");
@@ -1874,23 +1730,9 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
   const auto fullColumns = value("full.columns");
   const auto usePanel = value("use");
   const auto threshold = value("threshold");
-  const auto packStorageBase = value("pack.storage.base");
-  const auto packK = value("pack.k");
-  const auto packHasK = value("pack.has.k");
-  const auto packLinearIndex = value("pack.linear.index");
-  const auto packScratchBase = value("pack.scratch.base");
-  const auto packNextK = value("pack.k.next");
-  std::array<std::string, 4> packSourceAddress;
-  std::array<std::string, 4> packCoefficient;
-  std::array<std::string, 4> packDestinationAddress;
   std::array<std::string, 4> below;
   for (int row = 0; row < 4; ++row) {
-    const auto index = std::to_string(row);
-    below[row] = value("below" + index);
-    packSourceAddress[row] = value("pack.source" + index + ".address");
-    packCoefficient[row] = value("pack.coefficient" + index);
-    packDestinationAddress[row] =
-        value("pack.destination" + index + ".address");
+    below[row] = value("below" + std::to_string(row));
   }
   const auto column = value("column");
   const auto hasColumn = value("has.column");
@@ -1976,58 +1818,12 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
                                      {pattern.destinationMatrix, rows[row]},
                                      destinationRows[row]});
   }
-  if (usePackedCoefficients) {
-    setup.addInstruction(Instruction{
-        "getelementptr.linear", {coefficientScratch->base, "0"},
-        packStorageBase});
-  }
-  setup.addInstruction(Instruction{
-      "br",
-      {usePackedCoefficients ? packHeaderName : suffixHeaders[0]}});
+  setup.addInstruction(Instruction{"br", {suffixHeaders[0]}});
 
   std::vector<BasicBlock> generated;
-  if (usePackedCoefficients) {
-    BasicBlock packHeader{packHeaderName};
-    packHeader.addInstruction(
-        Instruction{"phi",
-                    {"int", "0", setupName, packNextK, packBodyName},
-                    packK});
-    packHeader.addInstruction(
-        Instruction{"icmp.slt", {packK, candidate.outerBound}, packHasK});
-    packHeader.addInstruction(
-        Instruction{"br", {packHasK, packBodyName, suffixHeaders[0]}});
-    generated.push_back(std::move(packHeader));
-
-    BasicBlock packBody{packBodyName};
-    packBody.addInstruction(
-        Instruction{"mul", {packK, "4"}, packLinearIndex});
-    packBody.addInstruction(
-        Instruction{"getelementptr.linear",
-                    {packStorageBase, packLinearIndex},
-                    packScratchBase});
-    for (int row = 0; row < 4; ++row) {
-      packBody.addInstruction(Instruction{
-          "getelementptr", {coefficientRows[row], packK},
-          packSourceAddress[row]});
-      packBody.addInstruction(Instruction{
-          "load", {"int", packSourceAddress[row]}, packCoefficient[row]});
-      packBody.addInstruction(Instruction{
-          "getelementptr",
-          {packScratchBase, std::to_string(row)},
-          packDestinationAddress[row]});
-      packBody.addInstruction(
-          Instruction{"store",
-                      {"int", packCoefficient[row],
-                       packDestinationAddress[row]}});
-    }
-    packBody.addInstruction(Instruction{"add", {packK, "1"}, packNextK});
-    packBody.addInstruction(Instruction{"br", {packHeaderName}});
-    generated.push_back(std::move(packBody));
-  }
   for (int row = 0; row < 4; ++row) {
     const std::string incoming =
-        row == 0 ? (usePackedCoefficients ? packHeaderName : setupName)
-                 : suffixHeaders[row - 1];
+        row == 0 ? setupName : suffixHeaders[row - 1];
     const std::string next =
         row == 3 ? columnHeaderName : suffixHeaders[row + 1];
     BasicBlock header{suffixHeaders[row]};
@@ -2107,24 +1903,18 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
       "getelementptr", {pattern.destinationMatrix, prefixK}, prefixSourceRow});
   prefixBody.addInstruction(Instruction{
       "getelementptr", {prefixSourceRow, column}, prefixSource});
-  if (usePackedCoefficients) {
+  for (int row = 0; row < 4; ++row) {
     prefixBody.addInstruction(Instruction{
-        "aarch64.neon.ordered.panel4.i32x8.shared.packed",
-        {prefixSource, packStorageBase, prefixK}});
-  } else {
-    for (int row = 0; row < 4; ++row) {
-      prefixBody.addInstruction(Instruction{
-          "getelementptr", {coefficientRows[row], prefixK},
-          prefixCoefficientAddress[row]});
-      prefixBody.addInstruction(Instruction{
-          "load", {"int", prefixCoefficientAddress[row]},
-          prefixCoefficient[row]});
-    }
+        "getelementptr", {coefficientRows[row], prefixK},
+        prefixCoefficientAddress[row]});
     prefixBody.addInstruction(Instruction{
-        "aarch64.neon.ordered.panel4.i32x8.shared",
-        {prefixSource, prefixCoefficient[0], prefixCoefficient[1],
-         prefixCoefficient[2], prefixCoefficient[3]}});
+        "load", {"int", prefixCoefficientAddress[row]},
+        prefixCoefficient[row]});
   }
+  prefixBody.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel4.i32x8.shared",
+      {prefixSource, prefixCoefficient[0], prefixCoefficient[1],
+       prefixCoefficient[2], prefixCoefficient[3]}});
   prefixBody.addInstruction(
       Instruction{"add", {prefixK, "1"}, prefixNextK});
   prefixBody.addInstruction(Instruction{"br", {prefixHeaderName}});
@@ -2146,24 +1936,17 @@ bool buildOrderedFourRowPanel8(Function &function, const Candidate &candidate,
       "getelementptr", {pattern.destinationMatrix, highK}, highSourceRow});
   highBody.addInstruction(
       Instruction{"getelementptr", {highSourceRow, column}, highSource});
-  if (usePackedCoefficients) {
+  for (int row = 0; row < 4; ++row) {
     highBody.addInstruction(Instruction{
-        "aarch64.neon.ordered.panel4.i32x8.shared.packed",
-        {highSource, packStorageBase, highK}});
-  } else {
-    for (int row = 0; row < 4; ++row) {
-      highBody.addInstruction(Instruction{
-          "getelementptr", {coefficientRows[row], highK},
-          highCoefficientAddress[row]});
-      highBody.addInstruction(Instruction{
-          "load", {"int", highCoefficientAddress[row]},
-          highCoefficient[row]});
-    }
+        "getelementptr", {coefficientRows[row], highK},
+        highCoefficientAddress[row]});
     highBody.addInstruction(Instruction{
-        "aarch64.neon.ordered.panel4.i32x8.shared",
-        {highSource, highCoefficient[0], highCoefficient[1],
-         highCoefficient[2], highCoefficient[3]}});
+        "load", {"int", highCoefficientAddress[row]}, highCoefficient[row]});
   }
+  highBody.addInstruction(Instruction{
+      "aarch64.neon.ordered.panel4.i32x8.shared",
+      {highSource, highCoefficient[0], highCoefficient[1],
+       highCoefficient[2], highCoefficient[3]}});
   highBody.addInstruction(Instruction{"add", {highK, "1"}, highNextK});
   highBody.addInstruction(Instruction{"br", {highHeaderName}});
   generated.push_back(std::move(highBody));
@@ -2795,13 +2578,8 @@ void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
     auto candidate = findCandidate(function);
     if (candidate.has_value()) {
       std::optional<UniformSuffixPattern> uniformPattern;
-      std::optional<PanelCoefficientScratch> coefficientScratch;
       if (useAArch64VectorAccumulator_) {
         uniformPattern = findUniformSuffixPattern(function, *candidate);
-        if (uniformPattern.has_value()) {
-          coefficientScratch = findPanelCoefficientScratch(
-              module, function, *candidate, *uniformPattern);
-        }
         foldUniformSuffixContribution(function, *candidate);
       }
       const bool transformed =
@@ -2810,8 +2588,7 @@ void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
       if (transformed && uniformPattern.has_value() &&
           useAArch64VectorAccumulator_) {
         if (buildOrderedTwoRowPanel(function, *candidate, *uniformPattern)) {
-          buildOrderedFourRowPanel8(function, *candidate, *uniformPattern,
-                                    coefficientScratch);
+          buildOrderedFourRowPanel8(function, *candidate, *uniformPattern);
         }
       }
     }
