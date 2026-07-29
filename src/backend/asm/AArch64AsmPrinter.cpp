@@ -1608,6 +1608,17 @@ std::string vectorizeConditionalMatrixReduction(
     const std::string kHeaderLabel = prefix + ".k_header";
     const std::string jBodyLabel = prefix + ".j_body";
     const std::string jHeaderLabel = prefix + ".j_header";
+    // For a fixed k, the scalar predicate operand is invariant across j.
+    // An even value makes every product even; an odd value leaves the other
+    // operand's low bit unchanged. Unswitch before broadcasting or masking it.
+    const bool parityInvariantFastPath =
+        std::getenv(
+            "COMPILER_DISABLE_PARITY_INVARIANT_VECTOR_FAST_PATH") ==
+        nullptr;
+    const std::string fastJBodyLabel = prefix + ".fast_j_body";
+    const std::string fastJHeaderLabel = prefix + ".fast_j_header";
+    const std::string maskedPrepareLabel = prefix + ".masked_prepare";
+    const std::string kAdvanceLabel = prefix + ".k_advance";
 
     const std::string clearStore =
         useEightColumns ? "  stp q24, q24, [x16]\n"
@@ -1616,8 +1627,11 @@ std::string vectorizeConditionalMatrixReduction(
         useEightColumns
             ? "  add x16, " + secondColumnBase + ", " + jX +
                   ", lsl #2\n  ldp q22, q25, [x16]\n"
-                  "  and v22.16b, v22.16b, v20.16b\n"
-                  "  and v25.16b, v25.16b, v20.16b\n"
+                  +
+                  (parityInvariantFastPath
+                       ? ""
+                       : "  and v22.16b, v22.16b, v20.16b\n"
+                         "  and v25.16b, v25.16b, v20.16b\n") +
                   "  shl v22.4s, v22.4s, #31\n"
                   "  shl v25.4s, v25.4s, #31\n"
                   "  cmeq v22.4s, v22.4s, #0\n"
@@ -1633,12 +1647,30 @@ std::string vectorizeConditionalMatrixReduction(
                   "  stp q24, q27, [x16]\n"
             : "  add x16, " + secondColumnBase + ", " + jX +
                   ", lsl #2\n  ldr q22, [x16]\n"
-                  "  and v22.16b, v22.16b, v20.16b\n"
+                  +
+                  (parityInvariantFastPath
+                       ? ""
+                       : "  and v22.16b, v22.16b, v20.16b\n") +
                   "  shl v22.4s, v22.4s, #31\n"
                   "  cmeq v22.4s, v22.4s, #0\n"
                   "  add x16, " + firstColumnBase + ", " + jX +
                   ", lsl #2\n  ldr q23, [x16]\n"
                   "  and v23.16b, v23.16b, v22.16b\n"
+                  "  add x16, " + outputRow + ", " + jX +
+                  ", lsl #2\n  ldr q24, [x16]\n"
+                  "  mla v24.4s, v23.4s, v21.4s\n"
+                  "  str q24, [x16]\n";
+    const std::string fastVectorUpdate =
+        useEightColumns
+            ? "  add x16, " + firstColumnBase + ", " + jX +
+                  ", lsl #2\n  ldp q23, q26, [x16]\n"
+                  "  add x16, " + outputRow + ", " + jX +
+                  ", lsl #2\n  ldp q24, q27, [x16]\n"
+                  "  mla v24.4s, v23.4s, v21.4s\n"
+                  "  mla v27.4s, v26.4s, v21.4s\n"
+                  "  stp q24, q27, [x16]\n"
+            : "  add x16, " + firstColumnBase + ", " + jX +
+                  ", lsl #2\n  ldr q23, [x16]\n"
                   "  add x16, " + outputRow + ", " + jX +
                   ", lsl #2\n  ldr q24, [x16]\n"
                   "  mla v24.4s, v23.4s, v21.4s\n"
@@ -1654,20 +1686,33 @@ std::string vectorizeConditionalMatrixReduction(
         std::to_string(extent) + "\n  b.lt " + clearBody + "\n  movz " + kW +
         ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr " +
         predicateScalar + ", [" +
-        predicateRow + ", " + kX +
-        ", lsl #2]\n  dup v20.4s, " + predicateScalar + "\n  ldr " +
+        predicateRow + ", " + kX + ", lsl #2]\n" +
+        (parityInvariantFastPath
+             ? "  tst " + predicateScalar + ", #1\n"
+             : "  dup v20.4s, " + predicateScalar + "\n") +
+        "  ldr " +
         firstProduct + ", [" + firstProductRow + ", " + kX +
         ", lsl #2]\n  dup v21.4s, " + firstProduct + "\n  movz x18, #" +
         std::to_string(stride) +
         "\n  mul x18, " + kX + ", x18\n  add " + firstColumnBase + ", " +
         firstBase + ", x18\n  add " + secondColumnBase + ", " + secondBase +
-        ", x18\n  movz " + jW +
-        ", #0\n  b " + jHeaderLabel +
-        "\n" + jBodyLabel + ":\n" + vectorUpdate + "  add " + jW + ", " +
-        jW + ", #" + std::to_string(vectorWidth) + "\n" +
-        jHeaderLabel + ":\n  cmp " + jW + ", #" + std::to_string(extent) +
-        "\n  b.lt " + jBodyLabel + "\n  add " + kW + ", " + kW +
-        ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
+        ", x18\n" +
+        (parityInvariantFastPath
+             ? "  b.ne " + maskedPrepareLabel + "\n  movz " + jW +
+                   ", #0\n  b " + fastJHeaderLabel + "\n" +
+                   fastJBodyLabel + ":\n" + fastVectorUpdate + "  add " + jW +
+                   ", " + jW + ", #" + std::to_string(vectorWidth) + "\n" +
+                   fastJHeaderLabel + ":\n  cmp " + jW + ", #" +
+                   std::to_string(extent) + "\n  b.lt " + fastJBodyLabel +
+                   "\n  b " + kAdvanceLabel + "\n" + maskedPrepareLabel +
+                   ":\n  movz " + jW + ", #0\n  b " + jHeaderLabel + "\n"
+             : "  movz " + jW + ", #0\n  b " + jHeaderLabel + "\n") +
+        jBodyLabel + ":\n" + vectorUpdate + "  add " + jW + ", " + jW +
+        ", #" + std::to_string(vectorWidth) + "\n" + jHeaderLabel +
+        ":\n  cmp " + jW + ", #" + std::to_string(extent) + "\n  b.lt " +
+        jBodyLabel + "\n" +
+        (parityInvariantFastPath ? kAdvanceLabel + ":\n" : "") + "  add " +
+        kW + ", " + kW + ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
         std::to_string(extent) + "\n  b.lt " + kBodyLabel + "\n  b " +
         *middleEndLabel;
     lines[middleBodyLine] = blocks + "\n" + lines[middleBodyLine];
