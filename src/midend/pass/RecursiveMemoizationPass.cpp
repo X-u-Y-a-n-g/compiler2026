@@ -31,7 +31,6 @@ using compiler::midend::analysis::FunctionEffectAnalysis;
 constexpr std::size_t kMaximumParameters = 3;
 constexpr std::size_t kModuleCacheBudgetBytes = 512U * 1024U;
 constexpr std::size_t kMinimumCacheEntries = 1024U;
-constexpr std::size_t kMaximumSelectiveCacheEntries = 1024U;
 
 struct CallSite {
   std::size_t caller = 0;
@@ -42,8 +41,6 @@ struct CallSite {
 struct Candidate {
   std::size_t function = 0;
   std::size_t capacity = 0;
-  bool memoizeRecursiveEntries = true;
-  std::vector<CallSite> selectedExternalCalls;
 };
 
 std::vector<std::string> branchTargets(const BasicBlock &block) {
@@ -129,19 +126,6 @@ bool entryHasPhi(const Function &function) {
   return false;
 }
 
-std::size_t directSelfCallCount(const Function &function) {
-  std::size_t calls = 0;
-  const auto symbol = "@" + function.name();
-  for (const auto &block : function.blocks()) {
-    for (const auto &instruction : block.instructions()) {
-      if (instruction.opcode() == "call" && !instruction.operands().empty() &&
-          instruction.operands().front() == symbol)
-        ++calls;
-    }
-  }
-  return calls;
-}
-
 std::optional<Candidate> findCandidate(const Module &module,
                                        std::size_t functionIndex,
                                        const FunctionEffectAnalysis &effects) {
@@ -167,21 +151,9 @@ std::optional<Candidate> findCandidate(const Module &module,
     else
       externalCalls.push_back(call);
   }
-  const bool memoizeRecursiveEntries = recursiveCalls >= 2;
-  std::vector<CallSite> selectedExternalCalls;
-  if (!memoizeRecursiveEntries && recursiveCalls >= 1 &&
-      !effect.readsExternalMemory) {
-    for (const auto &call : externalCalls) {
-      const auto &caller = module.functions()[call.caller];
-      if (directSelfCallCount(caller) >= 2 &&
-          !blockBelongsToCycle(caller, call.block))
-        selectedExternalCalls.push_back(call);
-    }
-  }
-  if ((!memoizeRecursiveEntries && selectedExternalCalls.empty()) ||
-      externalCalls.empty())
+  if (recursiveCalls < 2 || externalCalls.empty())
     return std::nullopt;
-  if (memoizeRecursiveEntries && effect.readsExternalMemory) {
+  if (effect.readsExternalMemory) {
     if (externalCalls.size() != 1)
       return std::nullopt;
     const auto &root = externalCalls.front();
@@ -189,8 +161,7 @@ std::optional<Candidate> findCandidate(const Module &module,
     if (caller.name() != "main" || blockBelongsToCycle(caller, root.block))
       return std::nullopt;
   }
-  return Candidate{functionIndex, 0, memoizeRecursiveEntries,
-                   std::move(selectedExternalCalls)};
+  return Candidate{functionIndex, 0};
 }
 
 std::string freshSymbol(const Module &module, const std::string &stem) {
@@ -240,7 +211,7 @@ void addZeroArray(Module &module, const std::string &name,
   module.addGlobal(GlobalVariable{name, type, Constant::aggregate(type, {})});
 }
 
-void applyRecursiveMemoization(Module &module, const Candidate &candidate) {
+void applyMemoization(Module &module, const Candidate &candidate) {
   const auto functionName = module.functions()[candidate.function].name();
   const auto validName = freshSymbol(module, "__recursive_memo_valid_");
   addZeroArray(module, validName, candidate.capacity);
@@ -383,176 +354,18 @@ void applyRecursiveMemoization(Module &module, const Candidate &candidate) {
   (void)functionName;
 }
 
-void applyExternalEntryMemoization(Module &module, const Candidate &candidate) {
-  const auto originalName = module.functions()[candidate.function].name();
-  const auto wrapperName = freshSymbol(module, "__recursive_memo_wrapper_");
-  Function wrapper{wrapperName,
-                   module.functions()[candidate.function].returnType(),
-                   module.functions()[candidate.function].parameters()};
-
-  const auto validName = freshSymbol(module, "__recursive_memo_valid_");
-  addZeroArray(module, validName, candidate.capacity);
-  std::vector<std::string> keyNames;
-  keyNames.reserve(module.functions()[candidate.function].parameters().size());
-  for (std::size_t parameter = 0;
-       parameter < module.functions()[candidate.function].parameters().size();
-       ++parameter) {
-    const auto name = freshSymbol(module, "__recursive_memo_key_");
-    addZeroArray(module, name, candidate.capacity);
-    keyNames.push_back(name);
-  }
-  const auto valueName = freshSymbol(module, "__recursive_memo_value_");
-  addZeroArray(module, valueName, candidate.capacity);
-
-  std::unordered_set<std::string> values;
-  const auto hash = freshValue(wrapper, "recursive.memo.hash", values);
-  const auto index = freshValue(wrapper, "recursive.memo.index", values);
-  const auto validPointer =
-      freshValue(wrapper, "recursive.memo.valid.pointer", values);
-  const auto valid = freshValue(wrapper, "recursive.memo.valid", values);
-  const auto validCondition =
-      freshValue(wrapper, "recursive.memo.valid.condition", values);
-  const auto hitValuePointer =
-      freshValue(wrapper, "recursive.memo.hit.pointer", values);
-  const auto hitValue = freshValue(wrapper, "recursive.memo.hit.value", values);
-  const auto computed = freshValue(wrapper, "recursive.memo.computed", values);
-  const auto resultPointer =
-      freshValue(wrapper, "recursive.memo.store.value.pointer", values);
-  const auto storeValidPointer =
-      freshValue(wrapper, "recursive.memo.store.valid.pointer", values);
-
-  std::unordered_set<std::string> blockNames;
-  const auto entryName = freshBlock(blockNames, "recursive.memo.entry.");
-  const auto hitName = freshBlock(blockNames, "recursive.memo.hit.");
-  const auto missName = freshBlock(blockNames, "recursive.memo.miss.");
-  std::vector<std::string> checkNames;
-  for (std::size_t parameter = 0; parameter < wrapper.parameters().size();
-       ++parameter)
-    checkNames.push_back(freshBlock(blockNames, "recursive.memo.check."));
-
-  BasicBlock entry{entryName};
-  std::string currentHash = wrapper.parameters().front().name;
-  for (std::size_t parameter = 1; parameter < wrapper.parameters().size();
-       ++parameter) {
-    const auto multiplied =
-        freshValue(wrapper, "recursive.memo.hash.mul", values);
-    const auto combined =
-        parameter + 1 == wrapper.parameters().size()
-            ? hash
-            : freshValue(wrapper, "recursive.memo.hash.xor", values);
-    entry.addInstruction(
-        Instruction{"mul", {currentHash, "16777619"}, multiplied});
-    entry.addInstruction(Instruction{
-        "xor", {multiplied, wrapper.parameters()[parameter].name}, combined});
-    currentHash = combined;
-  }
-  if (wrapper.parameters().size() == 1) {
-    entry.addInstruction(Instruction{"add", {currentHash, "0"}, hash});
-    currentHash = hash;
-  }
-  entry.addInstruction(Instruction{
-      "and", {currentHash, std::to_string(candidate.capacity - 1)}, index});
-  entry.addInstruction(
-      Instruction{"getelementptr", {"@" + validName, index}, validPointer});
-  entry.addInstruction(Instruction{"load", {"int", validPointer}, valid});
-  entry.addInstruction(Instruction{"icmp.ne", {valid, "0"}, validCondition});
-  entry.addInstruction(
-      Instruction{"br", {validCondition, checkNames.front(), missName}});
-
-  std::vector<BasicBlock> checks;
-  for (std::size_t parameter = 0; parameter < wrapper.parameters().size();
-       ++parameter) {
-    BasicBlock check{checkNames[parameter]};
-    const auto pointer =
-        freshValue(wrapper, "recursive.memo.key.pointer", values);
-    const auto key = freshValue(wrapper, "recursive.memo.key", values);
-    const auto equal = freshValue(wrapper, "recursive.memo.key.equal", values);
-    check.addInstruction(Instruction{
-        "getelementptr", {"@" + keyNames[parameter], index}, pointer});
-    check.addInstruction(Instruction{"load", {"int", pointer}, key});
-    check.addInstruction(Instruction{
-        "icmp.eq", {key, wrapper.parameters()[parameter].name}, equal});
-    check.addInstruction(
-        Instruction{"br",
-                    {equal,
-                     parameter + 1 == wrapper.parameters().size()
-                         ? hitName
-                         : checkNames[parameter + 1],
-                     missName}});
-    checks.push_back(std::move(check));
-  }
-
-  BasicBlock hit{hitName};
-  hit.addInstruction(
-      Instruction{"getelementptr", {"@" + valueName, index}, hitValuePointer});
-  hit.addInstruction(Instruction{"load", {"int", hitValuePointer}, hitValue});
-  hit.addInstruction(Instruction{"ret", {hitValue}});
-
-  BasicBlock miss{missName};
-  std::vector<std::string> callOperands{"@" + originalName};
-  for (const auto &parameter : wrapper.parameters())
-    callOperands.push_back(parameter.name);
-  miss.addInstruction(Instruction{"call", std::move(callOperands), computed});
-  for (std::size_t parameter = 0; parameter < wrapper.parameters().size();
-       ++parameter) {
-    const auto pointer =
-        freshValue(wrapper, "recursive.memo.store.key.pointer", values);
-    miss.addInstruction(Instruction{
-        "getelementptr", {"@" + keyNames[parameter], index}, pointer});
-    miss.addInstruction(Instruction{
-        "store", {"int", wrapper.parameters()[parameter].name, pointer}});
-  }
-  miss.addInstruction(
-      Instruction{"getelementptr", {"@" + valueName, index}, resultPointer});
-  miss.addInstruction(Instruction{"store", {"int", computed, resultPointer}});
-  miss.addInstruction(Instruction{
-      "getelementptr", {"@" + validName, index}, storeValidPointer});
-  miss.addInstruction(Instruction{"store", {"int", "1", storeValidPointer}});
-  miss.addInstruction(Instruction{"ret", {computed}});
-
-  wrapper.addBlock(std::move(entry));
-  for (auto &check : checks)
-    wrapper.addBlock(std::move(check));
-  wrapper.addBlock(std::move(hit));
-  wrapper.addBlock(std::move(miss));
-  for (const auto &call : candidate.selectedExternalCalls) {
-    auto &instruction = module.functions()[call.caller]
-                            .blocks()[call.block]
-                            .instructions()[call.instruction];
-    if (instruction.opcode() != "call" || instruction.operands().empty() ||
-        instruction.operands().front() != "@" + originalName)
-      continue;
-    auto operands = instruction.operands();
-    operands.front() = "@" + wrapperName;
-    instruction =
-        Instruction{"call", std::move(operands), instruction.result()};
-  }
-  module.addFunction(std::move(wrapper));
-  module.addPassNote("memoized selected non-loop entries of a proven pure "
-                     "recursive integer helper using full parameter keys");
-}
-
 } // namespace
 
 void RecursiveMemoizationPass::run(Module &module) {
   FunctionEffectAnalysis effects(module);
-  const bool disableSelective =
-      std::getenv("COMPILER_DISABLE_SELECTIVE_RECURSIVE_MEMOIZATION") !=
-      nullptr;
   std::vector<Candidate> candidates;
   candidates.reserve(module.functions().size());
   for (std::size_t function = 0; function < module.functions().size();
        ++function) {
     const auto candidate = findCandidate(module, function, effects);
-    if (candidate.has_value() &&
-        (!disableSelective || candidate->memoizeRecursiveEntries))
+    if (candidate.has_value())
       candidates.push_back(*candidate);
   }
-  std::stable_sort(candidates.begin(), candidates.end(),
-                   [](const Candidate &left, const Candidate &right) {
-                     return left.memoizeRecursiveEntries <
-                            right.memoizeRecursiveEntries;
-                   });
 
   std::size_t memoized = 0;
   const auto perCandidateBudget =
@@ -561,15 +374,9 @@ void RecursiveMemoizationPass::run(Module &module) {
     candidate.capacity = cacheCapacity(
         module.functions()[candidate.function].parameters().size(),
         perCandidateBudget);
-    if (!candidate.memoizeRecursiveEntries)
-      candidate.capacity =
-          std::min(candidate.capacity, kMaximumSelectiveCacheEntries);
     if (candidate.capacity == 0)
       continue;
-    if (candidate.memoizeRecursiveEntries)
-      applyRecursiveMemoization(module, candidate);
-    else
-      applyExternalEntryMemoization(module, candidate);
+    applyMemoization(module, candidate);
     ++memoized;
   }
   if (std::getenv("COMPILER_RECURSIVE_MEMOIZATION_STATS") != nullptr)
