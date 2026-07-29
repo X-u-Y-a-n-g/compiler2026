@@ -30,6 +30,7 @@ using compiler::midend::analysis::FunctionEffectAnalysis;
 
 constexpr std::size_t kMaximumParameters = 3;
 constexpr std::size_t kModuleCacheBudgetBytes = 512U * 1024U;
+constexpr std::size_t kReadOnlyLoopCacheBudgetBytes = 2U * 1024U * 1024U;
 constexpr std::size_t kMinimumCacheEntries = 1024U;
 constexpr const char* kSingleImmutableContextMarker =
     "__compiler.tail_memo.single_immutable_context";
@@ -43,6 +44,7 @@ struct CallSite {
 struct Candidate {
   std::size_t function = 0;
   std::size_t capacity = 0;
+  bool readOnlyLoopLifetime = false;
 };
 
 std::vector<std::string> branchTargets(const BasicBlock &block) {
@@ -164,6 +166,247 @@ std::optional<Candidate> findCandidate(const Module &module,
       return std::nullopt;
   }
   return Candidate{functionIndex, 0};
+}
+
+using DefinitionMap =
+    std::unordered_map<std::string, const Instruction*>;
+
+DefinitionMap definitionsFor(const Function& function) {
+  DefinitionMap definitions;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.hasResult()) {
+        definitions.emplace(instruction.result(), &instruction);
+      }
+    }
+  }
+  return definitions;
+}
+
+std::string pointerRoot(const std::string& pointer,
+                        const DefinitionMap& definitions) {
+  std::string current = pointer;
+  std::unordered_set<std::string> visited;
+  while (visited.insert(current).second) {
+    const auto found = definitions.find(current);
+    if (found == definitions.end()) {
+      return current;
+    }
+    const auto* instruction = found->second;
+    if ((instruction->opcode() != "getelementptr" &&
+         instruction->opcode() != "getelementptr.linear" &&
+         instruction->opcode() != "gep" &&
+         instruction->opcode() != "gep.linear" &&
+         instruction->opcode() != "cast") ||
+        instruction->operands().empty()) {
+      return current;
+    }
+    current = instruction->operands().front();
+  }
+  return {};
+}
+
+bool collectReadGlobals(
+    const Module& module, std::size_t functionIndex,
+    const std::unordered_map<std::string, std::size_t>& functionIndices,
+    std::unordered_set<std::size_t>& visiting,
+    std::unordered_map<std::size_t, std::unordered_set<std::string>>& cache,
+    std::unordered_set<std::string>& result) {
+  const auto cached = cache.find(functionIndex);
+  if (cached != cache.end()) {
+    result.insert(cached->second.begin(), cached->second.end());
+    return true;
+  }
+  if (!visiting.insert(functionIndex).second) {
+    return false;
+  }
+  const auto& function = module.functions()[functionIndex];
+  const auto definitions = definitionsFor(function);
+  std::unordered_set<std::string> localAllocas;
+  for (const auto& [value, definition] : definitions) {
+    if (definition->opcode() == "alloca") {
+      localAllocas.insert(value);
+    }
+  }
+  std::unordered_set<std::string> reads;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() == "load") {
+        if (instruction.operands().empty()) {
+          visiting.erase(functionIndex);
+          return false;
+        }
+        const auto root =
+            pointerRoot(instruction.operands().back(), definitions);
+        if (!root.empty() && root.front() == '@') {
+          reads.insert(root);
+        } else if (localAllocas.count(root) == 0) {
+          visiting.erase(functionIndex);
+          return false;
+        }
+        continue;
+      }
+      if (instruction.opcode() != "call" ||
+          instruction.operands().empty()) {
+        continue;
+      }
+      const auto& symbol = instruction.operands().front();
+      if (symbol.size() < 2 || symbol.front() != '@') {
+        visiting.erase(functionIndex);
+        return false;
+      }
+      const auto callee = functionIndices.find(symbol.substr(1));
+      if (callee == functionIndices.end() ||
+          !collectReadGlobals(module, callee->second, functionIndices,
+                              visiting, cache, reads)) {
+        visiting.erase(functionIndex);
+        return false;
+      }
+    }
+  }
+  visiting.erase(functionIndex);
+  cache.emplace(functionIndex, reads);
+  result.insert(reads.begin(), reads.end());
+  return true;
+}
+
+std::unordered_set<std::size_t> stronglyConnectedBlocks(
+    const Function& function, std::size_t seed) {
+  std::unordered_map<std::string, std::size_t> indices;
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    indices.emplace(function.blocks()[block].name(), block);
+  }
+  std::vector<std::vector<std::size_t>> successors(function.blocks().size());
+  std::vector<std::vector<std::size_t>> predecessors(function.blocks().size());
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    for (const auto& target : branchTargets(function.blocks()[block])) {
+      const auto found = indices.find(target);
+      if (found == indices.end()) {
+        continue;
+      }
+      successors[block].push_back(found->second);
+      predecessors[found->second].push_back(block);
+    }
+  }
+  const auto reachable = [&](const auto& edges) {
+    std::unordered_set<std::size_t> visited;
+    std::deque<std::size_t> worklist{seed};
+    while (!worklist.empty()) {
+      const auto block = worklist.front();
+      worklist.pop_front();
+      if (!visited.insert(block).second) {
+        continue;
+      }
+      for (const auto next : edges[block]) {
+        worklist.push_back(next);
+      }
+    }
+    return visited;
+  };
+  const auto forward = reachable(successors);
+  const auto backward = reachable(predecessors);
+  std::unordered_set<std::size_t> region;
+  for (const auto block : forward) {
+    if (backward.count(block) != 0) {
+      region.insert(block);
+    }
+  }
+  return region;
+}
+
+std::optional<Candidate> findReadOnlyLoopCandidate(
+    const Module& module, std::size_t functionIndex,
+    const FunctionEffectAnalysis& effects) {
+  const auto& function = module.functions()[functionIndex];
+  if (function.returnType() != "int" || function.parameters().empty() ||
+      function.parameters().size() > kMaximumParameters ||
+      function.blocks().empty() || entryHasPhi(function) ||
+      !effects.effectFor(function.name()).isReadOnly()) {
+    return std::nullopt;
+  }
+  for (const auto& parameter : function.parameters()) {
+    if (parameter.type != "int") {
+      return std::nullopt;
+    }
+  }
+  bool functionHasCycle = false;
+  for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+    functionHasCycle |= blockBelongsToCycle(function, block);
+  }
+  if (!functionHasCycle) {
+    return std::nullopt;
+  }
+
+  const auto calls = callsTo(module, "@" + function.name());
+  if (calls.size() != 1 || calls.front().caller == functionIndex) {
+    return std::nullopt;
+  }
+  const auto& call = calls.front();
+  const auto& caller = module.functions()[call.caller];
+  if (caller.name() != "main" || !blockBelongsToCycle(caller, call.block)) {
+    return std::nullopt;
+  }
+
+  std::unordered_map<std::string, std::size_t> functionIndices;
+  for (std::size_t index = 0; index < module.functions().size(); ++index) {
+    functionIndices.emplace(module.functions()[index].name(), index);
+  }
+  std::unordered_set<std::size_t> visiting;
+  std::unordered_map<std::size_t, std::unordered_set<std::string>> cache;
+  std::unordered_set<std::string> readGlobals;
+  if (!collectReadGlobals(module, functionIndex, functionIndices, visiting,
+                          cache, readGlobals) ||
+      readGlobals.empty()) {
+    return std::nullopt;
+  }
+
+  const auto loopBlocks = stronglyConnectedBlocks(caller, call.block);
+  const auto definitions = definitionsFor(caller);
+  std::unordered_set<std::string> localAllocas;
+  for (const auto& [value, definition] : definitions) {
+    if (definition->opcode() == "alloca") {
+      localAllocas.insert(value);
+    }
+  }
+  for (const auto blockIndex : loopBlocks) {
+    for (const auto& instruction :
+         caller.blocks()[blockIndex].instructions()) {
+      if (instruction.opcode() == "store") {
+        if (instruction.operands().empty()) {
+          return std::nullopt;
+        }
+        const auto root =
+            pointerRoot(instruction.operands().back(), definitions);
+        if ((!root.empty() && root.front() == '@' &&
+             readGlobals.count(root) != 0) ||
+            (root.empty() ||
+             (root.front() != '@' && localAllocas.count(root) == 0))) {
+          return std::nullopt;
+        }
+        continue;
+      }
+      if (instruction.opcode() != "call" ||
+          instruction.operands().empty() ||
+          instruction.operands().front() == "@" + function.name()) {
+        continue;
+      }
+      const auto& symbol = instruction.operands().front();
+      if (symbol.size() < 2 || symbol.front() != '@') {
+        return std::nullopt;
+      }
+      const auto callee = functionIndices.find(symbol.substr(1));
+      if (callee == functionIndices.end()) {
+        return std::nullopt;
+      }
+      const auto& calleeEffect =
+          effects.effectFor(module.functions()[callee->second].name());
+      if (calleeEffect.writesExternalMemory ||
+          calleeEffect.hasOtherSideEffects) {
+        return std::nullopt;
+      }
+    }
+  }
+  return Candidate{functionIndex, 0, true};
 }
 
 std::string freshSymbol(const Module &module, const std::string &stem) {
@@ -351,8 +594,14 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   function.blocks().push_front(std::move(entry));
   for (auto &store : stores)
     function.addBlock(std::move(store));
-  module.addPassNote("memoized a proven read-only branching recursion using "
-                     "full integer parameter keys");
+  if (candidate.readOnlyLoopLifetime) {
+    module.addPassNote(
+        "memoized a loop-contained read-only helper after proving its global "
+        "read set immutable for the cache lifetime");
+  } else {
+    module.addPassNote("memoized a proven read-only branching recursion using "
+                       "full integer parameter keys");
+  }
   (void)functionName;
 }
 
@@ -477,20 +726,34 @@ void RecursiveMemoizationPass::run(Module &module) {
   FunctionEffectAnalysis effects(module);
   std::vector<Candidate> candidates;
   candidates.reserve(module.functions().size());
+  std::size_t readOnlyLoopCandidates = 0;
   for (std::size_t function = 0; function < module.functions().size();
        ++function) {
     const auto candidate = findCandidate(module, function, effects);
-    if (candidate.has_value())
+    if (candidate.has_value()) {
       candidates.push_back(*candidate);
+      continue;
+    }
+    const auto loopCandidate =
+        markedSingleContext
+            ? std::optional<Candidate>{}
+            : findReadOnlyLoopCandidate(module, function, effects);
+    if (loopCandidate.has_value()) {
+      candidates.push_back(*loopCandidate);
+      ++readOnlyLoopCandidates;
+    }
   }
 
   std::size_t memoized = 0;
   const auto perCandidateBudget =
       candidates.empty() ? 0 : kModuleCacheBudgetBytes / candidates.size();
   for (auto &candidate : candidates) {
+    const auto candidateBudget = candidate.readOnlyLoopLifetime
+                                     ? kReadOnlyLoopCacheBudgetBytes
+                                     : perCandidateBudget;
     candidate.capacity = cacheCapacity(
         module.functions()[candidate.function].parameters().size(),
-        perCandidateBudget);
+        candidateBudget);
     if (candidate.capacity == 0)
       continue;
     applyMemoization(module, candidate);
@@ -498,7 +761,8 @@ void RecursiveMemoizationPass::run(Module &module) {
   }
   if (std::getenv("COMPILER_RECURSIVE_MEMOIZATION_STATS") != nullptr)
     std::cerr << "recursive-memoization: memoized=" << memoized
-              << " single-context=" << (markedSingleContext ? 1 : 0) << '\n';
+              << " single-context=" << (markedSingleContext ? 1 : 0)
+              << " loop-readonly=" << readOnlyLoopCandidates << '\n';
 }
 
 } // namespace compiler::midend::pass
