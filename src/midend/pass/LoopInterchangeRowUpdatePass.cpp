@@ -389,21 +389,15 @@ std::string freshBlock(std::unordered_set<std::string> &names,
 void applyVectorCandidate(Function &function, const Candidate &candidate) {
   auto values = valueNames(function);
   auto blocks = blockNames(function);
-  const bool useK8CoefficientLaneMls =
-      std::getenv("COMPILER_DISABLE_K8_COEFFICIENT_LANE_MLS") == nullptr;
   const std::string setupName = freshBlock(blocks, "row.vector.setup");
   const std::string prepareName = freshBlock(blocks, "row.vector.prepare");
   const std::string kTileHeaderName =
       freshBlock(blocks, "row.vector.k.tile.header");
   const std::string kTilePrepareName =
       freshBlock(blocks, "row.vector.k.tile.prepare");
-  const std::string fullKTileSetupName =
-      freshBlock(blocks, "row.vector.k.full.setup");
   const std::string jHeaderName = freshBlock(blocks, "row.vector.j.header");
   const std::string initializeName =
       freshBlock(blocks, "row.vector.initialize");
-  const std::string fullKBodyName =
-      freshBlock(blocks, "row.vector.k.full.body");
   const std::string kHeaderName = freshBlock(blocks, "row.vector.k.header");
   const std::string kBodyName = freshBlock(blocks, "row.vector.k.body");
   const std::string storeName = freshBlock(blocks, "row.vector.store");
@@ -417,17 +411,9 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   const std::string hasKTile = freshValue(values, "row.vector.has.k.tile");
   const std::string tentativeKEnd =
       freshValue(values, "row.vector.k.tentative.end");
-  const std::string fullKTile =
-      freshValue(values, "row.vector.k.full.tile");
+  const std::string useFullKTile =
+      freshValue(values, "row.vector.k.use.full.tile");
   const std::string kEnd = freshValue(values, "row.vector.k.end");
-  const std::string tileCoefficientAddress =
-      freshValue(values, "row.vector.k.coefficient.address");
-  const std::string sourceTileRow0 =
-      freshValue(values, "row.vector.k.source.row0");
-  const std::string sourceTileNext =
-      freshValue(values, "row.vector.k.source.next");
-  const std::string sourceTileRow1 =
-      freshValue(values, "row.vector.k.source.row1");
   const std::string j = freshValue(values, "row.vector.j");
   const std::string hasVectorColumn =
       freshValue(values, "row.vector.has.column");
@@ -439,10 +425,6 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   const std::string coefficient = freshValue(values, "row.vector.coefficient");
   const std::string sourceRow = freshValue(values, "row.vector.source.row");
   const std::string source = freshValue(values, "row.vector.source");
-  const std::string fullSource0 =
-      freshValue(values, "row.vector.k.full.source0");
-  const std::string fullSource1 =
-      freshValue(values, "row.vector.k.full.source1");
   const std::string kNext = freshValue(values, "row.vector.k.next");
   const std::string jNext = freshValue(values, "row.vector.j.next");
 
@@ -520,45 +502,17 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   kTilePrepare.addInstruction(
       Instruction{"add", {kTile, "8"}, tentativeKEnd});
   kTilePrepare.addInstruction(
-      Instruction{useK8CoefficientLaneMls ? "icmp.sle" : "icmp.slt",
-                  {tentativeKEnd, candidate.rowIndex},
-                  fullKTile});
+      Instruction{"icmp.slt", {tentativeKEnd, candidate.rowIndex},
+                  useFullKTile});
   kTilePrepare.addInstruction(
-      Instruction{"select", {fullKTile, tentativeKEnd, candidate.rowIndex},
+      Instruction{"select", {useFullKTile, tentativeKEnd, candidate.rowIndex},
                   kEnd});
-  if (useK8CoefficientLaneMls) {
-    kTilePrepare.addInstruction(Instruction{
-        "getelementptr", {candidate.rowBase, kTile}, tileCoefficientAddress});
-    kTilePrepare.addInstruction(Instruction{
-        "getelementptr", {candidate.matrixBase, kTile}, sourceTileRow0});
-    kTilePrepare.addInstruction(
-        Instruction{"add", {kTile, "1"}, sourceTileNext});
-    kTilePrepare.addInstruction(Instruction{
-        "getelementptr", {candidate.matrixBase, sourceTileNext},
-        sourceTileRow1});
-    kTilePrepare.addInstruction(
-        Instruction{"br", {fullKTile, fullKTileSetupName, jHeaderName}});
-  } else {
-    kTilePrepare.addInstruction(Instruction{"br", {jHeaderName}});
-  }
-
-  BasicBlock fullKTileSetup{fullKTileSetupName};
-  fullKTileSetup.addInstruction(Instruction{
-      "aarch64.neon.load.coeff.i32x8", {tileCoefficientAddress}});
-  fullKTileSetup.addInstruction(Instruction{"br", {jHeaderName}});
+  kTilePrepare.addInstruction(Instruction{"br", {jHeaderName}});
 
   BasicBlock jHeader{jHeaderName};
-  if (useK8CoefficientLaneMls) {
-    jHeader.addInstruction(Instruction{
-        "phi",
-        {"int", candidate.rowIndex, kTilePrepareName, candidate.rowIndex,
-         fullKTileSetupName, jNext, storeName},
-        j});
-  } else {
-    jHeader.addInstruction(Instruction{
-        "phi", {"int", candidate.rowIndex, kTilePrepareName, jNext, storeName},
-        j});
-  }
+  jHeader.addInstruction(Instruction{
+      "phi", {"int", candidate.rowIndex, kTilePrepareName, jNext, storeName},
+      j});
   jHeader.addInstruction(
       Instruction{"icmp.slt", {j, vectorEnd}, hasVectorColumn});
   jHeader.addInstruction(
@@ -569,20 +523,7 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
       Instruction{"getelementptr", {candidate.rowBase, j}, destination});
   initialize.addInstruction(
       Instruction{"aarch64.neon.load.acc.i32x32", {destination}});
-  initialize.addInstruction(
-      useK8CoefficientLaneMls
-          ? Instruction{"br", {fullKTile, fullKBodyName, kHeaderName}}
-          : Instruction{"br", {kHeaderName}});
-
-  BasicBlock fullKBody{fullKBodyName};
-  fullKBody.addInstruction(
-      Instruction{"getelementptr", {sourceTileRow0, j}, fullSource0});
-  fullKBody.addInstruction(
-      Instruction{"getelementptr", {sourceTileRow1, j}, fullSource1});
-  fullKBody.addInstruction(Instruction{
-      "aarch64.neon.mls.acc.i32x32.k8.by.element",
-      {fullSource0, fullSource1}});
-  fullKBody.addInstruction(Instruction{"br", {storeName}});
+  initialize.addInstruction(Instruction{"br", {kHeaderName}});
 
   BasicBlock kHeader{kHeaderName};
   kHeader.addInstruction(
@@ -619,19 +560,10 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(kTilePrepare));
   ++insertion;
-  if (useK8CoefficientLaneMls) {
-    insertion =
-        function.blocks().insert(insertion, std::move(fullKTileSetup));
-    ++insertion;
-  }
   insertion = function.blocks().insert(insertion, std::move(jHeader));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(initialize));
   ++insertion;
-  if (useK8CoefficientLaneMls) {
-    insertion = function.blocks().insert(insertion, std::move(fullKBody));
-    ++insertion;
-  }
   insertion = function.blocks().insert(insertion, std::move(kHeader));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(kBody));

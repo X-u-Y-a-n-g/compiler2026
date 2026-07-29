@@ -978,7 +978,6 @@ preservation 和 ARMv8-A Advanced SIMD；未复制外部编译器实现。
 - 判定：B，候选代码与合成测试已完整撤回。64 位除法、逐 lane 符号检查、
   i64 扩展求和和额外控制流的真实 A53 成本超过减少三次 32 位除法的收益；
   后续不得根据 QEMU 结果恢复该四路折叠，也不再扩大为八路版本。
-
 ## 2026-07-29 AArch64 K8 系数常驻与按 lane MLS 候选
 
 - 通用条件：扩展现有 `LoopInterchangeRowUpdatePass` 的规范原地行更新，
