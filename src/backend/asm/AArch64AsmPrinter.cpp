@@ -262,16 +262,18 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
 }
 
 std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
-  // Keep the table inside an A53-friendly bounded window.  Each entry packs
-  // the immutable context in its high word and delta+1 in its low word; zero
-  // therefore remains an unambiguous empty entry.
-  constexpr std::uint32_t kCacheStates = 1U << 20;
   const bool singleImmutableContext =
       assembly.find("__compiler.tail_memo.single_immutable_context") !=
       std::string::npos;
+  // The compact layout can spend the same kind of bounded memory budget on a
+  // wider useful state domain.  The general multi-context fallback retains its
+  // original smaller window and entry format.
+  const std::uint32_t cacheStates =
+      singleImmutableContext ? (1U << 24) : (1U << 20);
+  const std::string cacheUpperWords = singleImmutableContext ? "256" : "16";
   const std::uint64_t cacheEntryBytes = singleImmutableContext ? 4U : 8U;
   const std::uint64_t cacheBytes =
-      (static_cast<std::uint64_t>(kCacheStates) + 1U) * cacheEntryBytes;
+      (static_cast<std::uint64_t>(cacheStates) + 1U) * cacheEntryBytes;
   static const std::regex headerComparePattern{
       R"(^  cmp (w[0-9]+), #1$)"};
   static const std::regex conditionalBranchPattern{
@@ -427,7 +429,7 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
         store + ":",
         "  cmp w6, #0",
         "  b.le " + noStore,
-        "  movz w16, #16, lsl #16",
+        "  movz w16, #" + cacheUpperWords + ", lsl #16",
         "  cmp w6, w16",
         "  b.hi " + noStore,
         "  sub w17, w0, w7",
@@ -450,7 +452,7 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
     std::vector<std::string> lookupSequence{
         "  cmp " + state + ", #0",
         "  b.le " + miss,
-        "  movz w16, #16, lsl #16",
+        "  movz w16, #" + cacheUpperWords + ", lsl #16",
         "  cmp " + state + ", w16",
         "  b.hi " + miss};
     if (singleImmutableContext) {
