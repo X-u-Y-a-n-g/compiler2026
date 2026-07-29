@@ -519,6 +519,17 @@ generic-ooo 前/后：
 
 本候选由 AI 辅助完成退化根因分析、流式循环顺序保留、八列 SLP 展开、成对访存、寄存器冲突修正和 8/4 宽度合成差分。技术依据为 loop unrolling、SLP、memory locality 与 ARMv8-A NEON `LDP/STP/MLA` 语义；未使用特定样例身份或未定义行为。
 
+## 2026-07-29 AArch64 条件矩阵归约 32 列面板持平回退与后续设计
+
+- 官方结果：候选 `f40bd56` 所在交付版本的 ARM performance 60 项均通过；条件矩阵归约三个目标仍为 `6.27/6.26/6.26s`，与父版本逐项相同，官方最佳为 `2.35/2.37/2.34s`。该候选没有形成可接受的目标收益，已由 `5cd238f` 隔离回退并推送到指定分支 `zct-arm-no-magic`。
+- 第一阶段候选：在 IR 上建立不携带名称的 `MatrixReductionDescriptor`。只接受三层规范自然循环、零起点单位步长归纳变量、相同且循环不变的边界、二维仿射 GEP、单一 i32 归约 Phi、单一最终 store、无调用/未知效果，并用对象身份、逃逸与调用效果证明输出不别名输入。条件归约还必须证明谓词与乘加的完整数据流，不能按函数、全局、块、路径或固定维度识别。
+- 第一项独立变换：16 列 register tiling。四个 i32x4 累加器跨完整 k 循环驻留，输入按连续 q pair 加载；主循环只要求 `remaining >= 16`，随后接 8/4/标量 epilogue，不要求总边界整除16。16列宽度来自 Cortex-A53 NEON/AAPCS64寄存器预算和旧4列面板控制开销退化证据，不来自任何测试尺寸。先单独验证该项，不与多行微内核或运行时版本化混合。
+- 后续候选顺序：①在16列稳定正收益后评估2×8多行微内核，用对象互异和行区间不重叠证明共享输入安全；②以通用成本模型选择16/32列，而非固定扩大；③加入指针归纳和post-index寻址；④仅对 IR 已有的循环不变语义条件做合法 unswitch，不探测输入分布；⑤接入类似LLVM优化备注的未命中原因，区分别名、非规范CFG、尾部和寄存器压力。每项独立完成60项performance与backend 140项correctness后才推送。
+- LLVM参考：LLVM要求自然循环具有单入口，并建议Loop Simplify形成preheader、单backedge和dedicated exits；Loop Vectorizer把合法性、成本模型、运行时别名检查、reduction/induction处理及scalar/epilogue路径分离。设计参考 [LLVM Loop Terminology](https://llvm.org/docs/LoopTerminology.html)、[LLVM Auto-Vectorization](https://llvm.org/docs/Vectorizers.html) 与 [LLVM VPlan](https://llvm.org/docs/VectorizationPlan.html)，未复制外部源码。
+- 当前阻塞：本机 `com.docker.service` 停止且当前权限无法启动，`compiler-impl2026-dev` 不可用。按强制门禁，在容器恢复前不实现、提交或推送下一优化候选。
+
+本轮由 AI 辅助完成官方结果判定、隔离回退、LLVM官方资料调研、IR矩阵描述符合法性边界、16列主循环与8/4/标量尾部设计。优化输入仅为IR/CFG/数据流/别名/效果语义和AArch64/Cortex-A53成本属性。
+
 ## 2026-07-27 AArch64 连续 i32 乘减归约双向量化平台持平记录
 
 - 被测变换：对两个连续只读 i32 流的规范 `acc -= lhs[i] * rhs[i]` 归约做八元素 strip-mining，使用两个 `i32x4` NEON accumulator、两组 `LDP`、两条 `MLS` 和退出 `ADDV`，完整保留短循环、尾部和运行时守卫 fallback。触发只依赖 SSA、CFG、类型和连续 GEP 语义。
