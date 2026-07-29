@@ -43,6 +43,7 @@
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/GuardedInitializationSinkingPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
 #include "../../include/compiler/midend/pass/LoopScalarPromotionPass.h"
@@ -299,6 +300,14 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::MonotonicContinueEliminationPass>());
     passManager.add(
         std::make_unique<compiler::midend::pass::MonotonicLoopBoundPass>());
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv(
+            "COMPILER_DISABLE_LOOP_CARRIED_STORE_LOAD_FORWARDING") ==
+            nullptr) {
+      passManager.add(std::make_unique<compiler::midend::pass::
+                                          LoopCarriedStoreToLoadForwardingPass>());
+    }
     passManager.add(
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
     if (invocation.options().target == "aarch64" ||

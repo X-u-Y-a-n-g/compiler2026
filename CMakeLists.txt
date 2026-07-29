@@ -38,6 +38,7 @@ add_library(compiler_lib
   src/midend/pass/GuardedInitializationSinkingPass.cpp
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopCarriedStoreToLoadForwardingPass.cpp
   src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopWavefrontColumnPackingPass.cpp
   src/midend/pass/LoopScalarPromotionPass.cpp
