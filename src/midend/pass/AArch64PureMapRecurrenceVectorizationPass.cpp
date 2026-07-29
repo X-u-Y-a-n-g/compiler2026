@@ -1,6 +1,7 @@
 #include "../../../include/compiler/midend/pass/AArch64PureMapRecurrenceVectorizationPass.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -23,6 +24,7 @@ using compiler::ir::core::Instruction;
 using compiler::ir::core::Module;
 
 constexpr int kVectorWidth = 4;
+constexpr int kPrefixScanWidth = 32;
 constexpr int kMaximumVectorSlots = 14;
 constexpr std::size_t kMaximumTransformsPerFunction = 8;
 
@@ -70,11 +72,24 @@ struct Candidate {
   std::string state;
   std::string inductionBackedge;
   std::string stateBackedge;
+  std::string initialState;
   std::string step;
   std::string mapRoot;
   int mapRootSlot = 0;
   std::vector<VectorOperation> vectorOperations;
   std::vector<const Instruction *> recurrenceInstructions;
+};
+
+struct IntegerInterval {
+  std::int64_t minimum = std::numeric_limits<std::int32_t>::min();
+  std::int64_t maximum = std::numeric_limits<std::int32_t>::max();
+};
+
+struct BoundedRemainderScan {
+  std::int32_t modulus = 0;
+  std::int64_t mapCoefficient = 0;
+  std::int64_t constant = 0;
+  IntegerInterval increment;
 };
 
 DefinitionMap definitionsOf(const Function &function) {
@@ -188,6 +203,268 @@ std::optional<int> binaryOpcode(const std::string &opcode) {
   if (opcode == "mul")
     return 2;
   return std::nullopt;
+}
+
+IntegerInterval fullI32Interval() {
+  return {std::numeric_limits<std::int32_t>::min(),
+          std::numeric_limits<std::int32_t>::max()};
+}
+
+bool fitsI32(__int128 value) {
+  return value >= std::numeric_limits<std::int32_t>::min() &&
+         value <= std::numeric_limits<std::int32_t>::max();
+}
+
+std::optional<IntegerInterval>
+exactBinaryInterval(int opcode, const IntegerInterval &lhs,
+                    const IntegerInterval &rhs) {
+  __int128 minimum = 0;
+  __int128 maximum = 0;
+  if (opcode == 0) {
+    minimum = static_cast<__int128>(lhs.minimum) + rhs.minimum;
+    maximum = static_cast<__int128>(lhs.maximum) + rhs.maximum;
+  } else if (opcode == 1) {
+    minimum = static_cast<__int128>(lhs.minimum) - rhs.maximum;
+    maximum = static_cast<__int128>(lhs.maximum) - rhs.minimum;
+  } else if (opcode == 2) {
+    const std::array<__int128, 4> products{
+        static_cast<__int128>(lhs.minimum) * rhs.minimum,
+        static_cast<__int128>(lhs.minimum) * rhs.maximum,
+        static_cast<__int128>(lhs.maximum) * rhs.minimum,
+        static_cast<__int128>(lhs.maximum) * rhs.maximum};
+    minimum = *std::min_element(products.begin(), products.end());
+    maximum = *std::max_element(products.begin(), products.end());
+  } else if (opcode == 3) {
+    minimum = std::max(lhs.minimum, rhs.minimum);
+    maximum = std::max(lhs.maximum, rhs.maximum);
+  } else if (opcode == 4) {
+    minimum = std::min(lhs.minimum, rhs.minimum);
+    maximum = std::min(lhs.maximum, rhs.maximum);
+  } else {
+    return std::nullopt;
+  }
+  if (!fitsI32(minimum) || !fitsI32(maximum)) {
+    return fullI32Interval();
+  }
+  return IntegerInterval{static_cast<std::int64_t>(minimum),
+                         static_cast<std::int64_t>(maximum)};
+}
+
+std::optional<IntegerInterval>
+intervalForMapRoot(const Candidate &candidate) {
+  std::array<std::optional<IntegerInterval>, kMaximumVectorSlots> intervals;
+  intervals[0] = fullI32Interval();
+  const auto operandInterval =
+      [&](bool immediate, std::int32_t encoded)
+      -> std::optional<IntegerInterval> {
+    if (immediate) {
+      return IntegerInterval{encoded, encoded};
+    }
+    if (encoded < 0 || encoded >= kMaximumVectorSlots) {
+      return std::nullopt;
+    }
+    return intervals[static_cast<std::size_t>(encoded)];
+  };
+
+  for (const auto &operation : candidate.vectorOperations) {
+    if (operation.destination < 0 ||
+        operation.destination >= kMaximumVectorSlots) {
+      return std::nullopt;
+    }
+    const auto lhs =
+        operandInterval(operation.lhsImmediate, operation.lhs);
+    if (!lhs.has_value()) {
+      return std::nullopt;
+    }
+    IntegerInterval result;
+    if (operation.kind == VectorOperation::Kind::Binary) {
+      const auto rhs =
+          operandInterval(operation.rhsImmediate, operation.rhs);
+      if (!rhs.has_value()) {
+        return std::nullopt;
+      }
+      const auto computed = exactBinaryInterval(operation.opcode, *lhs, *rhs);
+      if (!computed.has_value()) {
+        return std::nullopt;
+      }
+      result = *computed;
+    } else if (operation.kind == VectorOperation::Kind::Divide) {
+      result = {lhs->minimum / operation.divisor,
+                lhs->maximum / operation.divisor};
+    } else {
+      const std::int64_t span =
+          static_cast<std::int64_t>(operation.divisor) - 1;
+      if (lhs->minimum >= 0) {
+        result = {0, std::min(lhs->maximum, span)};
+      } else if (lhs->maximum <= 0) {
+        result = {std::max(lhs->minimum, -span), 0};
+      } else {
+        result = {-span, span};
+      }
+    }
+    intervals[static_cast<std::size_t>(operation.destination)] = result;
+  }
+  if (candidate.mapRootSlot < 0 ||
+      candidate.mapRootSlot >= kMaximumVectorSlots) {
+    return std::nullopt;
+  }
+  return intervals[static_cast<std::size_t>(candidate.mapRootSlot)];
+}
+
+struct AffineIncrement {
+  std::int64_t state = 0;
+  std::int64_t map = 0;
+  std::int64_t constant = 0;
+};
+
+bool addAffine(const AffineIncrement &lhs, const AffineIncrement &rhs,
+               int sign, AffineIncrement &result) {
+  const __int128 state =
+      static_cast<__int128>(lhs.state) + sign * rhs.state;
+  const __int128 map = static_cast<__int128>(lhs.map) + sign * rhs.map;
+  const __int128 constant =
+      static_cast<__int128>(lhs.constant) + sign * rhs.constant;
+  if (state < std::numeric_limits<std::int64_t>::min() ||
+      state > std::numeric_limits<std::int64_t>::max() ||
+      map < std::numeric_limits<std::int64_t>::min() ||
+      map > std::numeric_limits<std::int64_t>::max() ||
+      constant < std::numeric_limits<std::int64_t>::min() ||
+      constant > std::numeric_limits<std::int64_t>::max()) {
+    return false;
+  }
+  result = {static_cast<std::int64_t>(state),
+            static_cast<std::int64_t>(map),
+            static_cast<std::int64_t>(constant)};
+  return true;
+}
+
+std::optional<BoundedRemainderScan>
+boundedRemainderScanFor(const Candidate &candidate) {
+  if (candidate.recurrenceInstructions.size() < 2) {
+    return std::nullopt;
+  }
+  const auto *remainder = candidate.recurrenceInstructions.back();
+  std::int32_t modulus = 0;
+  if (remainder->opcode() != "srem" || remainder->operands().size() != 2 ||
+      !parseI32(remainder->operands()[1], modulus) || modulus <= 1) {
+    return std::nullopt;
+  }
+
+  std::unordered_map<std::string, AffineIncrement> expressions;
+  expressions.emplace(candidate.state, AffineIncrement{1, 0, 0});
+  expressions.emplace(candidate.mapRoot, AffineIncrement{0, 1, 0});
+  const auto affineOperand =
+      [&](const std::string &operand) -> std::optional<AffineIncrement> {
+    const auto found = expressions.find(operand);
+    if (found != expressions.end()) {
+      return found->second;
+    }
+    std::int32_t immediate = 0;
+    if (parseI32(operand, immediate)) {
+      return AffineIncrement{0, 0, immediate};
+    }
+    return std::nullopt;
+  };
+
+  for (std::size_t index = 0;
+       index + 1 < candidate.recurrenceInstructions.size(); ++index) {
+    const auto *instruction = candidate.recurrenceInstructions[index];
+    if ((instruction->opcode() != "add" &&
+         instruction->opcode() != "sub") ||
+        instruction->operands().size() != 2) {
+      return std::nullopt;
+    }
+    const auto lhs = affineOperand(instruction->operands()[0]);
+    const auto rhs = affineOperand(instruction->operands()[1]);
+    AffineIncrement result;
+    if (!lhs.has_value() || !rhs.has_value() ||
+        !addAffine(*lhs, *rhs, instruction->opcode() == "add" ? 1 : -1,
+                   result)) {
+      return std::nullopt;
+    }
+    expressions[instruction->result()] = result;
+  }
+  const auto numerator = expressions.find(remainder->operands()[0]);
+  if (numerator == expressions.end() || numerator->second.state != 1 ||
+      numerator->second.map == 0) {
+    return std::nullopt;
+  }
+
+  std::int32_t initialState = 0;
+  if (!parseI32(candidate.initialState, initialState) ||
+      initialState <= -modulus || initialState >= modulus) {
+    return std::nullopt;
+  }
+  const auto mapInterval = intervalForMapRoot(candidate);
+  if (!mapInterval.has_value()) {
+    return std::nullopt;
+  }
+  const IntegerInterval normalizedState{
+      -static_cast<std::int64_t>(modulus) + 1,
+      static_cast<std::int64_t>(modulus) - 1};
+  const auto affineRange =
+      [&](const AffineIncrement &expression)
+      -> std::optional<IntegerInterval> {
+    const auto contribution = [](
+                                  std::int64_t coefficient,
+                                  const IntegerInterval &interval) {
+      const __int128 first =
+          static_cast<__int128>(coefficient) * interval.minimum;
+      const __int128 second =
+          static_cast<__int128>(coefficient) * interval.maximum;
+      return std::pair<__int128, __int128>{std::min(first, second),
+                                           std::max(first, second)};
+    };
+    const auto stateContribution =
+        contribution(expression.state, normalizedState);
+    const auto mapContribution =
+        contribution(expression.map, *mapInterval);
+    const __int128 minimum =
+        stateContribution.first + mapContribution.first + expression.constant;
+    const __int128 maximum =
+        stateContribution.second + mapContribution.second + expression.constant;
+    if (!fitsI32(minimum) || !fitsI32(maximum)) {
+      return std::nullopt;
+    }
+    return IntegerInterval{static_cast<std::int64_t>(minimum),
+                           static_cast<std::int64_t>(maximum)};
+  };
+  for (std::size_t index = 0;
+       index + 1 < candidate.recurrenceInstructions.size(); ++index) {
+    const auto found =
+        expressions.find(candidate.recurrenceInstructions[index]->result());
+    if (found == expressions.end() || !affineRange(found->second).has_value()) {
+      return std::nullopt;
+    }
+  }
+  const auto coefficient = numerator->second.map;
+  const auto constant = numerator->second.constant;
+  const __int128 product0 =
+      static_cast<__int128>(coefficient) * mapInterval->minimum;
+  const __int128 product1 =
+      static_cast<__int128>(coefficient) * mapInterval->maximum;
+  if (!fitsI32(product0) || !fitsI32(product1)) {
+    return std::nullopt;
+  }
+  const __int128 endpoint0 = product0 + constant;
+  const __int128 endpoint1 = product1 + constant;
+  const auto minimum128 = std::min(endpoint0, endpoint1);
+  const auto maximum128 = std::max(endpoint0, endpoint1);
+  if (!fitsI32(minimum128) || !fitsI32(maximum128)) {
+    return std::nullopt;
+  }
+  const IntegerInterval increment{static_cast<std::int64_t>(minimum128),
+                                  static_cast<std::int64_t>(maximum128)};
+  const auto maximumAbsolute =
+      std::max(std::llabs(increment.minimum), std::llabs(increment.maximum));
+  const __int128 blockMagnitude =
+      static_cast<__int128>(maximumAbsolute) * kPrefixScanWidth;
+  if (blockMagnitude >= modulus ||
+      static_cast<__int128>(modulus) + blockMagnitude >
+          std::numeric_limits<std::int32_t>::max()) {
+    return std::nullopt;
+  }
+  return BoundedRemainderScan{modulus, coefficient, constant, increment};
 }
 
 std::optional<int> selectMinMaxOpcode(const Instruction &select,
@@ -324,7 +601,9 @@ std::optional<Candidate> matchCandidate(const Function &function) {
     }
     const auto inductionBackedge = phiIncoming(*inductionPhi, bodyName);
     const auto stateBackedge = phiIncoming(*statePhi, bodyName);
-    if (!inductionBackedge.has_value() || !stateBackedge.has_value()) {
+    const auto initialState = phiIncoming(*statePhi, preheaderName);
+    if (!inductionBackedge.has_value() || !stateBackedge.has_value() ||
+        !initialState.has_value()) {
       continue;
     }
     const auto inductionUpdate = definitions.find(*inductionBackedge);
@@ -555,6 +834,7 @@ std::optional<Candidate> matchCandidate(const Function &function) {
                      statePhi->result(),
                      *inductionBackedge,
                      *stateBackedge,
+                     *initialState,
                      step,
                      mapRoot,
                      rootSlot->second,
@@ -617,10 +897,21 @@ Instruction appendPhiIncoming(const Instruction &phi, const std::string &value,
 bool transform(Function &function, const Candidate &candidate) {
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
+  const auto boundedScan =
+      std::getenv("COMPILER_DISABLE_BOUNDED_REMAINDER_PREFIX_SCAN") == nullptr
+          ? boundedRemainderScanFor(candidate)
+          : std::nullopt;
   auto *header = blockByName(function, candidate.header);
   if (header == nullptr || header->instructions().size() != 4) {
     return false;
   }
+  const auto scanGuardName =
+      freshName(blockNames, "pure.map.prefix32.guard");
+  const auto scanHeaderName =
+      freshName(blockNames, "pure.map.prefix32.header");
+  const auto scanStepName = freshName(blockNames, "pure.map.prefix32.step");
+  const auto scanFinishName =
+      freshName(blockNames, "pure.map.prefix32.finish");
   const auto guardName = freshName(blockNames, "pure.map.vector.guard");
   const auto vectorName = freshName(blockNames, "pure.map.vector.body");
   const auto x1 = freshName(valueNames, "%pure.map.x1");
@@ -632,13 +923,11 @@ bool transform(Function &function, const Candidate &candidate) {
   const auto c3 = freshName(valueNames, "%pure.map.c3");
   const auto c12 = freshName(valueNames, "%pure.map.c12");
   const auto all = freshName(valueNames, "%pure.map.all");
-  std::vector<std::string> laneValues;
-  for (int lane = 0; lane < kVectorWidth; ++lane) {
-    laneValues.push_back(freshName(valueNames, "%pure.map.lane"));
-  }
 
   header->instructions().back() = Instruction{
-      "br", {header->instructions()[2].result(), guardName, candidate.exit}};
+      "br",
+      {header->instructions()[2].result(),
+       boundedScan.has_value() ? scanGuardName : guardName, candidate.exit}};
 
   BasicBlock guard{guardName};
   guard.addInstruction(
@@ -655,34 +944,48 @@ bool transform(Function &function, const Candidate &candidate) {
   guard.addInstruction(Instruction{"and", {c12, c3}, all});
   guard.addInstruction(Instruction{"br", {all, vectorName, candidate.body}});
 
+  const auto appendVectorMap =
+      [&](BasicBlock &block, const std::array<std::string, 4> &inputs) {
+        block.addInstruction(Instruction{
+            "aarch64.neon.pure.map.i32x4.init",
+            {inputs[0], inputs[1], inputs[2], inputs[3]}});
+        for (const auto &operation : candidate.vectorOperations) {
+          if (operation.kind == VectorOperation::Kind::Binary) {
+            block.addInstruction(Instruction{
+                "aarch64.neon.pure.map.binary.i32x4",
+                {std::to_string(operation.opcode),
+                 std::to_string(operation.destination),
+                 operation.lhsImmediate ? "1" : "0",
+                 std::to_string(operation.lhs),
+                 operation.rhsImmediate ? "1" : "0",
+                 std::to_string(operation.rhs)}});
+          } else {
+            block.addInstruction(Instruction{
+                operation.kind == VectorOperation::Kind::Divide
+                    ? "aarch64.neon.pure.map.sdiv.i32x4"
+                    : "aarch64.neon.pure.map.srem.i32x4",
+                {std::to_string(operation.destination),
+                 std::to_string(operation.lhs),
+                 std::to_string(operation.divisor),
+                 std::to_string(operation.magic.multiplier),
+                 std::to_string(operation.magic.shift)}});
+          }
+        }
+        std::array<std::string, 4> lanes;
+        for (int lane = 0; lane < kVectorWidth; ++lane) {
+          lanes[static_cast<std::size_t>(lane)] =
+              freshName(valueNames, "%pure.map.lane");
+          block.addInstruction(Instruction{
+              "aarch64.neon.pure.map.extract.i32x4",
+              {std::to_string(candidate.mapRootSlot), std::to_string(lane)},
+              lanes[static_cast<std::size_t>(lane)]});
+        }
+        return lanes;
+      };
+
   BasicBlock vectorBody{vectorName};
-  vectorBody.addInstruction(Instruction{"aarch64.neon.pure.map.i32x4.init",
-                                        {candidate.induction, x1, x2, x3}});
-  for (const auto &operation : candidate.vectorOperations) {
-    if (operation.kind == VectorOperation::Kind::Binary) {
-      vectorBody.addInstruction(Instruction{
-          "aarch64.neon.pure.map.binary.i32x4",
-          {std::to_string(operation.opcode),
-           std::to_string(operation.destination),
-           operation.lhsImmediate ? "1" : "0", std::to_string(operation.lhs),
-           operation.rhsImmediate ? "1" : "0", std::to_string(operation.rhs)}});
-    } else {
-      vectorBody.addInstruction(Instruction{
-          operation.kind == VectorOperation::Kind::Divide
-              ? "aarch64.neon.pure.map.sdiv.i32x4"
-              : "aarch64.neon.pure.map.srem.i32x4",
-          {std::to_string(operation.destination), std::to_string(operation.lhs),
-           std::to_string(operation.divisor),
-           std::to_string(operation.magic.multiplier),
-           std::to_string(operation.magic.shift)}});
-    }
-  }
-  for (int lane = 0; lane < kVectorWidth; ++lane) {
-    vectorBody.addInstruction(Instruction{
-        "aarch64.neon.pure.map.extract.i32x4",
-        {std::to_string(candidate.mapRootSlot), std::to_string(lane)},
-        laneValues[lane]});
-  }
+  const auto laneValues =
+      appendVectorMap(vectorBody, {candidate.induction, x1, x2, x3});
 
   std::string currentState = candidate.state;
   for (int lane = 0; lane < kVectorWidth; ++lane) {
@@ -706,13 +1009,225 @@ bool transform(Function &function, const Candidate &candidate) {
   vectorBody.addInstruction(Instruction{"add", {x3, candidate.step}, x4});
   vectorBody.addInstruction(Instruction{"br", {candidate.header}});
 
+  BasicBlock scanGuard{scanGuardName};
+  BasicBlock scanHeader{scanHeaderName};
+  BasicBlock scanStep{scanStepName};
+  BasicBlock scanFinish{scanFinishName};
+  std::string scanNextInduction;
+  std::string scanNextState;
+  if (boundedScan.has_value()) {
+    const auto induction64 =
+        freshName(valueNames, "%pure.map.prefix32.induction64");
+    const auto step64 = freshName(valueNames, "%pure.map.prefix32.step64");
+    const auto bound64 = freshName(valueNames, "%pure.map.prefix32.bound64");
+    const auto stepSpan64 =
+        freshName(valueNames, "%pure.map.prefix32.step.span64");
+    const auto last64 = freshName(valueNames, "%pure.map.prefix32.last64");
+    const auto stepPositive =
+        freshName(valueNames, "%pure.map.prefix32.step.positive");
+    const auto lastFits =
+        freshName(valueNames, "%pure.map.prefix32.last.fits");
+    const auto lastBeforeBound =
+        freshName(valueNames, "%pure.map.prefix32.last.before.bound");
+    const auto validStepAndRange =
+        freshName(valueNames, "%pure.map.prefix32.step.and.range");
+    const auto scanAllowed =
+        freshName(valueNames, "%pure.map.prefix32.allowed");
+    scanGuard.addInstruction(
+        Instruction{"sext", {candidate.induction, "long"}, induction64});
+    scanGuard.addInstruction(
+        Instruction{"sext", {candidate.step, "long"}, step64});
+    scanGuard.addInstruction(Instruction{
+        "sext", {header->instructions()[2].operands()[1], "long"}, bound64});
+    scanGuard.addInstruction(
+        Instruction{"mul", {step64, "31"}, stepSpan64});
+    scanGuard.addInstruction(
+        Instruction{"add", {induction64, stepSpan64}, last64});
+    scanGuard.addInstruction(
+        Instruction{"icmp.sgt", {step64, "0"}, stepPositive});
+    scanGuard.addInstruction(Instruction{
+        "icmp.sle", {last64, "2147483647"}, lastFits});
+    scanGuard.addInstruction(
+        Instruction{"icmp.slt", {last64, bound64}, lastBeforeBound});
+    scanGuard.addInstruction(Instruction{
+        "and", {stepPositive, lastFits}, validStepAndRange});
+    scanGuard.addInstruction(Instruction{
+        "and", {validStepAndRange, lastBeforeBound}, scanAllowed});
+    scanGuard.addInstruction(
+        Instruction{"br", {scanAllowed, scanHeaderName, guardName}});
+
+    const auto group = freshName(valueNames, "%pure.map.prefix32.group");
+    const auto groupNext =
+        freshName(valueNames, "%pure.map.prefix32.group.next");
+    const auto currentInduction =
+        freshName(valueNames, "%pure.map.prefix32.induction.current");
+    const auto loopNextInduction =
+        freshName(valueNames, "%pure.map.prefix32.induction.next");
+    scanNextInduction = currentInduction;
+    const auto total = freshName(valueNames, "%pure.map.prefix32.total");
+    const auto totalNext =
+        freshName(valueNames, "%pure.map.prefix32.total.next");
+    const auto minimum = freshName(valueNames, "%pure.map.prefix32.minimum");
+    const auto minimumNext =
+        freshName(valueNames, "%pure.map.prefix32.minimum.next");
+    const auto maximum = freshName(valueNames, "%pure.map.prefix32.maximum");
+    const auto maximumNext =
+        freshName(valueNames, "%pure.map.prefix32.maximum.next");
+    const auto hasGroup =
+        freshName(valueNames, "%pure.map.prefix32.has.group");
+    scanHeader.addInstruction(
+        Instruction{"phi",
+                    {"int", "0", scanGuardName, groupNext, scanStepName},
+                    group});
+    scanHeader.addInstruction(
+        Instruction{"phi",
+                    {"int", candidate.induction, scanGuardName,
+                     loopNextInduction, scanStepName},
+                    currentInduction});
+    scanHeader.addInstruction(
+        Instruction{"phi",
+                    {"int", "0", scanGuardName, totalNext, scanStepName},
+                    total});
+    scanHeader.addInstruction(
+        Instruction{"phi",
+                    {"int", "0", scanGuardName, minimumNext, scanStepName},
+                    minimum});
+    scanHeader.addInstruction(
+        Instruction{"phi",
+                    {"int", "0", scanGuardName, maximumNext, scanStepName},
+                    maximum});
+    scanHeader.addInstruction(
+        Instruction{"icmp.slt", {group, "8"}, hasGroup});
+    scanHeader.addInstruction(
+        Instruction{"br", {hasGroup, scanStepName, scanFinishName}});
+
+    std::array<std::string, 4> inputs;
+    inputs[0] = currentInduction;
+    for (int lane = 1; lane < kVectorWidth; ++lane) {
+      inputs[static_cast<std::size_t>(lane)] =
+          freshName(valueNames, "%pure.map.prefix32.induction");
+      scanStep.addInstruction(Instruction{
+          "add", {inputs[static_cast<std::size_t>(lane - 1)], candidate.step},
+          inputs[static_cast<std::size_t>(lane)]});
+    }
+    const auto lanes = appendVectorMap(scanStep, inputs);
+    std::string runningTotal = total;
+    std::string runningMinimum = minimum;
+    std::string runningMaximum = maximum;
+    for (int lane = 0; lane < kVectorWidth; ++lane) {
+      std::string increment = lanes[static_cast<std::size_t>(lane)];
+      if (boundedScan->mapCoefficient != 1) {
+        const auto scaled =
+            freshName(valueNames, "%pure.map.prefix32.scaled");
+        scanStep.addInstruction(Instruction{
+            "mul", {increment, std::to_string(boundedScan->mapCoefficient)},
+            scaled});
+        increment = scaled;
+      }
+      if (boundedScan->constant != 0) {
+        const auto shifted =
+            freshName(valueNames, "%pure.map.prefix32.shifted");
+        scanStep.addInstruction(Instruction{
+            "add", {increment, std::to_string(boundedScan->constant)},
+            shifted});
+        increment = shifted;
+      }
+      const auto nextTotal =
+          lane + 1 == kVectorWidth
+              ? totalNext
+              : freshName(valueNames, "%pure.map.prefix32.partial.total");
+      const auto belowMinimum =
+          freshName(valueNames, "%pure.map.prefix32.below.minimum");
+      const auto nextMinimum =
+          lane + 1 == kVectorWidth
+              ? minimumNext
+              : freshName(valueNames, "%pure.map.prefix32.partial.minimum");
+      const auto aboveMaximum =
+          freshName(valueNames, "%pure.map.prefix32.above.maximum");
+      const auto nextMaximum =
+          lane + 1 == kVectorWidth
+              ? maximumNext
+              : freshName(valueNames, "%pure.map.prefix32.partial.maximum");
+      scanStep.addInstruction(
+          Instruction{"add", {runningTotal, increment}, nextTotal});
+      scanStep.addInstruction(Instruction{
+          "icmp.slt", {nextTotal, runningMinimum}, belowMinimum});
+      scanStep.addInstruction(
+          Instruction{"select", {belowMinimum, nextTotal, runningMinimum},
+                      nextMinimum});
+      scanStep.addInstruction(Instruction{
+          "icmp.sgt", {nextTotal, runningMaximum}, aboveMaximum});
+      scanStep.addInstruction(
+          Instruction{"select", {aboveMaximum, nextTotal, runningMaximum},
+                      nextMaximum});
+      runningTotal = nextTotal;
+      runningMinimum = nextMinimum;
+      runningMaximum = nextMaximum;
+    }
+    scanStep.addInstruction(
+        Instruction{"add", {inputs[3], candidate.step}, loopNextInduction});
+    scanStep.addInstruction(Instruction{"add", {group, "1"}, groupNext});
+    scanStep.addInstruction(Instruction{"br", {scanHeaderName}});
+
+    const auto stateWithTotal =
+        freshName(valueNames, "%pure.map.prefix32.state.total");
+    const auto stateWithMinimum =
+        freshName(valueNames, "%pure.map.prefix32.state.minimum");
+    const auto stateWithMaximum =
+        freshName(valueNames, "%pure.map.prefix32.state.maximum");
+    const auto crossesUpper =
+        freshName(valueNames, "%pure.map.prefix32.crosses.upper");
+    const auto crossesLower =
+        freshName(valueNames, "%pure.map.prefix32.crosses.lower");
+    const auto upperAdjusted =
+        freshName(valueNames, "%pure.map.prefix32.upper.adjusted");
+    const auto lowerAdjusted =
+        freshName(valueNames, "%pure.map.prefix32.lower.adjusted");
+    const auto lowerOrBase =
+        freshName(valueNames, "%pure.map.prefix32.lower.or.base");
+    scanNextState = freshName(valueNames, "%pure.map.prefix32.state.next");
+    scanFinish.addInstruction(
+        Instruction{"add", {candidate.state, total}, stateWithTotal});
+    scanFinish.addInstruction(
+        Instruction{"add", {candidate.state, minimum}, stateWithMinimum});
+    scanFinish.addInstruction(
+        Instruction{"add", {candidate.state, maximum}, stateWithMaximum});
+    scanFinish.addInstruction(Instruction{
+        "icmp.sge",
+        {stateWithMaximum, std::to_string(boundedScan->modulus)},
+        crossesUpper});
+    scanFinish.addInstruction(Instruction{
+        "icmp.sle",
+        {stateWithMinimum, std::to_string(-boundedScan->modulus)},
+        crossesLower});
+    scanFinish.addInstruction(Instruction{
+        "sub", {stateWithTotal, std::to_string(boundedScan->modulus)},
+        upperAdjusted});
+    scanFinish.addInstruction(Instruction{
+        "add", {stateWithTotal, std::to_string(boundedScan->modulus)},
+        lowerAdjusted});
+    scanFinish.addInstruction(Instruction{
+        "select", {crossesLower, lowerAdjusted, stateWithTotal}, lowerOrBase});
+    scanFinish.addInstruction(Instruction{
+        "select", {crossesUpper, upperAdjusted, lowerOrBase}, scanNextState});
+    scanFinish.addInstruction(Instruction{"br", {candidate.header}});
+  }
+
   for (std::size_t index = 0; index < 2; ++index) {
     const auto &phi = header->instructions()[index];
     if (phi.result() == candidate.induction) {
-      header->instructions()[index] = appendPhiIncoming(phi, x4, vectorName);
+      auto updated = appendPhiIncoming(phi, x4, vectorName);
+      if (boundedScan.has_value()) {
+        updated =
+            appendPhiIncoming(updated, scanNextInduction, scanFinishName);
+      }
+      header->instructions()[index] = std::move(updated);
     } else if (phi.result() == candidate.state) {
-      header->instructions()[index] =
-          appendPhiIncoming(phi, currentState, vectorName);
+      auto updated = appendPhiIncoming(phi, currentState, vectorName);
+      if (boundedScan.has_value()) {
+        updated = appendPhiIncoming(updated, scanNextState, scanFinishName);
+      }
+      header->instructions()[index] = std::move(updated);
     } else {
       return false;
     }
@@ -723,6 +1238,16 @@ bool transform(Function &function, const Candidate &candidate) {
       [&](const BasicBlock &block) { return block.name() == candidate.body; });
   if (position == function.blocks().end()) {
     return false;
+  }
+  if (boundedScan.has_value()) {
+    position = function.blocks().insert(position, std::move(scanGuard));
+    ++position;
+    position = function.blocks().insert(position, std::move(scanHeader));
+    ++position;
+    position = function.blocks().insert(position, std::move(scanStep));
+    ++position;
+    position = function.blocks().insert(position, std::move(scanFinish));
+    ++position;
   }
   position = function.blocks().insert(position, std::move(guard));
   ++position;

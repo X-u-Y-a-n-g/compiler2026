@@ -1,0 +1,41 @@
+int excessive_increment_bound(int count) {
+    int state = 0;
+    int index = 0;
+    while (index < count) {
+        state = (state + index % 101) % 1009;
+        index = index + 1;
+    }
+    return state;
+}
+
+int unnormalized_dynamic_initial(int count, int initial) {
+    int state = initial;
+    int index = 0;
+    while (index < count) {
+        state = (state + index % 17 + 1) % 1009;
+        index = index + 1;
+    }
+    return state;
+}
+
+int wrapping_intermediate(int count) {
+    int state = 0;
+    int index = 0;
+    while (index < count) {
+        state = (state + index % 17 + 2147483647) % 1009;
+        index = index + 1;
+    }
+    return state;
+}
+
+int main() {
+    int count = getint();
+    int initial = getint();
+    putint(excessive_increment_bound(count));
+    putch(10);
+    putint(unnormalized_dynamic_initial(count, initial));
+    putch(10);
+    putint(wrapping_intermediate(count));
+    putch(10);
+    return 0;
+}
