@@ -1,0 +1,97 @@
+int lhs40[40][40];
+int rhs40[40][40];
+int out40[40][40];
+int lhs36[36][36];
+int rhs36[36][36];
+int out36[36][36];
+
+void initialize() {
+    int i = 0;
+    while (i < 40) {
+        int j = 0;
+        while (j < 40) {
+            lhs40[i][j] = i * 13 - j * 7 - 19;
+            rhs40[i][j] = i * 5 + j * 11 - 23;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 36) {
+        int j = 0;
+        while (j < 36) {
+            lhs36[i][j] = i * 9 - j * 5 - 17;
+            rhs36[i][j] = i * 7 + j * 3 - 29;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+void reduce40() {
+    int i = 0;
+    while (i < 40) {
+        int j = 0;
+        while (j < 40) {
+            int sum = 0;
+            int k = 0;
+            while (k < 40) {
+                if (lhs40[i][k] * rhs40[k][j] % 2 == 0) {
+                    sum = sum + rhs40[i][k] * lhs40[k][j];
+                }
+                k = k + 1;
+            }
+            out40[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+void reduce36() {
+    int i = 0;
+    while (i < 36) {
+        int j = 0;
+        while (j < 36) {
+            int sum = 0;
+            int k = 0;
+            while (k < 36) {
+                if (lhs36[i][k] * rhs36[k][j] % 2 == 0) {
+                    sum = sum + rhs36[i][k] * lhs36[k][j];
+                }
+                k = k + 1;
+            }
+            out36[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+int main() {
+    initialize();
+    reduce40();
+    reduce36();
+    int checksum = 0;
+    int i = 0;
+    while (i < 40) {
+        int j = 0;
+        while (j < 40) {
+            checksum = checksum + out40[i][j] * (i + j * 3 + 1);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 36) {
+        int j = 0;
+        while (j < 36) {
+            checksum = checksum + out36[i][j] * (i * 5 + j + 7);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    putint(checksum);
+    putch(10);
+    return 0;
+}

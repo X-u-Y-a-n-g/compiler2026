@@ -1245,9 +1245,10 @@ std::optional<std::string> globalSymbolForRegister(
   return std::nullopt;
 }
 
-// Interchange an i-j-k conditional integer reduction into i-k-j and vectorize
-// the now-contiguous j dimension. Extents divisible by eight use two vector
-// accumulators; other extents divisible by four retain the single-vector form.
+// Tile and vectorize the contiguous j dimension of an i-j-k conditional
+// integer reduction. Full 32-column panels keep eight results live across the
+// complete k reduction; a remaining suffix uses the established i-k-j
+// eight/four-column stream.
 // The matcher proves three distinct global objects, a single output store,
 // identical static extents, and the exact parity predicate before changing the
 // store schedule.
@@ -1255,6 +1256,8 @@ std::string vectorizeConditionalMatrixReduction(
     const std::string& assembly) {
   static const std::regex reservedVectorPattern{
       R"((^|[^A-Za-z0-9_])[svdq](20|21|22|23|24|25|26|27)([^A-Za-z0-9_]|$))"};
+  static const std::regex panelScratchVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq](18|19|28|29|30|31)([^A-Za-z0-9_]|$))"};
   static const std::regex indexedLoadPattern{
       R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
   static const std::regex indexedStorePattern{
@@ -1570,11 +1573,48 @@ std::string vectorizeConditionalMatrixReduction(
       continue;
     }
 
+    const auto isPrinterScratch = [](const std::string& reg) {
+      return reg == "x16" || reg == "x17" || reg == "x18";
+    };
+    std::size_t functionBegin = maddLine;
+    while (functionBegin > 0 &&
+           !(lines[functionBegin].rfind(".type ", 0) == 0 &&
+             lines[functionBegin].find("%function") != std::string::npos)) {
+      --functionBegin;
+    }
+    std::size_t functionEnd = maddLine;
+    while (functionEnd < lines.size() &&
+           lines[functionEnd].rfind(".size ", 0) != 0) {
+      ++functionEnd;
+    }
+    bool panelVectorsAvailable = functionBegin < maddLine &&
+                                 functionEnd < lines.size();
+    for (std::size_t line = functionBegin; panelVectorsAvailable &&
+                                             line < functionEnd;
+         ++line) {
+      if (std::regex_search(lines[line], panelScratchVectorPattern)) {
+        panelVectorsAvailable = false;
+      }
+    }
+    const bool panelRegistersSafe =
+        panelVectorsAvailable &&
+        !isPrinterScratch(firstColumnBase) &&
+        !isPrinterScratch(secondColumnBase) && !isPrinterScratch(outputRow) &&
+        !isPrinterScratch(firstBase) && !isPrinterScratch(secondBase) &&
+        !isPrinterScratch(predicateRow) &&
+        !isPrinterScratch(firstProductRow) && !isPrinterScratch(jX) &&
+        !isPrinterScratch(kX) && firstColumnBase != firstBase &&
+        secondColumnBase != secondBase;
+    const long long panelExtent = extent / 32 * 32;
+    const bool useThirtyTwoColumnPanel =
+        panelExtent >= 32 && panelRegistersSafe;
     const bool useEightColumns = extent >= 8 && extent % 8 == 0;
     const long long vectorWidth = useEightColumns ? 8 : 4;
     const std::string prefix = middleBodyLabel +
-                               (useEightColumns ? ".interchanged8"
-                                                : ".interchanged4");
+                               (useThirtyTwoColumnPanel
+                                    ? ".register32_tail"
+                                    : useEightColumns ? ".interchanged8"
+                                                      : ".interchanged4");
     if (assembly.find(prefix + ".init:") != std::string::npos) continue;
     const std::string init = prefix + ".init";
     const std::string clearBody = prefix + ".clear_body";
@@ -1618,6 +1658,109 @@ std::string vectorizeConditionalMatrixReduction(
                   ", lsl #2\n  ldr q24, [x16]\n"
                   "  mla v24.4s, v23.4s, v21.4s\n"
                   "  str q24, [x16]\n";
+
+    if (useThirtyTwoColumnPanel) {
+      const std::string tailInit = prefix + ".tail_init";
+      const std::string tailClearBody = prefix + ".tail_clear_body";
+      const std::string tailClearHeader = prefix + ".tail_clear_header";
+      const std::string tailKBody = prefix + ".tail_k_body";
+      const std::string tailKHeader = prefix + ".tail_k_header";
+      const std::string tailJBody = prefix + ".tail_j_body";
+      const std::string tailJHeader = prefix + ".tail_j_header";
+      const bool hasTail = panelExtent != extent;
+
+      lines[*entryBranch] = "  b " + init;
+      std::ostringstream panelBlocks;
+      panelBlocks << init << ":\n  movz " << jW << ", #0\n  b "
+                  << jHeaderLabel << "\n" << jBodyLabel << ":\n";
+      for (int accumulatorVector = 20; accumulatorVector <= 27;
+           ++accumulatorVector) {
+        panelBlocks << "  movi v" << accumulatorVector << ".4s, #0\n";
+      }
+      panelBlocks << "  movz " << kW << ", #0\n  b " << kHeaderLabel
+                  << "\n" << kBodyLabel << ":\n  ldr " << predicateScalar
+                  << ", [" << predicateRow << ", " << kX
+                  << ", lsl #2]\n  dup v28.4s, " << predicateScalar
+                  << "\n  ldr " << firstProduct << ", [" << firstProductRow
+                  << ", " << kX
+                  << ", lsl #2]\n  dup v29.4s, " << firstProduct
+                  << "\n  movz x18, #" << stride << "\n  mul x18, " << kX
+                  << ", x18\n  add " << firstColumnBase << ", "
+                  << firstBase << ", x18\n  add " << secondColumnBase << ", "
+                  << secondBase << ", x18\n  add x16, " << secondColumnBase
+                  << ", " << jX << ", lsl #2\n  add x17, "
+                  << firstColumnBase << ", " << jX << ", lsl #2\n";
+      for (int pair = 0; pair < 4; ++pair) {
+        const int offset = pair * 32;
+        const std::string address =
+            offset == 0 ? "" : ", #" + std::to_string(offset);
+        panelBlocks << "  ldp q18, q19, [x16" << address << "]\n"
+                    << "  and v18.16b, v18.16b, v28.16b\n"
+                    << "  and v19.16b, v19.16b, v28.16b\n"
+                    << "  shl v18.4s, v18.4s, #31\n"
+                    << "  shl v19.4s, v19.4s, #31\n"
+                    << "  cmeq v18.4s, v18.4s, #0\n"
+                    << "  cmeq v19.4s, v19.4s, #0\n"
+                    << "  ldp q30, q31, [x17" << address << "]\n"
+                    << "  and v30.16b, v30.16b, v18.16b\n"
+                    << "  and v31.16b, v31.16b, v19.16b\n"
+                    << "  mla v" << 20 + pair * 2
+                    << ".4s, v30.4s, v29.4s\n"
+                    << "  mla v" << 21 + pair * 2
+                    << ".4s, v31.4s, v29.4s\n";
+      }
+      panelBlocks << "  add " << kW << ", " << kW << ", #1\n"
+                  << kHeaderLabel << ":\n  cmp " << kW << ", #" << extent
+                  << "\n  b.lt " << kBodyLabel << "\n  add x16, "
+                  << outputRow << ", " << jX << ", lsl #2\n";
+      for (int pair = 0; pair < 4; ++pair) {
+        const int offset = pair * 32;
+        const std::string address =
+            offset == 0 ? "" : ", #" + std::to_string(offset);
+        panelBlocks << "  stp q" << 20 + pair * 2 << ", q"
+                    << 21 + pair * 2 << ", [x16" << address << "]\n";
+      }
+      panelBlocks << "  add " << jW << ", " << jW << ", #32\n"
+                  << jHeaderLabel << ":\n  cmp " << jW << ", #"
+                  << panelExtent << "\n  b.lt " << jBodyLabel << "\n  b "
+                  << (hasTail ? tailInit : *middleEndLabel);
+
+      if (hasTail) {
+        panelBlocks << "\n" << tailInit << ":\n  movi v24.4s, #0\n"
+                    << "  movz " << jW << ", #" << panelExtent
+                    << "\n  b " << tailClearHeader << "\n"
+                    << tailClearBody << ":\n  add x16, " << outputRow
+                    << ", " << jX << ", lsl #2\n" << clearStore
+                    << "  add " << jW << ", " << jW << ", #"
+                    << vectorWidth << "\n" << tailClearHeader << ":\n  cmp "
+                    << jW << ", #" << extent << "\n  b.lt "
+                    << tailClearBody << "\n  movz " << kW << ", #0\n  b "
+                    << tailKHeader << "\n" << tailKBody << ":\n  ldr "
+                    << predicateScalar << ", [" << predicateRow << ", "
+                    << kX << ", lsl #2]\n  dup v20.4s, "
+                    << predicateScalar << "\n  ldr " << firstProduct << ", ["
+                    << firstProductRow << ", " << kX
+                    << ", lsl #2]\n  dup v21.4s, " << firstProduct
+                    << "\n  movz x18, #" << stride << "\n  mul x18, " << kX
+                    << ", x18\n  add " << firstColumnBase << ", "
+                    << firstBase << ", x18\n  add " << secondColumnBase << ", "
+                    << secondBase << ", x18\n  movz " << jW << ", #"
+                    << panelExtent << "\n  b " << tailJHeader << "\n"
+                    << tailJBody << ":\n" << vectorUpdate << "  add " << jW
+                    << ", " << jW << ", #" << vectorWidth << "\n"
+                    << tailJHeader << ":\n  cmp " << jW << ", #" << extent
+                    << "\n  b.lt " << tailJBody << "\n  add " << kW << ", "
+                    << kW << ", #1\n" << tailKHeader << ":\n  cmp " << kW
+                    << ", #" << extent << "\n  b.lt " << tailKBody
+                    << "\n  b " << *middleEndLabel;
+      }
+
+      lines[middleBodyLine] =
+          panelBlocks.str() + "\n" + lines[middleBodyLine];
+      changed = true;
+      maddLine = middleHeaderBounds.second;
+      continue;
+    }
 
     lines[*entryBranch] = "  b " + init;
     const std::string blocks =
