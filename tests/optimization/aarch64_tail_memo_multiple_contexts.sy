@@ -1,0 +1,38 @@
+int limit;
+
+int steps(int state, int depth) {
+  if (state == 1) {
+    return depth;
+  }
+  if (state % 2 == 0) {
+    return steps(state / 2, depth + 1);
+  }
+  if (state * 3 + 1 <= limit) {
+    return steps(state * 3 + 1, depth + 1);
+  }
+  if (state * 4 + 1 <= limit) {
+    return steps(state * 4 + 1, depth + 1);
+  }
+  return 7;
+}
+
+int run(int next_limit) {
+  limit = next_limit;
+  int sum = 0;
+  int i = 1;
+  while (i <= limit) {
+    sum = sum + steps(i, 0);
+    i = i + 1;
+  }
+  return sum;
+}
+
+int main() {
+  putint(run(20));
+  putch(10);
+  putint(run(35));
+  putch(10);
+  putint(run(20));
+  putch(10);
+  return 0;
+}

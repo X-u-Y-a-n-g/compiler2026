@@ -31,6 +31,8 @@ using compiler::midend::analysis::FunctionEffectAnalysis;
 constexpr std::size_t kMaximumParameters = 3;
 constexpr std::size_t kModuleCacheBudgetBytes = 512U * 1024U;
 constexpr std::size_t kMinimumCacheEntries = 1024U;
+constexpr const char* kSingleImmutableContextMarker =
+    "__compiler.tail_memo.single_immutable_context";
 
 struct CallSite {
   std::size_t caller = 0;
@@ -354,9 +356,124 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   (void)functionName;
 }
 
+bool markSingleImmutableTailMemoContext(Module& module) {
+  const GlobalVariable* context = nullptr;
+  for (const auto& global : module.globals()) {
+    if (global.isConst()) {
+      continue;
+    }
+    if (context != nullptr || global.type() != "int") {
+      return false;
+    }
+    context = &global;
+  }
+  if (context == nullptr) {
+    return false;
+  }
+
+  const std::string symbol = "@" + context->name();
+  std::optional<CallSite> uniqueStore;
+  std::unordered_set<std::size_t> readers;
+  for (std::size_t functionIndex = 0;
+       functionIndex < module.functions().size(); ++functionIndex) {
+    const auto& function = module.functions()[functionIndex];
+    for (const auto& parameter : function.parameters()) {
+      if (parameter.type != "int" && parameter.type != "float") {
+        return false;
+      }
+    }
+    for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+         ++blockIndex) {
+      const auto& instructions = function.blocks()[blockIndex].instructions();
+      for (std::size_t instructionIndex = 0;
+           instructionIndex < instructions.size(); ++instructionIndex) {
+        const auto& instruction = instructions[instructionIndex];
+        const auto& operands = instruction.operands();
+        const bool mentionsContext =
+            std::find(operands.begin(), operands.end(), symbol) !=
+            operands.end();
+        if (instruction.opcode() == "load" && !operands.empty() &&
+            operands.back() == symbol) {
+          readers.insert(functionIndex);
+          continue;
+        }
+        if (instruction.opcode() == "store") {
+          if (operands.empty()) {
+            return false;
+          }
+          const auto& destination = operands.back();
+          if (destination == symbol) {
+            if (uniqueStore.has_value()) {
+              return false;
+            }
+            uniqueStore =
+                CallSite{functionIndex, blockIndex, instructionIndex};
+            continue;
+          }
+          // At this early optimized-IR point, reject any computed store:
+          // without object-sensitive alias proof it could target the context.
+          if (destination.empty() || destination.front() != '@') {
+            return false;
+          }
+        }
+        if (mentionsContext) {
+          return false;
+        }
+      }
+    }
+  }
+  if (!uniqueStore.has_value() || readers.empty()) {
+    return false;
+  }
+
+  const auto& storeFunction = module.functions()[uniqueStore->caller];
+  if (storeFunction.name() != "main" || uniqueStore->block != 0 ||
+      storeFunction.blocks().empty()) {
+    return false;
+  }
+  for (const auto readerIndex : readers) {
+    if (readerIndex == uniqueStore->caller) {
+      const auto& entryInstructions =
+          storeFunction.blocks().front().instructions();
+      for (std::size_t index = 0; index < uniqueStore->instruction; ++index) {
+        const auto& instruction = entryInstructions[index];
+        if (instruction.opcode() == "load" &&
+            !instruction.operands().empty() &&
+            instruction.operands().back() == symbol) {
+          return false;
+        }
+      }
+      continue;
+    }
+    const auto calls =
+        callsTo(module, "@" + module.functions()[readerIndex].name());
+    if (calls.empty()) {
+      return false;
+    }
+    for (const auto& call : calls) {
+      if (call.caller != uniqueStore->caller) {
+        return false;
+      }
+      if (call.block == 0 && call.instruction < uniqueStore->instruction) {
+        return false;
+      }
+    }
+  }
+
+  module.addGlobal(GlobalVariable{
+      kSingleImmutableContextMarker, "int",
+      Constant::scalar("int", "1"), true});
+  module.addPassNote(
+      "proved a single immutable scalar context for compact tail memoization");
+  return true;
+}
+
 } // namespace
 
 void RecursiveMemoizationPass::run(Module &module) {
+  const bool markedSingleContext =
+      std::getenv("COMPILER_DISABLE_COMPACT_TAIL_MEMOIZATION") == nullptr &&
+      markSingleImmutableTailMemoContext(module);
   FunctionEffectAnalysis effects(module);
   std::vector<Candidate> candidates;
   candidates.reserve(module.functions().size());
@@ -380,7 +497,8 @@ void RecursiveMemoizationPass::run(Module &module) {
     ++memoized;
   }
   if (std::getenv("COMPILER_RECURSIVE_MEMOIZATION_STATS") != nullptr)
-    std::cerr << "recursive-memoization: memoized=" << memoized << '\n';
+    std::cerr << "recursive-memoization: memoized=" << memoized
+              << " single-context=" << (markedSingleContext ? 1 : 0) << '\n';
 }
 
 } // namespace compiler::midend::pass

@@ -266,8 +266,12 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
   // the immutable context in its high word and delta+1 in its low word; zero
   // therefore remains an unambiguous empty entry.
   constexpr std::uint32_t kCacheStates = 1U << 20;
-  constexpr std::uint64_t kCacheBytes =
-      (static_cast<std::uint64_t>(kCacheStates) + 1U) * 8U;
+  const bool singleImmutableContext =
+      assembly.find("__compiler.tail_memo.single_immutable_context") !=
+      std::string::npos;
+  const std::uint64_t cacheEntryBytes = singleImmutableContext ? 4U : 8U;
+  const std::uint64_t cacheBytes =
+      (static_cast<std::uint64_t>(kCacheStates) + 1U) * cacheEntryBytes;
   static const std::regex headerComparePattern{
       R"(^  cmp (w[0-9]+), #1$)"};
   static const std::regex conditionalBranchPattern{
@@ -419,37 +423,56 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
     const std::string noStore = header + ".memo_no_store";
 
     // Work backwards so the original indices remain valid.
+    std::vector<std::string> storeSequence{
+        store + ":",
+        "  cmp w6, #0",
+        "  b.le " + noStore,
+        "  movz w16, #16, lsl #16",
+        "  cmp w6, w16",
+        "  b.hi " + noStore,
+        "  sub w17, w0, w7",
+        "  add w17, w17, #1"};
+    if (singleImmutableContext) {
+      storeSequence.push_back("  str w17, [x5, w6, uxtw #2]");
+    } else {
+      storeSequence.insert(
+          storeSequence.end(),
+          {"  uxtw x17, w17",
+           "  uxtw x18, " + context,
+           "  orr x17, x17, x18, lsl #32",
+           "  str x17, [x5, w6, uxtw #3]"});
+    }
+    storeSequence.insert(storeSequence.end(),
+                         {noStore + ":", "  b " + epilogue});
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
-                 {store + ":",
-                  "  cmp w6, #0",
-                  "  b.le " + noStore,
-                  "  movz w16, #16, lsl #16",
-                  "  cmp w6, w16",
-                  "  b.hi " + noStore,
-                  "  sub w17, w0, w7",
-                  "  add w17, w17, #1",
-                  "  uxtw x17, w17",
-                  "  uxtw x18, " + context,
-                  "  orr x17, x17, x18, lsl #32",
-                  "  str x17, [x5, w6, uxtw #3]",
-                  noStore + ":",
-                  "  b " + epilogue});
+                 storeSequence.begin(), storeSequence.end());
     lines[headerIndex + 5] = "  b " + store;
+    std::vector<std::string> lookupSequence{
+        "  cmp " + state + ", #0",
+        "  b.le " + miss,
+        "  movz w16, #16, lsl #16",
+        "  cmp " + state + ", w16",
+        "  b.hi " + miss};
+    if (singleImmutableContext) {
+      lookupSequence.push_back(
+          "  ldr w17, [x5, " + state + ", uxtw #2]");
+    } else {
+      lookupSequence.insert(
+          lookupSequence.end(),
+          {"  ldr x17, [x5, " + state + ", uxtw #3]",
+           "  lsr x18, x17, #32",
+           "  cmp w18, " + context,
+           "  b.ne " + miss});
+    }
+    lookupSequence.insert(
+        lookupSequence.end(),
+        {"  cbz w17, " + miss,
+         "  sub w17, w17, #1",
+         "  add w0, " + depth + ", w17",
+         "  b " + store,
+         miss + ":"});
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
-                 {"  cmp " + state + ", #0",
-                  "  b.le " + miss,
-                  "  movz w16, #16, lsl #16",
-                  "  cmp " + state + ", w16",
-                  "  b.hi " + miss,
-                  "  ldr x17, [x5, " + state + ", uxtw #3]",
-                  "  lsr x18, x17, #32",
-                  "  cmp w18, " + context,
-                  "  b.ne " + miss,
-                  "  cbz w17, " + miss,
-                  "  sub w17, w17, #1",
-                  "  add w0, " + depth + ", w17",
-                  "  b " + store,
-                  miss + ":"});
+                 lookupSequence.begin(), lookupSequence.end());
     const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
                  {"  mov w6, " + state,
@@ -461,7 +484,7 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
                                 ".section .note.GNU-stack,\"\",%progbits");
     if (note == lines.end()) return assembly;
     lines.insert(note, {".bss", ".balign 64", cache + ":",
-                        "  .zero " + std::to_string(kCacheBytes)});
+                        "  .zero " + std::to_string(cacheBytes)});
     break;  // Enforce a fixed per-module memory budget.
   }
 
