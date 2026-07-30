@@ -247,6 +247,25 @@ outerRegion(const std::unordered_map<std::string, const BasicBlock *> &blocks,
   return seen;
 }
 
+bool hasMemoryWriteOrCall(const BasicBlock &block) {
+  for (const auto &instruction : block.instructions())
+    if (instruction.opcode() == "call" || instruction.opcode() == "store")
+      return true;
+  return false;
+}
+
+bool branchesTo(const BasicBlock &block, const std::string &target) {
+  const auto *terminator = block.terminator();
+  if (terminator == nullptr || terminator->opcode() != "br")
+    return false;
+  const auto &operands = terminator->operands();
+  if (operands.empty())
+    return false;
+  const std::size_t first = operands.size() == 1 ? 0 : 1;
+  return std::find(operands.begin() + static_cast<std::ptrdiff_t>(first),
+                   operands.end(), target) != operands.end();
+}
+
 std::optional<std::string> transparentDestination(
     const std::unordered_map<std::string, const BasicBlock *> &blocks,
     std::string blockName) {
@@ -505,7 +524,8 @@ std::optional<Candidate> matchFunction(const Module &module,
     if (outerHeaderFound == blocks.end() ||
         outerHeaderFound->second->terminator() == nullptr ||
         outerHeaderFound->second->terminator()->operands().size() != 3 ||
-        outerHeaderFound->second->terminator()->operands()[1] != outerBody)
+        outerHeaderFound->second->terminator()->operands()[1] != outerBody ||
+        hasMemoryWriteOrCall(*outerHeaderFound->second))
       continue;
     const std::string outerLatch =
         middleHeaderFound->second->terminator()->operands()[2];
@@ -528,7 +548,10 @@ std::optional<Candidate> matchFunction(const Module &module,
             std::vector<std::string>{outer, "0"})
       continue;
     const auto outerLatchFound = blocks.find(outerLatch);
+    const auto outerLatchPreds = predecessors.find(outerLatch);
     if (outerLatchFound == blocks.end() ||
+        outerLatchPreds == predecessors.end() ||
+        outerLatchPreds->second != std::vector<std::string>{middleHeader} ||
         outerLatchFound->second->terminator() == nullptr ||
         outerLatchFound->second->terminator()->operands() !=
             std::vector<std::string>{outerHeader})
@@ -541,9 +564,20 @@ std::optional<Candidate> matchFunction(const Module &module,
     const auto region = outerRegion(blocks, outerBody, outerHeader, outerExit);
     if (!region.has_value())
       continue;
+    const auto outerBodyFound = blocks.find(outerBody);
+    if (outerBodyFound == blocks.end() ||
+        outerBodyFound->second->terminator() == nullptr ||
+        outerBodyFound->second->terminator()->opcode() != "br" ||
+        outerBodyFound->second->terminator()->operands() !=
+            std::vector<std::string>{middleHeader})
+      continue;
     bool effectsSafe = true;
     for (const auto &blockName : *region) {
       const auto *block = blocks.at(blockName);
+      if (blockName != outerLatch && branchesTo(*block, outerHeader)) {
+        effectsSafe = false;
+        break;
+      }
       for (const auto &instruction : block->instructions()) {
         if (instruction.opcode() == "call") {
           effectsSafe = false;

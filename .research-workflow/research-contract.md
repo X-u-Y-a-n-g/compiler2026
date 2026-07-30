@@ -47,4 +47,9 @@
 
 ## Amendment history
 
-- None. Create a new version rather than silently changing frozen criteria.
+- 2026-07-30 safety amendment: official Cortex-A53 confirmed the mechanism, but
+  a middle-loop early-exit counterexample falsified the original must-execute
+  assumption. The implementation now requires a pure outer header, an
+  unconditional outer-body edge into the middle header, a unique normal middle
+  exit, and no non-latch edge back to the outer header. These checks only narrow
+  eligibility and leave the accepted h-8 assembly unchanged.

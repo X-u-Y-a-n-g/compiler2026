@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Publish one locally validated transposed-shadow candidate to the owner-designated AArch64 delivery branch and await the official Cortex-A53 result.
+Publish the must-execute legality fix for the officially accelerated transposed-shadow candidate to the owner-designated AArch64 delivery branch.
 
 ## Confirmed facts
 
@@ -12,6 +12,9 @@ Publish one locally validated transposed-shadow candidate to the owner-designate
 - A structurally similar 11x11 case with an extra matrix write falls back.
 - The 60-case scan transforms only h-8-01/02/03.
 - Final gates: correctness 140/140 AC; performance 57 AC plus the three already documented h-4 evaluator formatting exceptions. h-4 enabled and disabled assembly are byte-identical with SHA-256 1e7e46211863afd4643b72e689f5c9cfd93187b19bca82241f4f16d8384ba433.
+- Official Cortex-A53 h-8 result is 3.55/3.55/3.54s versus the prior accepted 11.51/11.41/11.43s, a 69.0% aggregate reduction.
+- A middle-loop early-break counterexample makes the old pass read stale shadow values and differ from O0; the legality fix rejects it.
+- The fix adds compile-time-only must-execute/effect checks. Positive and h-8 final assembly remains byte-identical.
 
 ## Decisions and rationale
 
@@ -22,24 +25,25 @@ Publish one locally validated transposed-shadow candidate to the owner-designate
 
 ## Best valid result
 
-The hot second load is now contiguous with the same hot-loop instruction count. Local three-case internal timing was 4.275252s enabled versus 4.277266s disabled, effectively flat as expected under QEMU.
+The hot second load is contiguous with the same hot-loop instruction count. Official Cortex-A53 h-8 time is 10.64s total versus 34.35s before the shadow, about 3.23x faster; the legality fix does not alter those assemblies.
 
 ## Active experiments
 
-- Official Cortex-A53 submission of the pushed candidate: pending repository owner.
+- Commit and push the isolated must-execute legality fix.
 
 ## Blocked or uncertain
 
-- Meaningful target improvement is unknown until official Cortex-A53 evaluation.
+- The checked-out public test copies currently lack `.out` files; full local runs therefore report `NO_EXPECTED` despite successful compile/link/run. Assembly differential against the accepted parent is used as the exact isolation check.
 
 ## Next actions
 
-Commit and push the isolated candidate. Keep only if the official result is meaningfully better; otherwise revert and push promptly.
+Commit and push the isolated legality fix to `zct-arm-no-magic` after the final parent/candidate assembly differential completes.
 
 ## Files and commands to reread
 
 - `src/midend/pass/TriangularTransposeShadowPass.cpp`
 - `tests/optimization/triangular_transpose_shadow.sy`
 - `tests/optimization/triangular_transpose_shadow_fallback.sy`
+- `tests/optimization/triangular_transpose_shadow_control_flow_fallback.sy`
 - `/tmp/eval-transpose-final-performance-60`
 - `/tmp/eval-transpose-final-correctness-140`
