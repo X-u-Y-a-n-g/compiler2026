@@ -105,6 +105,26 @@ bool phiConflictAfterRedirect(
   return false;
 }
 
+bool isCriticalEdgeSplit(
+    const Function& function, const std::string& blockName,
+    const std::string& targetName,
+    const std::unordered_map<std::string, std::vector<std::string>>&
+        predecessors) {
+  const auto blockPredecessors = predecessors.find(blockName);
+  const auto targetPredecessors = predecessors.find(targetName);
+  if (blockPredecessors == predecessors.end() ||
+      blockPredecessors->second.size() != 1 ||
+      targetPredecessors == predecessors.end() ||
+      targetPredecessors->second.size() < 2) {
+    return false;
+  }
+  const auto* predecessor = findBlock(function, blockPredecessors->second.front());
+  const auto* target = findBlock(function, targetName);
+  return predecessor != nullptr && branchTargets(*predecessor).size() > 1 &&
+         target != nullptr && !target->instructions().empty() &&
+         target->instructions().front().opcode() == "phi";
+}
+
 void expandIncomingBlock(const std::string& block,
                          const std::unordered_map<std::string, std::string>& redirects,
                          const std::unordered_map<std::string, std::vector<std::string>>& predecessors,
@@ -174,6 +194,8 @@ void eliminateTrivialBlocks(Function& function) {
     }
     const auto& target = block.instructions().front().operands().front();
     if (target != block.name() &&
+        (!function.hasIterationScalarResidency() ||
+         !isCriticalEdgeSplit(function, block.name(), target, predecessors)) &&
         !phiConflictAfterRedirect(function, block.name(), target, predecessors)) {
       redirects.emplace(block.name(), target);
     }

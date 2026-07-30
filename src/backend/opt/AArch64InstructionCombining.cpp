@@ -239,6 +239,51 @@ void combineCompareSelects(
   }
 }
 
+void combineLoopUpdateCopies(
+    MachineFunction& function,
+    const compiler::backend::target::TargetInstrAdapter& adapter) {
+  std::unordered_map<std::string, std::size_t> useCounts;
+  std::vector<MachineOperand> uses;
+  for (const auto& block : function.blocks) {
+    for (const auto& instruction : block.instructions) {
+      adapter.enumerateUses(instruction, uses);
+      for (const auto& operand : uses) {
+        if (isVirtualRegister(operand)) ++useCounts[operand.text];
+      }
+    }
+  }
+
+  for (auto& block : function.blocks) {
+    std::vector<MachineInstruction> rewritten;
+    rewritten.reserve(block.instructions.size());
+    for (std::size_t index = 0; index < block.instructions.size();) {
+      if (index + 1 < block.instructions.size()) {
+        auto update = block.instructions[index];
+        const auto& copy = block.instructions[index + 1];
+        const bool updateReadsDestination =
+            std::any_of(update.operands.begin(), update.operands.end(),
+                        [&](const auto& operand) {
+                          return sameVirtualRegister(operand, copy.result);
+                        });
+        if (update.opcode == "add" && update.hasResult &&
+            isVirtualRegister(update.result) && update.operands.size() == 2 &&
+            copy.opcode == "copy" && copy.hasResult &&
+            isVirtualRegister(copy.result) && copy.operands.size() == 1 &&
+            sameVirtualRegister(copy.operands.front(), update.result) &&
+            useCounts[update.result.text] == 1 && updateReadsDestination) {
+          update.result = copy.result;
+          rewritten.push_back(std::move(update));
+          index += 2;
+          continue;
+        }
+      }
+      rewritten.push_back(std::move(block.instructions[index]));
+      ++index;
+    }
+    block.instructions = std::move(rewritten);
+  }
+}
+
 void shareBoundedModuloConstant(
     MachineFunction& function,
     const compiler::backend::target::TargetInstrAdapter& adapter) {
@@ -726,6 +771,9 @@ void AArch64InstructionCombining::run(
       shareBoundedModuloConstant(function, adapter);
     }
     foldIndexedAddresses(function, adapter);
+    if (function.hasIterationScalarResidency) {
+      combineLoopUpdateCopies(function, adapter);
+    }
   }
 }
 

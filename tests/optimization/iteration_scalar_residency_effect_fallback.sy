@@ -1,0 +1,101 @@
+int observed_values[20];
+int alternate_values[20];
+
+int update_with_effect(int limit) {
+  int position = 0;
+  int checksum = 0;
+  while (position < limit) {
+    putch(65 + position);
+    if (position > 0) {
+      if (observed_values[position] < observed_values[position - 1]) {
+        observed_values[position] = observed_values[position - 1];
+      }
+    }
+    if (observed_values[position] < alternate_values[position]) {
+      observed_values[position] = alternate_values[position];
+    }
+    int scan = 0;
+    while (scan < position) {
+      if (observed_values[position] < alternate_values[scan]) {
+        observed_values[position] = alternate_values[scan];
+      }
+      scan = scan + 1;
+    }
+    checksum = checksum + observed_values[position];
+    position = position + 1;
+  }
+  return checksum;
+}
+
+int update_with_exit(int limit) {
+  int position = 0;
+  int checksum = 0;
+  while (position < limit) {
+    if (position == 3) {
+      return checksum;
+    }
+    if (position > 0) {
+      if (observed_values[position] < observed_values[position - 1]) {
+        observed_values[position] = observed_values[position - 1];
+      }
+    }
+    if (observed_values[position] < alternate_values[position]) {
+      observed_values[position] = alternate_values[position];
+    }
+    int scan = 0;
+    while (scan < position) {
+      if (observed_values[position] < alternate_values[scan]) {
+        observed_values[position] = alternate_values[scan];
+      }
+      scan = scan + 1;
+    }
+    checksum = checksum + observed_values[position];
+    position = position + 1;
+  }
+  return checksum;
+}
+
+int update_without_initial_read(int limit, int choose_updates) {
+  int position = 0;
+  int checksum = 0;
+  while (position < limit) {
+    if (choose_updates != 0) {
+      if (observed_values[position] < alternate_values[position]) {
+        observed_values[position] = alternate_values[position];
+      }
+      if (observed_values[position] < alternate_values[0]) {
+        observed_values[position] = alternate_values[0];
+      }
+      int scan = 0;
+      while (scan < position) {
+        if (observed_values[position] < alternate_values[scan]) {
+          observed_values[position] = alternate_values[scan];
+        }
+        scan = scan + 1;
+      }
+    } else {
+      observed_values[position] = position + 100;
+    }
+    checksum = checksum + position;
+    position = position + 1;
+  }
+  return checksum;
+}
+
+int main() {
+  int index = 0;
+  while (index < 20) {
+    observed_values[index] = index - 4;
+    alternate_values[index] = 9 - index;
+    index = index + 1;
+  }
+  putint(update_with_effect(3));
+  putch(10);
+  putint(update_with_exit(7));
+  putch(10);
+  putint(update_without_initial_read(2, 0));
+  putch(10);
+  putint(observed_values[0] + observed_values[1]);
+  putch(10);
+  return 0;
+}

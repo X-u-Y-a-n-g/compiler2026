@@ -45,6 +45,7 @@
 #include "../../include/compiler/midend/pass/GlobalScalarLocalizationPass.h"
 #include "../../include/compiler/midend/pass/GuardedInitializationSinkingPass.h"
 #include "../../include/compiler/midend/pass/IdempotentIterationCollapsePass.h"
+#include "../../include/compiler/midend/pass/IterationScalarResidencyPass.h"
 #include "../../include/compiler/midend/pass/LazyAffineCopyResolutionPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
 #include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
@@ -331,6 +332,13 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::IterationScalarResidencyPass>());
+      passManager.add(
+          std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    }
     if (invocation.options().target == "aarch64" ||
         invocation.options().target == "arm64") {
       passManager.add(std::make_unique<

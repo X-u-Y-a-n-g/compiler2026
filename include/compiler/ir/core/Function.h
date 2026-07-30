@@ -28,6 +28,12 @@ class Function {
   [[nodiscard]] std::vector<FunctionParameter>& parameters() { return parameters_; }
   [[nodiscard]] const std::deque<BasicBlock>& blocks() const { return blocks_; }
   [[nodiscard]] std::deque<BasicBlock>& blocks() { return blocks_; }
+  [[nodiscard]] bool hasIterationScalarResidency() const {
+    return hasIterationScalarResidency_;
+  }
+  void setIterationScalarResidency(bool value) {
+    hasIterationScalarResidency_ = value;
+  }
 
   BasicBlock& addBlock(BasicBlock block) {
     blocks_.push_back(std::move(block));
@@ -39,6 +45,7 @@ class Function {
   std::string returnType_;
   std::vector<FunctionParameter> parameters_;
   std::deque<BasicBlock> blocks_;
+  bool hasIterationScalarResidency_ = false;
 };
 
 }  // namespace compiler::ir::core

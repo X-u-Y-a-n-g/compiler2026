@@ -176,6 +176,8 @@ class FunctionLoweringContext {
   MachineFunction run() {
     machineFunction_.name = function_.name();
     machineFunction_.returnType = scalarValueTypeFromObject(parseObjectType(function_.returnType()));
+    machineFunction_.hasIterationScalarResidency =
+        function_.hasIterationScalarResidency();
     machineFunction_.parameters.reserve(function_.parameters().size());
     for (const auto& parameter : function_.parameters()) {
       const ObjectType objectType = parseObjectType(parameter.type);
