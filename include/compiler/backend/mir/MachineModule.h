@@ -467,7 +467,6 @@ struct MachineFunction {
   bool usesFramePointer = true;
   int savedRaOffset = 0;
   int savedFpOffset = 0;
-  bool hasIterationScalarResidency = false;
 };
 
 struct MachineGlobal {
