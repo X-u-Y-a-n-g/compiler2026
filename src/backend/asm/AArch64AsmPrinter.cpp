@@ -3161,6 +3161,44 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {
+    if (std::getenv("COMPILER_DISABLE_AARCH64_SHIFTED_MADD") == nullptr) {
+      std::optional<std::size_t> constantIndex;
+      std::uint64_t magnitude = 0;
+      for (std::size_t index = 0; index < 2; ++index) {
+        const auto& operand = instruction.operands[index];
+        if (operand.kind == MachineOperandKind::ImmediateInt &&
+            powerOfTwoMagnitude(operand.intValue, magnitude)) {
+          constantIndex = index;
+          break;
+        }
+      }
+
+      if (constantIndex.has_value()) {
+        const auto type = instruction.result.type;
+        const unsigned width = isNarrow(type) ? 32U : 64U;
+        const unsigned shift = log2PowerOfTwo(magnitude);
+        if (shift < width) {
+          const auto& constant = instruction.operands[*constantIndex];
+          const auto& valueOperand = instruction.operands[1U - *constantIndex];
+          const auto value = integerOperand(os, function, valueOperand,
+                                            kAddrScratch);
+          const auto accumulator = integerOperand(
+              os, function, instruction.operands[2], kHiddenScratch);
+          const auto dst = resultRegister(instruction.result, kImmScratch);
+          const bool subtract =
+              (opcode == "msub") != (constant.intValue < 0);
+          os << "  " << (subtract ? "sub" : "add") << ' '
+             << integerRegister(dst, type) << ", "
+             << integerRegister(accumulator, type) << ", "
+             << integerRegister(value, type);
+          if (shift != 0) os << ", lsl #" << shift;
+          os << '\n';
+          storeResult(os, function, instruction.result, dst);
+          return;
+        }
+      }
+    }
+
     const auto lhs = integerOperand(os, function, instruction.operands[0], kAddrScratch);
     const auto rhs = integerOperand(os, function, instruction.operands[1], kImmScratch);
     const auto accumulator =
