@@ -1,0 +1,2 @@
+id,timestamp,type,experiment_ids,artifact,artifact_hash,validation,external_status,external_score_or_review,notes
+transpose-shadow-candidate,2026-07-30,compiler-optimization,"transpose-shadow-synthetic;transpose-shadow-h8-screen;transpose-shadow-final-gates","zct-arm-no-magic working tree",pending,"140/140 correctness; 60 performance cases with 3 unchanged documented formatting exceptions",pending,pending,"AI-assisted structural matcher transformation tests and documentation; independent implementation; no external technical references used"

@@ -66,6 +66,7 @@
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
 #include "../../include/compiler/midend/pass/StackAggregateInitPruningPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
+#include "../../include/compiler/midend/pass/TriangularTransposeShadowPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
 #include "../../include/compiler/midend/pass/WidenedModularMultiplyPass.h"
 #include "../../include/compiler/support/FileSystem.h"
@@ -333,6 +334,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::LoopScalarPromotionPass>());
     if (invocation.options().target == "aarch64" ||
         invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::TriangularTransposeShadowPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::AArch64PureMapRecurrenceVectorizationPass>());
       passManager.add(std::make_unique<

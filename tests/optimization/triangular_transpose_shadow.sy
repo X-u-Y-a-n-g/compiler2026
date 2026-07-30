@@ -1,0 +1,47 @@
+int data[9][9];
+
+void evolve(int matrix[][9]) {
+  int row;
+  int column;
+  int step;
+  int left;
+  int right;
+  int probe;
+  row = 8;
+  while (row >= 0) {
+    column = row + 1;
+    while (column < 9) {
+      step = row + 1;
+      while (step < column) {
+        left = matrix[row][step];
+        right = matrix[step + 1][column];
+        probe = left + right;
+        if (matrix[row][column] < probe) {
+          matrix[row][column] = left * 3 - right;
+        }
+        step = step + 1;
+      }
+      column = column + 1;
+    }
+    row = row - 1;
+  }
+}
+
+int main() {
+  int row;
+  int column;
+  row = 0;
+  while (row < 9) {
+    column = 0;
+    while (column < 9) {
+      data[row][column] =
+          (row * 100000003 + column * 70000001) * (row - column + 1);
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  evolve(data);
+  evolve(data);
+  putarray(81, data);
+  return 0;
+}
