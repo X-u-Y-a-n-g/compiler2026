@@ -1,0 +1,69 @@
+int choose_larger(int lhs, int rhs) {
+    if (lhs < rhs) return rhs;
+    return lhs;
+}
+
+int map_positive(int input) {
+    int value = choose_larger(input, 1000003 - input);
+    int redundant = choose_larger(value, 500001 - value);
+    return (redundant + redundant * 7 / 97 * 103) % 65521;
+}
+
+int map_negative_product(int input) {
+    int value = choose_larger(input, 700001 - input);
+    int redundant = choose_larger(value, 300000 - value);
+    return (redundant + redundant * -11 / 89 * 47) % 32749;
+}
+
+int map_negative_scale(int input) {
+    int value = choose_larger(input, 900001 - input);
+    int redundant = choose_larger(value, 400000 - value);
+    return (redundant + redundant * 13 / 113 * -59) % 49157;
+}
+
+int run_positive(int begin, int end, int stride) {
+    int state = 0;
+    int cursor = begin;
+    while (cursor < end) {
+        state = (state + map_positive(cursor) + 3) % 10000019;
+        cursor = cursor + stride;
+    }
+    return state;
+}
+
+int run_negative_product(int begin, int end, int stride) {
+    int state = 17;
+    int cursor = begin;
+    while (cursor < end) {
+        state = (state - map_negative_product(cursor) + 5) % 999983;
+        cursor = cursor + stride;
+    }
+    return state;
+}
+
+int run_negative_scale(int begin, int end, int stride) {
+    int state = -23;
+    int cursor = begin;
+    while (cursor < end) {
+        state = (state + map_negative_scale(cursor) - 7) % 1000003;
+        cursor = cursor + stride;
+    }
+    return state;
+}
+
+int main() {
+    int count = getint();
+    while (count > 0) {
+        int begin = getint();
+        int end = getint();
+        int stride = getint();
+        putint(run_positive(begin, end, stride));
+        putch(32);
+        putint(run_negative_product(begin, end, stride));
+        putch(32);
+        putint(run_negative_scale(begin, end, stride));
+        putch(10);
+        count = count - 1;
+    }
+    return 0;
+}
