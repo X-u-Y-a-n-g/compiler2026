@@ -480,6 +480,7 @@ struct MachineModule {
   compiler::backend::target::TargetInfo target;
   std::vector<MachineGlobal> globals;
   std::vector<MachineFunction> functions;
+  bool singleImmutableTailMemoContext = false;
 };
 
 }  // namespace compiler::backend::mir

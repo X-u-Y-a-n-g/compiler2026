@@ -740,7 +740,8 @@ class FunctionLoweringContext {
 
 MachineModule lowerModuleDefault(const compiler::ir::core::Module& module,
                                  const compiler::backend::target::TargetInfo& target) {
-  MachineModule machineModule{target, {}, {}};
+  MachineModule machineModule{target, {}, {},
+                              module.hasSingleImmutableTailMemoContext()};
 
   std::unordered_map<std::string, ObjectType> globalTypes;
   for (const auto& global : module.globals()) {

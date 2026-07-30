@@ -32,9 +32,6 @@ constexpr std::size_t kMaximumParameters = 3;
 constexpr std::size_t kModuleCacheBudgetBytes = 512U * 1024U;
 constexpr std::size_t kReadOnlyLoopCacheBudgetBytes = 2U * 1024U * 1024U;
 constexpr std::size_t kMinimumCacheEntries = 1024U;
-constexpr const char* kSingleImmutableContextMarker =
-    "__compiler.tail_memo.single_immutable_context";
-
 struct CallSite {
   std::size_t caller = 0;
   std::size_t block = 0;
@@ -709,9 +706,7 @@ bool markSingleImmutableTailMemoContext(Module& module) {
     }
   }
 
-  module.addGlobal(GlobalVariable{
-      kSingleImmutableContextMarker, "int",
-      Constant::scalar("int", "1"), true});
+  module.markSingleImmutableTailMemoContext();
   module.addPassNote(
       "proved a single immutable scalar context for compact tail memoization");
   return true;

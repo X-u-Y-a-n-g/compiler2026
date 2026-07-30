@@ -55,6 +55,18 @@ std::vector<std::string> splitLines(const std::string& assembly) {
   return lines;
 }
 
+struct PositiveHalfLoopSite {
+  std::string header;
+  std::string fallback;
+  std::string state;
+  std::string depth;
+};
+
+struct PositiveHalfCollapseResult {
+  std::string assembly;
+  std::vector<PositiveHalfLoopSite> sites;
+};
+
 std::string pairAdjacentStackAccesses(const std::string& assembly) {
   if (std::getenv("COMPILER_DISABLE_AARCH64_STP_LDP") != nullptr) return assembly;
   static const std::regex accessPattern{
@@ -156,7 +168,8 @@ std::string synthesizeConstantMultiplies(const std::string& assembly) {
   return result.str();
 }
 
-std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
+PositiveHalfCollapseResult collapsePositivePowerOfTwoSteps(
+    const std::string& assembly) {
   static const std::regex signedHalfPattern{
       R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
   static const std::regex shiftPattern{
@@ -165,6 +178,7 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
       R"(^  add (w[0-9]+), \1, #1$)"};
   static const std::regex branchPattern{R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
   auto lines = splitLines(assembly);
+  std::vector<PositiveHalfLoopSite> sites;
   std::unordered_set<std::string> labels;
   for (const auto& line : lines) {
     if (!line.empty() && line.back() == ':') labels.insert(line.substr(0, line.size() - 1));
@@ -253,18 +267,18 @@ std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
                 lines.begin() + static_cast<std::ptrdiff_t>(index + 4));
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
                  replacement.begin(), replacement.end());
+    sites.push_back(PositiveHalfLoopSite{header, fallback, state, depth});
     index += replacement.size() - 1;
   }
 
   std::ostringstream result;
   for (const auto& line : lines) result << line << '\n';
-  return result.str();
+  return PositiveHalfCollapseResult{result.str(), std::move(sites)};
 }
 
-std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
-  const bool singleImmutableContext =
-      assembly.find("__compiler.tail_memo.single_immutable_context") !=
-      std::string::npos;
+std::string memoizePureAdditiveTailLoop(
+    const PositiveHalfCollapseResult& collapsed,
+    bool singleImmutableContext) {
   // The compact layout can spend the same kind of bounded memory budget on a
   // wider useful state domain.  The general multi-context fallback retains its
   // original smaller window and entry format.
@@ -285,17 +299,13 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
   static const std::regex branchPattern{
       R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
 
-  auto lines = splitLines(assembly);
-  for (std::size_t fallbackIndex = 0; fallbackIndex < lines.size();
-       ++fallbackIndex) {
-    const auto marker = lines[fallbackIndex].find(".positive_half_fallback");
-    if (marker == std::string::npos || lines[fallbackIndex].empty() ||
-        lines[fallbackIndex].back() != ':') {
-      continue;
-    }
-    const std::string header = lines[fallbackIndex].substr(0, marker);
-    const auto headerIt = std::find(lines.begin(), lines.end(), header + ":");
-    if (headerIt == lines.end()) continue;
+  auto lines = splitLines(collapsed.assembly);
+  for (const auto& site : collapsed.sites) {
+    const auto headerIt =
+        std::find(lines.begin(), lines.end(), site.header + ":");
+    const auto fallbackIt =
+        std::find(lines.begin(), lines.end(), site.fallback + ":");
+    if (headerIt == lines.end() || fallbackIt == lines.end()) continue;
     const std::size_t headerIndex =
         static_cast<std::size_t>(headerIt - lines.begin());
     if (headerIndex + 5 >= lines.size()) continue;
@@ -316,8 +326,13 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
                           branchPattern)) {
       continue;
     }
-    const std::string state = headerCompare[1].str();
-    const std::string depth = baseMove[2].str();
+    if (headerCompare[1].str() != site.state ||
+        baseMove[2].str() != site.depth) {
+      continue;
+    }
+    const std::string& header = site.header;
+    const std::string& state = site.state;
+    const std::string& depth = site.depth;
     const std::string epilogue = baseBranch[1].str();
     if (state == depth || state == "w16" || state == "w17" ||
         state == "w18" || depth == "w16" || depth == "w17" ||
@@ -325,15 +340,17 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
       continue;
     }
 
-    const auto epilogueMarker = epilogue.find("_epilogue");
-    if (epilogueMarker == std::string::npos) continue;
-    std::string functionName = epilogue.substr(0, epilogueMarker);
-    if (functionName.compare(0, 2, ".L") == 0) functionName.erase(0, 2);
     std::size_t functionBegin = headerIndex;
-    while (functionBegin > 0 && lines[functionBegin] != functionName + ":") {
+    while (functionBegin > 0) {
       --functionBegin;
+      if (lines[functionBegin].compare(0, 6, ".type ") == 0 &&
+          lines[functionBegin].size() >= 11 &&
+          lines[functionBegin].compare(lines[functionBegin].size() - 11, 11,
+                                       ", %function") == 0) {
+        break;
+      }
     }
-    if (functionBegin == 0) continue;
+    if (lines[functionBegin].compare(0, 6, ".type ") != 0) continue;
     std::size_t functionEnd = headerIndex;
     while (functionEnd < lines.size() && lines[functionEnd] != epilogue + ":") {
       ++functionEnd;
@@ -484,7 +501,7 @@ std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
 
     const auto note = std::find(lines.begin(), lines.end(),
                                 ".section .note.GNU-stack,\"\",%progbits");
-    if (note == lines.end()) return assembly;
+    if (note == lines.end()) return collapsed.assembly;
     lines.insert(note, {".bss", ".balign 64", cache + ":",
                         "  .zero " + std::to_string(cacheBytes)});
     break;  // Enforce a fixed per-module memory budget.
@@ -3354,12 +3371,15 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(synthesizeConstantMultiplies(vectorizeContiguousConstantFills(
-      memoizePureAdditiveTailLoop(
-          collapsePositivePowerOfTwoSteps(
-              vectorizeConditionalMatrixReduction(
-                  vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str()))))))));
+  auto assembly = vectorizeContiguousIntegerMadds(os.str());
+  assembly = vectorizeGuardedContiguousMadds(assembly);
+  assembly = vectorizeConditionalMatrixReduction(assembly);
+  const auto collapsed = collapsePositivePowerOfTwoSteps(assembly);
+  assembly = memoizePureAdditiveTailLoop(
+      collapsed, module.singleImmutableTailMemoContext);
+  assembly = vectorizeContiguousConstantFills(assembly);
+  assembly = synthesizeConstantMultiplies(assembly);
+  return pairAdjacentStackAccesses(assembly);
 }
 
 }  // namespace compiler::backend::asmcode
