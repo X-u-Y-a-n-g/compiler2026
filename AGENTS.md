@@ -21,25 +21,29 @@ These rules are mandatory for every compiler optimization in this repository.
 
 1. State the transformation using only general semantic and analysis preconditions.
 2. Test structurally varied synthetic cases, boundary values, zero-trip loops, aliasing, overflow, and fallback paths as applicable.
-3. Build and evaluate inside `compiler-impl2026-dev` with `/workspace/build/compiler`.
-4. Before publishing a candidate, run all 60 ARM performance cases in `-O1`
-   mode. They must remain 60/60 AC, except for an already documented evaluator
-   formatting exception whose final assembly and behavior are unchanged from
-   the parent revision; such an exception must be reported explicitly rather
-   than relabeled AC. Run the 140 ARM correctness cases when a change affects
-   the backend, ABI, unoptimized path, frontend/shared semantic code, or
-   another risk makes that channel relevant.
-5. After the local correctness gates pass, commit and push exactly one
-   optimization candidate to the repository-owner-designated ARM delivery
-   branch. The repository owner submits that pushed revision to the official
-   Cortex-A53 platform; local QEMU and LLVM MCA remain diagnostic evidence only.
-   Pushing the locally validated candidate is a prerequisite for that official
-   submission, so do not wait for Cortex-A53 results before pushing it.
+3. When Docker is available locally, build and evaluate inside
+   `compiler-impl2026-dev` with `/workspace/build/compiler`. If Docker is not
+   available locally, document that fact, skip the Docker-dependent local
+   validation gates, and commit and push the candidate directly to `yang-arm`
+   for official evaluation.
+4. When Docker is available locally, before publishing a candidate, run all 60
+   ARM performance cases in `-O1` mode. They must remain 60/60 AC, except for
+   an already documented evaluator formatting exception whose final assembly
+   and behavior are unchanged from the parent revision; such an exception must
+   be reported explicitly rather than relabeled AC. Run the 140 ARM correctness
+   cases when a change affects the backend, ABI, unoptimized path,
+   frontend/shared semantic code, or another risk makes that channel relevant.
+5. After the applicable local correctness gates pass—or immediately when the
+   no-Docker exception in step 3 applies—commit and push exactly one
+   optimization candidate to `yang-arm`. The repository owner submits that
+   pushed revision to the official Cortex-A53 platform; local QEMU and LLVM MCA
+   remain diagnostic evidence only. Do not wait for Cortex-A53 results before
+   pushing it.
 6. Use the official Cortex-A53 result to decide acceptance. Keep and document a
    meaningful target improvement; promptly revert and push an isolated target
    regression, statistically flat result, or wrong result before developing
    the next candidate.
-7. The current owner-designated delivery branch is `zct-arm-no-magic`. Never
+7. The current owner-designated delivery branch is `yang-arm`. Never
    push optimization work to another branch unless the repository owner
    explicitly requests it.
 8. Document AI-assisted implementation scope and any external technical references.
@@ -50,8 +54,9 @@ If a proposed optimization cannot satisfy these rules, do not implement or resto
 
 - The active target is AArch64/Cortex-A53; retired RISC-V BOOM FPGA helpers are
   not valid for current acceptance.
-- Build and validate candidates inside `compiler-impl2026-dev` with target
-  `aarch64`, `aarch64-linux-gnu-gcc`, and `qemu-aarch64`.
+- When Docker is available locally, build and validate candidates inside
+  `compiler-impl2026-dev` with target `aarch64`, `aarch64-linux-gnu-gcc`, and
+  `qemu-aarch64`; otherwise use the no-Docker exception in step 3.
 - The repository owner performs the official online Cortex-A53 submission from
   the pushed delivery-branch revision and reports the result for keep/revert.
 - Do not infer official target improvement from local QEMU timing alone.
