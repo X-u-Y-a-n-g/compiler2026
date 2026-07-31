@@ -519,6 +519,34 @@ generic-ooo 前/后：
 
 本候选由 AI 辅助完成退化根因分析、流式循环顺序保留、八列 SLP 展开、成对访存、寄存器冲突修正和 8/4 宽度合成差分。技术依据为 loop unrolling、SLP、memory locality 与 ARMv8-A NEON `LDP/STP/MLA` 语义；未使用特定样例身份或未定义行为。
 
+### 2026-07-31 循环阶段单键只读 helper 的 packed memo cache（待平台判定）
+
+- 通用语义条件：复用既有循环阶段只读 helper 证明。候选必须返回 i32、只有一个
+  i32 参数、自身含环、传递效果为只读，并且只在 `main` 的唯一静态循环调用点
+  使用；调用循环内不得修改候选传递读取的任何全局对象，也不得出现未知写入或
+  其他不可见副作用。不满足任一条件时继续使用原函数或既有多键缓存布局。
+- 变换：保留完整键比较、valid 位、direct-mapped 冲突回退、所有原返回路径写回
+  和 2 MiB 总预算。单键候选把每槽的 valid、完整 i32 键和值放入同一个四字
+  记录，槽地址为 `index << 2`；命中探测和未命中写回都从同一记录取字段。
+  这不改变容量、哈希、冲突语义或缓存生命周期，只把三个相隔 512 KiB 的数组
+  合并为一个记录数组，避免同一索引的元数据竞争 Cortex-A53 L1 cache set。
+- 正确性边界：所有 i32 键（包括零、负值和回绕产生的值）仍由独立 valid 位和
+  完整相等比较区分；哈希冲突仍执行原 CFG 并覆盖对应槽；结果存储完成后才设置
+  valid。零趟调用不访问缓存，外部只读上下文改变、多个调用点、多参数、写全局、
+  未知指针与有副作用调用均由原证明回退。
+- 验证状态：本机 Docker 守护进程不可用，按 `AGENTS.md` 的无 Docker 例外跳过
+  Docker 依赖的 60/140 本地门禁并直接推送 `yang-arm`，等待官方 Cortex-A53
+  决定保留或回退。未把本地 QEMU 或静态模型作为收益证据。
+
+本候选由 AI 辅助完成缓存布局与支配关系审查、完整键/valid 写入顺序证明和合规
+记录。技术依据为经典 memoization、array-of-structures locality、cache-set
+conflict avoidance 和 Cortex-A53 的组相联 L1 数据缓存性质；未复制外部实现，
+未使用路径、用例/函数/变量/全局/块名、公开输入、固定尺寸或输出触发优化，也
+未使用未公开评测信息。外部技术参考仅为 Arm
+`Cortex-A53 MPCore Processor Technical Reference Manual`（DDI 0500J，
+https://documentation-service.arm.com/static/6040c321ee937942ba301626）
+中对四路组相联 PIPT L1 数据缓存的公开说明。
+
 ## 2026-07-27 AArch64 连续 i32 乘减归约双向量化平台持平记录
 
 - 被测变换：对两个连续只读 i32 流的规范 `acc -= lhs[i] * rhs[i]` 归约做八元素 strip-mining，使用两个 `i32x4` NEON accumulator、两组 `LDP`、两条 `MLS` 和退出 `ADDV`，完整保留短循环、尾部和运行时守卫 fallback。触发只依赖 SSA、CFG、类型和连续 GEP 语义。

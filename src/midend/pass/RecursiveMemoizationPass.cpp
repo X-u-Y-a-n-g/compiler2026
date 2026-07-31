@@ -42,6 +42,7 @@ struct Candidate {
   std::size_t function = 0;
   std::size_t capacity = 0;
   bool readOnlyLoopLifetime = false;
+  bool packedLoopCache = false;
 };
 
 std::vector<std::string> branchTargets(const BasicBlock &block) {
@@ -403,7 +404,13 @@ std::optional<Candidate> findReadOnlyLoopCandidate(
       }
     }
   }
-  return Candidate{functionIndex, 0, true};
+  // A single-key phase-local cache is accessed on every query.  Keep its
+  // valid bit, key and value in one power-of-two-sized record so one cache
+  // line supplies the complete probe and independently indexed arrays cannot
+  // conflict with each other in a set-associative L1.  Multi-key recursive
+  // caches retain the existing structure-of-arrays layout.
+  return Candidate{functionIndex, 0, true,
+                   function.parameters().size() == 1};
 }
 
 std::string freshSymbol(const Module &module, const std::string &stem) {
@@ -455,24 +462,37 @@ void addZeroArray(Module &module, const std::string &name,
 
 void applyMemoization(Module &module, const Candidate &candidate) {
   const auto functionName = module.functions()[candidate.function].name();
-  const auto validName = freshSymbol(module, "__recursive_memo_valid_");
-  addZeroArray(module, validName, candidate.capacity);
+  std::string packedName;
+  std::string validName;
   std::vector<std::string> keyNames;
-  keyNames.reserve(module.functions()[candidate.function].parameters().size());
-  for (std::size_t parameter = 0;
-       parameter < module.functions()[candidate.function].parameters().size();
-       ++parameter) {
-    const auto name = freshSymbol(module, "__recursive_memo_key_");
-    addZeroArray(module, name, candidate.capacity);
-    keyNames.push_back(name);
+  std::string valueName;
+  if (candidate.packedLoopCache) {
+    packedName = freshSymbol(module, "__recursive_memo_entry_");
+    addZeroArray(module, packedName, candidate.capacity * 4U);
+  } else {
+    validName = freshSymbol(module, "__recursive_memo_valid_");
+    addZeroArray(module, validName, candidate.capacity);
+    keyNames.reserve(
+        module.functions()[candidate.function].parameters().size());
+    for (std::size_t parameter = 0;
+         parameter < module.functions()[candidate.function].parameters().size();
+         ++parameter) {
+      const auto name = freshSymbol(module, "__recursive_memo_key_");
+      addZeroArray(module, name, candidate.capacity);
+      keyNames.push_back(name);
+    }
+    valueName = freshSymbol(module, "__recursive_memo_value_");
+    addZeroArray(module, valueName, candidate.capacity);
   }
-  const auto valueName = freshSymbol(module, "__recursive_memo_value_");
-  addZeroArray(module, valueName, candidate.capacity);
 
   auto &function = module.functions()[candidate.function];
   std::unordered_set<std::string> values;
   const auto hash = freshValue(function, "recursive.memo.hash", values);
   const auto index = freshValue(function, "recursive.memo.index", values);
+  const auto packedSlot =
+      candidate.packedLoopCache
+          ? freshValue(function, "recursive.memo.packed.slot", values)
+          : std::string{};
   const auto validPointer =
       freshValue(function, "recursive.memo.valid.pointer", values);
   const auto valid = freshValue(function, "recursive.memo.valid", values);
@@ -515,8 +535,14 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   }
   entry.addInstruction(Instruction{
       "and", {currentHash, std::to_string(candidate.capacity - 1)}, index});
-  entry.addInstruction(
-      Instruction{"getelementptr", {"@" + validName, index}, validPointer});
+  if (candidate.packedLoopCache) {
+    entry.addInstruction(Instruction{"shl", {index, "2"}, packedSlot});
+    entry.addInstruction(Instruction{
+        "getelementptr", {"@" + packedName, packedSlot}, validPointer});
+  } else {
+    entry.addInstruction(
+        Instruction{"getelementptr", {"@" + validName, index}, validPointer});
+  }
   entry.addInstruction(Instruction{"load", {"int", validPointer}, valid});
   entry.addInstruction(Instruction{"icmp.ne", {valid, "0"}, validCondition});
   entry.addInstruction(
@@ -529,10 +555,19 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     BasicBlock check{checkNames[parameter]};
     const auto pointer =
         freshValue(function, "recursive.memo.key.pointer", values);
+    std::string keyIndex = index;
+    if (candidate.packedLoopCache) {
+      keyIndex = freshValue(function, "recursive.memo.key.index", values);
+      check.addInstruction(Instruction{"add", {packedSlot, "1"}, keyIndex});
+    }
     const auto key = freshValue(function, "recursive.memo.key", values);
     const auto equal = freshValue(function, "recursive.memo.key.equal", values);
     check.addInstruction(Instruction{
-        "getelementptr", {"@" + keyNames[parameter], index}, pointer});
+        "getelementptr",
+        {"@" + (candidate.packedLoopCache ? packedName
+                                          : keyNames[parameter]),
+         keyIndex},
+        pointer});
     check.addInstruction(Instruction{"load", {"int", pointer}, key});
     check.addInstruction(Instruction{
         "icmp.eq", {key, function.parameters()[parameter].name}, equal});
@@ -547,8 +582,18 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   }
 
   BasicBlock hit{hitName};
+  std::string hitValueIndex = index;
+  if (candidate.packedLoopCache) {
+    hitValueIndex =
+        freshValue(function, "recursive.memo.hit.value.index", values);
+    hit.addInstruction(
+        Instruction{"add", {packedSlot, "2"}, hitValueIndex});
+  }
   hit.addInstruction(
-      Instruction{"getelementptr", {"@" + valueName, index}, hitValuePointer});
+      Instruction{"getelementptr",
+                  {"@" + (candidate.packedLoopCache ? packedName : valueName),
+                   hitValueIndex},
+                  hitValuePointer});
   hit.addInstruction(Instruction{"load", {"int", hitValuePointer}, hitValue});
   hit.addInstruction(Instruction{"ret", {hitValue}});
 
@@ -566,8 +611,19 @@ void applyMemoization(Module &module, const Candidate &candidate) {
          ++parameter) {
       const auto pointer =
           freshValue(function, "recursive.memo.store.key.pointer", values);
+      std::string keyIndex = index;
+      if (candidate.packedLoopCache) {
+        keyIndex =
+            freshValue(function, "recursive.memo.store.key.index", values);
+        store.addInstruction(
+            Instruction{"add", {packedSlot, "1"}, keyIndex});
+      }
       store.addInstruction(Instruction{
-          "getelementptr", {"@" + keyNames[parameter], index}, pointer});
+          "getelementptr",
+          {"@" + (candidate.packedLoopCache ? packedName
+                                            : keyNames[parameter]),
+           keyIndex},
+          pointer});
       store.addInstruction(Instruction{
           "store", {"int", function.parameters()[parameter].name, pointer}});
     }
@@ -575,11 +631,25 @@ void applyMemoization(Module &module, const Candidate &candidate) {
         freshValue(function, "recursive.memo.store.value.pointer", values);
     const auto storeValidPointer =
         freshValue(function, "recursive.memo.store.valid.pointer", values);
+    std::string resultIndex = index;
+    if (candidate.packedLoopCache) {
+      resultIndex =
+          freshValue(function, "recursive.memo.store.value.index", values);
+      store.addInstruction(
+          Instruction{"add", {packedSlot, "2"}, resultIndex});
+    }
     store.addInstruction(
-        Instruction{"getelementptr", {"@" + valueName, index}, resultPointer});
+        Instruction{
+            "getelementptr",
+            {"@" + (candidate.packedLoopCache ? packedName : valueName),
+             resultIndex},
+            resultPointer});
     store.addInstruction(Instruction{"store", {"int", result, resultPointer}});
     store.addInstruction(Instruction{
-        "getelementptr", {"@" + validName, index}, storeValidPointer});
+        "getelementptr",
+        {"@" + (candidate.packedLoopCache ? packedName : validName),
+         candidate.packedLoopCache ? packedSlot : index},
+        storeValidPointer});
     store.addInstruction(Instruction{"store", {"int", "1", storeValidPointer}});
     store.addInstruction(Instruction{"ret", {result}});
     stores.push_back(std::move(store));
@@ -593,8 +663,12 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     function.addBlock(std::move(store));
   if (candidate.readOnlyLoopLifetime) {
     module.addPassNote(
-        "memoized a loop-contained read-only helper after proving its global "
-        "read set immutable for the cache lifetime");
+        candidate.packedLoopCache
+            ? "memoized a loop-contained single-key read-only helper with a "
+              "packed cache after proving its global read set immutable for "
+              "the cache lifetime"
+            : "memoized a loop-contained read-only helper after proving its "
+              "global read set immutable for the cache lifetime");
   } else {
     module.addPassNote("memoized a proven read-only branching recursion using "
                        "full integer parameter keys");
