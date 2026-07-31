@@ -1295,8 +1295,12 @@ std::optional<std::string> globalSymbolForRegister(
 // store schedule.
 std::string vectorizeConditionalMatrixReduction(
     const std::string& assembly) {
+  const bool pairedKEnabled =
+      std::getenv("COMPILER_DISABLE_PAIRED_K_MATRIX_REDUCTION") == nullptr;
   static const std::regex reservedVectorPattern{
       R"((^|[^A-Za-z0-9_])[svdq](20|21|22|23|24|25|26|27)([^A-Za-z0-9_]|$))"};
+  static const std::regex pairedReservedVectorPattern{
+      R"((^|[^A-Za-z0-9_])[svdq]28([^A-Za-z0-9_]|$))"};
   static const std::regex indexedLoadPattern{
       R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
   static const std::regex indexedStorePattern{
@@ -1320,7 +1324,11 @@ std::string vectorizeConditionalMatrixReduction(
   static const std::regex compareImmediatePattern{
       R"(^  cmp (w[0-9]+), #([0-9]+)$)"};
 
-  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
+  if (std::regex_search(assembly, reservedVectorPattern) ||
+      (pairedKEnabled &&
+       std::regex_search(assembly, pairedReservedVectorPattern))) {
+    return assembly;
+  }
   auto lines = splitLines(assembly);
   bool changed = false;
   for (std::size_t maddLine = 0; maddLine < lines.size(); ++maddLine) {
@@ -1613,6 +1621,8 @@ std::string vectorizeConditionalMatrixReduction(
     }
 
     const bool useEightColumns = extent >= 8 && extent % 8 == 0;
+    const bool usePairedK = pairedKEnabled && useEightColumns &&
+                            extent % 2 == 0;
     const long long vectorWidth = useEightColumns ? 8 : 4;
     const std::string prefix = middleBodyLabel +
                                (useEightColumns ? ".interchanged8"
@@ -1636,6 +1646,30 @@ std::string vectorizeConditionalMatrixReduction(
     const std::string fastJHeaderLabel = prefix + ".fast_j_header";
     const std::string maskedPrepareLabel = prefix + ".masked_prepare";
     const std::string kAdvanceLabel = prefix + ".k_advance";
+    const std::string pairedEvenEvenBody =
+        prefix + ".paired_even_even_body";
+    const std::string pairedEvenEvenHeader =
+        prefix + ".paired_even_even_header";
+    const std::string pairedOddEvenBody =
+        prefix + ".paired_odd_even_body";
+    const std::string pairedOddEvenHeader =
+        prefix + ".paired_odd_even_header";
+    const std::string pairedEvenOddBody =
+        prefix + ".paired_even_odd_body";
+    const std::string pairedEvenOddHeader =
+        prefix + ".paired_even_odd_header";
+    const std::string pairedOddOddBody =
+        prefix + ".paired_odd_odd_body";
+    const std::string pairedOddOddHeader =
+        prefix + ".paired_odd_odd_header";
+    const std::string pairedEvenEvenPrepare =
+        prefix + ".paired_even_even_prepare";
+    const std::string pairedOddEvenPrepare =
+        prefix + ".paired_odd_even_prepare";
+    const std::string pairedEvenOddPrepare =
+        prefix + ".paired_even_odd_prepare";
+    const std::string pairedOddOddPrepare =
+        prefix + ".paired_odd_odd_prepare";
 
     const std::string clearStore =
         useEightColumns ? "  stp q24, q24, [x16]\n"
@@ -1693,8 +1727,50 @@ std::string vectorizeConditionalMatrixReduction(
                   "  mla v24.4s, v23.4s, v21.4s\n"
                   "  str q24, [x16]\n";
 
+    const auto pairedVectorUpdate =
+        [&](bool firstMasked, bool secondMasked) {
+          std::string update;
+          if (firstMasked) {
+            update += "  add x16, " + secondColumnBase + ", " + jX +
+                      ", lsl #2\n  ldp q22, q25, [x16]\n"
+                      "  shl v22.4s, v22.4s, #31\n"
+                      "  shl v25.4s, v25.4s, #31\n"
+                      "  cmeq v22.4s, v22.4s, #0\n"
+                      "  cmeq v25.4s, v25.4s, #0\n";
+          }
+          update += "  add x16, " + firstColumnBase + ", " + jX +
+                    ", lsl #2\n  ldp q23, q26, [x16]\n";
+          if (firstMasked) {
+            update += "  and v23.16b, v23.16b, v22.16b\n"
+                      "  and v26.16b, v26.16b, v25.16b\n";
+          }
+          update += "  add x16, " + outputRow + ", " + jX +
+                    ", lsl #2\n  ldp q24, q27, [x16]\n"
+                    "  mla v24.4s, v23.4s, v21.4s\n"
+                    "  mla v27.4s, v26.4s, v21.4s\n";
+          if (secondMasked) {
+            update += "  add x16, x18, " + jX +
+                      ", lsl #2\n  ldp q22, q25, [x16]\n"
+                      "  shl v22.4s, v22.4s, #31\n"
+                      "  shl v25.4s, v25.4s, #31\n"
+                      "  cmeq v22.4s, v22.4s, #0\n"
+                      "  cmeq v25.4s, v25.4s, #0\n";
+          }
+          update += "  add x16, x17, " + jX +
+                    ", lsl #2\n  ldp q23, q26, [x16]\n";
+          if (secondMasked) {
+            update += "  and v23.16b, v23.16b, v22.16b\n"
+                      "  and v26.16b, v26.16b, v25.16b\n";
+          }
+          update += "  mla v24.4s, v23.4s, v28.4s\n"
+                    "  mla v27.4s, v26.4s, v28.4s\n"
+                    "  add x16, " + outputRow + ", " + jX +
+                    ", lsl #2\n  stp q24, q27, [x16]\n";
+          return update;
+        };
+
     lines[*entryBranch] = "  b " + init;
-    const std::string blocks =
+    const std::string scalarKBlocks =
         init + ":\n  movi v24.4s, #0\n  movz " + jW + ", #0\n  b " +
         clearHeader + "\n" + clearBody + ":\n  add x16, " + outputRow +
         ", " + jX + ", lsl #2\n" + clearStore + "  add " + jW + ", " +
@@ -1732,6 +1808,56 @@ std::string vectorizeConditionalMatrixReduction(
         kW + ", " + kW + ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
         std::to_string(extent) + "\n  b.lt " + kBodyLabel + "\n  b " +
         *middleEndLabel;
+    const auto pairedLoop = [&](const std::string& body,
+                                const std::string& header, bool firstMasked,
+                                bool secondMasked) {
+      return body + ":\n" + pairedVectorUpdate(firstMasked, secondMasked) +
+             "  add " + jW + ", " + jW + ", #8\n" + header +
+             ":\n  cmp " + jW + ", #" + std::to_string(extent) +
+             "\n  b.lt " + body + "\n  b " + kAdvanceLabel + "\n";
+    };
+    const std::string pairedKBlocks =
+        init + ":\n  movi v24.4s, #0\n  movz " + jW + ", #0\n  b " +
+        clearHeader + "\n" + clearBody + ":\n  add x16, " + outputRow +
+        ", " + jX + ", lsl #2\n" + clearStore + "  add " + jW + ", " +
+        jW + ", #8\n" + clearHeader + ":\n  cmp " + jW + ", #" +
+        std::to_string(extent) + "\n  b.lt " + clearBody + "\n  movz " + kW +
+        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel +
+        ":\n  add x16, " + predicateRow + ", " + kX +
+        ", lsl #2\n  ldp " + predicateScalar +
+        ", w17, [x16]\n  and " + predicateScalar + ", " + predicateScalar +
+        ", #1\n  and w17, w17, #1\n  orr w17, " + predicateScalar +
+        ", w17, lsl #1\n  add x16, " + firstProductRow + ", " + kX +
+        ", lsl #2\n  ldp " + firstProduct +
+        ", w18, [x16]\n  dup v21.4s, " + firstProduct +
+        "\n  dup v28.4s, w18\n  movz x18, #" + std::to_string(stride) +
+        "\n  mul x16, " + kX + ", x18\n  add " + firstColumnBase + ", " +
+        firstBase + ", x16\n  add " + secondColumnBase + ", " + secondBase +
+        ", x16\n  cmp w17, #0\n  b.eq " + pairedEvenEvenPrepare +
+        "\n  cmp w17, #1\n  b.eq " + pairedOddEvenPrepare +
+        "\n  cmp w17, #2\n  b.eq " + pairedEvenOddPrepare + "\n  b " +
+        pairedOddOddPrepare + "\n" + pairedEvenEvenPrepare +
+        ":\n  add x17, " + firstColumnBase +
+        ", x18\n  add x18, " + secondColumnBase + ", x18\n  movz " + jW +
+        ", #0\n  b " + pairedEvenEvenHeader + "\n" +
+        pairedOddEvenPrepare + ":\n  add x17, " + firstColumnBase +
+        ", x18\n  add x18, " + secondColumnBase + ", x18\n  movz " + jW +
+        ", #0\n  b " + pairedOddEvenHeader + "\n" +
+        pairedEvenOddPrepare + ":\n  add x17, " + firstColumnBase +
+        ", x18\n  add x18, " + secondColumnBase + ", x18\n  movz " + jW +
+        ", #0\n  b " + pairedEvenOddHeader + "\n" +
+        pairedOddOddPrepare + ":\n  add x17, " + firstColumnBase +
+        ", x18\n  add x18, " + secondColumnBase + ", x18\n  movz " + jW +
+        ", #0\n  b " + pairedOddOddHeader + "\n" +
+        pairedLoop(pairedEvenEvenBody, pairedEvenEvenHeader, false, false) +
+        pairedLoop(pairedOddEvenBody, pairedOddEvenHeader, true, false) +
+        pairedLoop(pairedEvenOddBody, pairedEvenOddHeader, false, true) +
+        pairedLoop(pairedOddOddBody, pairedOddOddHeader, true, true) +
+        kAdvanceLabel + ":\n  add " + kW + ", " + kW +
+        ", #2\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
+        std::to_string(extent) + "\n  b.lt " + kBodyLabel + "\n  b " +
+        *middleEndLabel;
+    const std::string& blocks = usePairedK ? pairedKBlocks : scalarKBlocks;
     lines[middleBodyLine] = blocks + "\n" + lines[middleBodyLine];
     changed = true;
     maddLine = middleHeaderBounds.second;
