@@ -42,7 +42,6 @@ struct Candidate {
   std::size_t function = 0;
   std::size_t capacity = 0;
   bool readOnlyLoopLifetime = false;
-  bool twoProbeLoopCache = false;
 };
 
 std::vector<std::string> branchTargets(const BasicBlock &block) {
@@ -404,11 +403,7 @@ std::optional<Candidate> findReadOnlyLoopCandidate(
       }
     }
   }
-  return Candidate{
-      functionIndex, 0, true,
-      function.parameters().size() == 1 &&
-          std::getenv("COMPILER_DISABLE_READONLY_MEMO_SECONDARY_PROBE") ==
-              nullptr};
+  return Candidate{functionIndex, 0, true};
 }
 
 std::string freshSymbol(const Module &module, const std::string &stem) {
@@ -478,18 +473,6 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   std::unordered_set<std::string> values;
   const auto hash = freshValue(function, "recursive.memo.hash", values);
   const auto index = freshValue(function, "recursive.memo.index", values);
-  const auto secondaryUnmasked =
-      candidate.twoProbeLoopCache
-          ? freshValue(function, "recursive.memo.secondary.unmasked", values)
-          : std::string{};
-  const auto secondaryIndex =
-      candidate.twoProbeLoopCache
-          ? freshValue(function, "recursive.memo.secondary.index", values)
-          : std::string{};
-  const auto storeIndex =
-      candidate.twoProbeLoopCache
-          ? freshValue(function, "recursive.memo.store.index", values)
-          : index;
   const auto validPointer =
       freshValue(function, "recursive.memo.valid.pointer", values);
   const auto valid = freshValue(function, "recursive.memo.valid", values);
@@ -505,22 +488,6 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     blockNames.insert(block.name());
   const auto entryName = freshBlock(blockNames, "recursive.memo.entry.");
   const auto hitName = freshBlock(blockNames, "recursive.memo.hit.");
-  const auto secondaryValidName =
-      candidate.twoProbeLoopCache
-          ? freshBlock(blockNames, "recursive.memo.secondary.valid.")
-          : std::string{};
-  const auto secondaryCheckName =
-      candidate.twoProbeLoopCache
-          ? freshBlock(blockNames, "recursive.memo.secondary.check.")
-          : std::string{};
-  const auto secondaryHitName =
-      candidate.twoProbeLoopCache
-          ? freshBlock(blockNames, "recursive.memo.secondary.hit.")
-          : std::string{};
-  const auto missName =
-      candidate.twoProbeLoopCache
-          ? freshBlock(blockNames, "recursive.memo.miss.")
-          : std::string{};
   std::vector<std::string> checkNames;
   for (std::size_t parameter = 0; parameter < function.parameters().size();
        ++parameter)
@@ -548,23 +515,12 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   }
   entry.addInstruction(Instruction{
       "and", {currentHash, std::to_string(candidate.capacity - 1)}, index});
-  if (candidate.twoProbeLoopCache) {
-    entry.addInstruction(
-        Instruction{"add", {index, "1"}, secondaryUnmasked});
-    entry.addInstruction(
-        Instruction{"and",
-                    {secondaryUnmasked,
-                     std::to_string(candidate.capacity - 1)},
-                    secondaryIndex});
-  }
   entry.addInstruction(
       Instruction{"getelementptr", {"@" + validName, index}, validPointer});
   entry.addInstruction(Instruction{"load", {"int", validPointer}, valid});
   entry.addInstruction(Instruction{"icmp.ne", {valid, "0"}, validCondition});
   entry.addInstruction(
-      Instruction{"br",
-                  {validCondition, checkNames.front(),
-                   candidate.twoProbeLoopCache ? missName : originalEntry}});
+      Instruction{"br", {validCondition, checkNames.front(), originalEntry}});
 
   std::vector<BasicBlock> checks;
   checks.reserve(function.parameters().size());
@@ -586,10 +542,7 @@ void applyMemoization(Module &module, const Candidate &candidate) {
                      parameter + 1 == function.parameters().size()
                          ? hitName
                          : checkNames[parameter + 1],
-                     candidate.twoProbeLoopCache &&
-                             parameter + 1 == function.parameters().size()
-                         ? secondaryValidName
-                         : originalEntry}});
+                     originalEntry}});
     checks.push_back(std::move(check));
   }
 
@@ -598,74 +551,6 @@ void applyMemoization(Module &module, const Candidate &candidate) {
       Instruction{"getelementptr", {"@" + valueName, index}, hitValuePointer});
   hit.addInstruction(Instruction{"load", {"int", hitValuePointer}, hitValue});
   hit.addInstruction(Instruction{"ret", {hitValue}});
-
-  std::vector<BasicBlock> secondaryBlocks;
-  if (candidate.twoProbeLoopCache) {
-    const auto secondaryValidPointer =
-        freshValue(function, "recursive.memo.secondary.valid.pointer", values);
-    const auto secondaryValid =
-        freshValue(function, "recursive.memo.secondary.valid.value", values);
-    const auto secondaryValidCondition = freshValue(
-        function, "recursive.memo.secondary.valid.condition", values);
-    BasicBlock secondaryValidBlock{secondaryValidName};
-    secondaryValidBlock.addInstruction(
-        Instruction{"getelementptr",
-                    {"@" + validName, secondaryIndex},
-                    secondaryValidPointer});
-    secondaryValidBlock.addInstruction(
-        Instruction{"load", {"int", secondaryValidPointer}, secondaryValid});
-    secondaryValidBlock.addInstruction(
-        Instruction{"icmp.ne", {secondaryValid, "0"},
-                    secondaryValidCondition});
-    secondaryValidBlock.addInstruction(
-        Instruction{"br",
-                    {secondaryValidCondition, secondaryCheckName, missName}});
-    secondaryBlocks.push_back(std::move(secondaryValidBlock));
-
-    const auto secondaryKeyPointer =
-        freshValue(function, "recursive.memo.secondary.key.pointer", values);
-    const auto secondaryKey =
-        freshValue(function, "recursive.memo.secondary.key", values);
-    const auto secondaryEqual =
-        freshValue(function, "recursive.memo.secondary.key.equal", values);
-    BasicBlock secondaryCheck{secondaryCheckName};
-    secondaryCheck.addInstruction(
-        Instruction{"getelementptr",
-                    {"@" + keyNames.front(), secondaryIndex},
-                    secondaryKeyPointer});
-    secondaryCheck.addInstruction(
-        Instruction{"load", {"int", secondaryKeyPointer}, secondaryKey});
-    secondaryCheck.addInstruction(
-        Instruction{"icmp.eq",
-                    {secondaryKey, function.parameters().front().name},
-                    secondaryEqual});
-    secondaryCheck.addInstruction(
-        Instruction{"br", {secondaryEqual, secondaryHitName, missName}});
-    secondaryBlocks.push_back(std::move(secondaryCheck));
-
-    const auto secondaryHitPointer =
-        freshValue(function, "recursive.memo.secondary.hit.pointer", values);
-    const auto secondaryHitValue =
-        freshValue(function, "recursive.memo.secondary.hit.value", values);
-    BasicBlock secondaryHit{secondaryHitName};
-    secondaryHit.addInstruction(
-        Instruction{"getelementptr",
-                    {"@" + valueName, secondaryIndex},
-                    secondaryHitPointer});
-    secondaryHit.addInstruction(
-        Instruction{"load", {"int", secondaryHitPointer}, secondaryHitValue});
-    secondaryHit.addInstruction(Instruction{"ret", {secondaryHitValue}});
-    secondaryBlocks.push_back(std::move(secondaryHit));
-
-    BasicBlock miss{missName};
-    miss.addInstruction(
-        Instruction{"phi",
-                    {"int", index, entryName, secondaryIndex,
-                     secondaryValidName, index, secondaryCheckName},
-                    storeIndex});
-    miss.addInstruction(Instruction{"br", {originalEntry}});
-    secondaryBlocks.push_back(std::move(miss));
-  }
 
   std::vector<BasicBlock> stores;
   for (auto &block : function.blocks()) {
@@ -682,7 +567,7 @@ void applyMemoization(Module &module, const Candidate &candidate) {
       const auto pointer =
           freshValue(function, "recursive.memo.store.key.pointer", values);
       store.addInstruction(Instruction{
-          "getelementptr", {"@" + keyNames[parameter], storeIndex}, pointer});
+          "getelementptr", {"@" + keyNames[parameter], index}, pointer});
       store.addInstruction(Instruction{
           "store", {"int", function.parameters()[parameter].name, pointer}});
     }
@@ -691,21 +576,16 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     const auto storeValidPointer =
         freshValue(function, "recursive.memo.store.valid.pointer", values);
     store.addInstruction(
-        Instruction{"getelementptr",
-                    {"@" + valueName, storeIndex},
-                    resultPointer});
+        Instruction{"getelementptr", {"@" + valueName, index}, resultPointer});
     store.addInstruction(Instruction{"store", {"int", result, resultPointer}});
     store.addInstruction(Instruction{
-        "getelementptr", {"@" + validName, storeIndex}, storeValidPointer});
+        "getelementptr", {"@" + validName, index}, storeValidPointer});
     store.addInstruction(Instruction{"store", {"int", "1", storeValidPointer}});
     store.addInstruction(Instruction{"ret", {result}});
     stores.push_back(std::move(store));
   }
 
   function.blocks().push_front(std::move(hit));
-  for (auto iterator = secondaryBlocks.rbegin();
-       iterator != secondaryBlocks.rend(); ++iterator)
-    function.blocks().push_front(std::move(*iterator));
   for (auto iterator = checks.rbegin(); iterator != checks.rend(); ++iterator)
     function.blocks().push_front(std::move(*iterator));
   function.blocks().push_front(std::move(entry));
@@ -713,12 +593,8 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     function.addBlock(std::move(store));
   if (candidate.readOnlyLoopLifetime) {
     module.addPassNote(
-        candidate.twoProbeLoopCache
-            ? "memoized a loop-contained single-key read-only helper with a "
-              "conflict-only secondary probe after proving its global read "
-              "set immutable for the cache lifetime"
-            : "memoized a loop-contained read-only helper after proving its "
-              "global read set immutable for the cache lifetime");
+        "memoized a loop-contained read-only helper after proving its global "
+        "read set immutable for the cache lifetime");
   } else {
     module.addPassNote("memoized a proven read-only branching recursion using "
                        "full integer parameter keys");
