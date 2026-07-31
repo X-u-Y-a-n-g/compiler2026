@@ -448,31 +448,22 @@ std::string freshValue(const Function &function, const std::string &stem,
 }
 
 void addZeroArray(Module &module, const std::string &name,
-                  std::size_t capacity,
-                  const std::string &elementType = "int") {
-  const auto type = elementType + "[" + std::to_string(capacity) + "]";
+                  std::size_t capacity) {
+  const auto type = "int[" + std::to_string(capacity) + "]";
   module.addGlobal(GlobalVariable{name, type, Constant::aggregate(type, {})});
 }
 
 void applyMemoization(Module &module, const Candidate &candidate) {
-  const bool useEncodedTag =
-      candidate.readOnlyLoopLifetime &&
-      module.functions()[candidate.function].parameters().size() == 1 &&
-      std::getenv("COMPILER_DISABLE_ENCODED_SINGLE_KEY_MEMO_TAG") == nullptr;
   const auto functionName = module.functions()[candidate.function].name();
-  const auto validName =
-      useEncodedTag ? std::string{}
-                    : freshSymbol(module, "__recursive_memo_valid_");
-  if (!useEncodedTag)
-    addZeroArray(module, validName, candidate.capacity);
+  const auto validName = freshSymbol(module, "__recursive_memo_valid_");
+  addZeroArray(module, validName, candidate.capacity);
   std::vector<std::string> keyNames;
   keyNames.reserve(module.functions()[candidate.function].parameters().size());
   for (std::size_t parameter = 0;
        parameter < module.functions()[candidate.function].parameters().size();
        ++parameter) {
     const auto name = freshSymbol(module, "__recursive_memo_key_");
-    addZeroArray(module, name, candidate.capacity,
-                 useEncodedTag ? "long" : "int");
+    addZeroArray(module, name, candidate.capacity);
     keyNames.push_back(name);
   }
   const auto valueName = freshSymbol(module, "__recursive_memo_value_");
@@ -487,10 +478,6 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   const auto valid = freshValue(function, "recursive.memo.valid", values);
   const auto validCondition =
       freshValue(function, "recursive.memo.valid.condition", values);
-  const auto encodedKeyBits =
-      freshValue(function, "recursive.memo.encoded.key.bits", values);
-  const auto encodedKey =
-      freshValue(function, "recursive.memo.encoded.key", values);
   const auto hitValuePointer =
       freshValue(function, "recursive.memo.hit.pointer", values);
   const auto hitValue =
@@ -528,32 +515,17 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   }
   entry.addInstruction(Instruction{
       "and", {currentHash, std::to_string(candidate.capacity - 1)}, index});
-  if (useEncodedTag) {
-    entry.addInstruction(Instruction{
-        "zext", {function.parameters().front().name, "long"}, encodedKeyBits});
-    entry.addInstruction(
-        Instruction{"add", {encodedKeyBits, "1"}, encodedKey});
-    entry.addInstruction(Instruction{
-        "getelementptr", {"@" + keyNames.front(), index}, validPointer});
-    entry.addInstruction(Instruction{"load", {"long", validPointer}, valid});
-    entry.addInstruction(
-        Instruction{"icmp.eq", {valid, encodedKey}, validCondition});
-    entry.addInstruction(
-        Instruction{"br", {validCondition, hitName, originalEntry}});
-  } else {
-    entry.addInstruction(
-        Instruction{"getelementptr", {"@" + validName, index}, validPointer});
-    entry.addInstruction(Instruction{"load", {"int", validPointer}, valid});
-    entry.addInstruction(
-        Instruction{"icmp.ne", {valid, "0"}, validCondition});
-    entry.addInstruction(
-        Instruction{"br", {validCondition, checkNames.front(), originalEntry}});
-  }
+  entry.addInstruction(
+      Instruction{"getelementptr", {"@" + validName, index}, validPointer});
+  entry.addInstruction(Instruction{"load", {"int", validPointer}, valid});
+  entry.addInstruction(Instruction{"icmp.ne", {valid, "0"}, validCondition});
+  entry.addInstruction(
+      Instruction{"br", {validCondition, checkNames.front(), originalEntry}});
 
   std::vector<BasicBlock> checks;
   checks.reserve(function.parameters().size());
-  for (std::size_t parameter = 0;
-       !useEncodedTag && parameter < function.parameters().size(); ++parameter) {
+  for (std::size_t parameter = 0; parameter < function.parameters().size();
+       ++parameter) {
     BasicBlock check{checkNames[parameter]};
     const auto pointer =
         freshValue(function, "recursive.memo.key.pointer", values);
@@ -590,8 +562,8 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     const auto storeName = freshBlock(blockNames, "recursive.memo.store.");
     instructions.back() = Instruction{"br", {storeName}};
     BasicBlock store{storeName};
-    for (std::size_t parameter = 0;
-         !useEncodedTag && parameter < function.parameters().size(); ++parameter) {
+    for (std::size_t parameter = 0; parameter < function.parameters().size();
+         ++parameter) {
       const auto pointer =
           freshValue(function, "recursive.memo.store.key.pointer", values);
       store.addInstruction(Instruction{
@@ -601,22 +573,14 @@ void applyMemoization(Module &module, const Candidate &candidate) {
     }
     const auto resultPointer =
         freshValue(function, "recursive.memo.store.value.pointer", values);
+    const auto storeValidPointer =
+        freshValue(function, "recursive.memo.store.valid.pointer", values);
     store.addInstruction(
         Instruction{"getelementptr", {"@" + valueName, index}, resultPointer});
     store.addInstruction(Instruction{"store", {"int", result, resultPointer}});
-    const auto storeValidPointer =
-        freshValue(function, "recursive.memo.store.valid.pointer", values);
-    if (useEncodedTag) {
-      store.addInstruction(Instruction{
-          "getelementptr", {"@" + keyNames.front(), index}, storeValidPointer});
-      store.addInstruction(
-          Instruction{"store", {"long", encodedKey, storeValidPointer}});
-    } else {
-      store.addInstruction(Instruction{
-          "getelementptr", {"@" + validName, index}, storeValidPointer});
-      store.addInstruction(
-          Instruction{"store", {"int", "1", storeValidPointer}});
-    }
+    store.addInstruction(Instruction{
+        "getelementptr", {"@" + validName, index}, storeValidPointer});
+    store.addInstruction(Instruction{"store", {"int", "1", storeValidPointer}});
     store.addInstruction(Instruction{"ret", {result}});
     stores.push_back(std::move(store));
   }
@@ -627,10 +591,7 @@ void applyMemoization(Module &module, const Candidate &candidate) {
   function.blocks().push_front(std::move(entry));
   for (auto &store : stores)
     function.addBlock(std::move(store));
-  if (useEncodedTag) {
-    module.addPassNote(
-        "encoded a complete single i32 memo key plus validity in one i64 tag");
-  } else if (candidate.readOnlyLoopLifetime) {
+  if (candidate.readOnlyLoopLifetime) {
     module.addPassNote(
         "memoized a loop-contained read-only helper after proving its global "
         "read set immutable for the cache lifetime");
