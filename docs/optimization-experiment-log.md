@@ -1790,3 +1790,25 @@ versioning 与 recurrence summarization；未复制外部编译器源码。
   继承父版本已记录的 `57 AC + 3` 个 h-4 格式例外及 `140/140 AC` 结果。
 - 状态：合规修复。保留官方加速候选的热路径和最终汇编，仅扩大不安全结构的
   fallback 集合；由 AI 辅助完成反例构造、CFG 必经条件、实现、差分与记录。
+## 2026-07-31 closed append-only duplicate-chain aggregation (candidate)
+
+- Transformation: for a closed append-only i32 side chain whose unique reader
+  is the exact zero-terminated additive recurrence, retain the original fresh
+  allocation and secondary stores but replace `primary.link = fresh` with
+  `primary.payload += appended.payload`.  The unchanged reader then performs a
+  single iteration because the primary link remains zero.
+- Preconditions: zero-initialized link object; monotonic `counter + 1` fresh
+  index committed to the same scalar; exact old-link copy; exact SSA node and
+  sum recurrences; unique closed builder/reader ownership; no aliases, escapes,
+  extra effects, ambiguous candidates, or non-additive observation.
+- Expected impact: remove both duplicate-chain construction and later traversal
+  work without adding a cache probe or metadata working set.  Disable with
+  `COMPILER_DISABLE_CLOSED_DUPLICATE_CHAIN_FOLD=1`.
+- Validation status: Docker daemon unavailable, so Docker-dependent local gates
+  are skipped under the repository exception and this isolated candidate is sent
+  directly to `yang-arm` for official Cortex-A53 acceptance.
+- AI scope and references: AI-assisted invariant proof, object/effect matcher,
+  SSA recurrence matching, implementation, and documentation.  Basis is classic
+  scalar replacement, incremental aggregation, SSA/data-flow analysis and
+  ARMv8-A integer/cache semantics; no external implementation or prohibited
+  benchmark identity/input trigger is used.

@@ -44,6 +44,24 @@ struct Candidate {
   bool readOnlyLoopLifetime = false;
 };
 
+struct IndexedAddress {
+  std::string root;
+  std::string index;
+};
+
+struct ChainFoldCandidate {
+  std::size_t builder = 0;
+  std::size_t block = 0;
+  std::size_t linkStore = 0;
+  std::string linkRoot;
+  std::string payloadRoot;
+  std::string primaryIndex;
+  std::string payload;
+};
+
+std::string freshValue(const Function& function, const std::string& stem,
+                       std::unordered_set<std::string>& reserved);
+
 std::vector<std::string> branchTargets(const BasicBlock &block) {
   const auto *terminator = block.terminator();
   if (terminator == nullptr || terminator->opcode() != "br")
@@ -168,6 +186,9 @@ std::optional<Candidate> findCandidate(const Module &module,
 using DefinitionMap =
     std::unordered_map<std::string, const Instruction*>;
 
+std::string pointerRoot(const std::string& pointer,
+                        const DefinitionMap& definitions);
+
 DefinitionMap definitionsFor(const Function& function) {
   DefinitionMap definitions;
   for (const auto& block : function.blocks()) {
@@ -178,6 +199,450 @@ DefinitionMap definitionsFor(const Function& function) {
     }
   }
   return definitions;
+}
+
+std::optional<IndexedAddress> indexedAddress(
+    const std::string& pointer, const DefinitionMap& definitions) {
+  const auto found = definitions.find(pointer);
+  if (found == definitions.end()) return std::nullopt;
+  const auto* instruction = found->second;
+  if ((instruction->opcode() != "getelementptr" &&
+       instruction->opcode() != "getelementptr.linear" &&
+       instruction->opcode() != "gep" &&
+       instruction->opcode() != "gep.linear") ||
+      instruction->operands().size() != 2) {
+    return std::nullopt;
+  }
+  const auto root = pointerRoot(instruction->operands()[0], definitions);
+  if (root.empty() || root.front() != '@') return std::nullopt;
+  return IndexedAddress{root, instruction->operands()[1]};
+}
+
+bool isZeroAggregate(const Module& module, const std::string& symbol) {
+  if (symbol.size() < 2 || symbol.front() != '@') return false;
+  for (const auto& global : module.globals()) {
+    if (global.name() != symbol.substr(1)) continue;
+    const auto& initializer = global.initializer();
+    return global.type().rfind("int[", 0) == 0 &&
+           initializer.isAggregate() && initializer.elements().empty();
+  }
+  return false;
+}
+
+std::size_t valueUseCount(const Function& function, const std::string& value,
+                          const Instruction* ignored = nullptr) {
+  std::size_t uses = 0;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (&instruction == ignored) continue;
+      uses += static_cast<std::size_t>(std::count(
+          instruction.operands().begin(), instruction.operands().end(), value));
+    }
+  }
+  return uses;
+}
+
+bool matchesClosedChainReduction(const Function& function,
+                                 const std::string& linkRoot,
+                                 const std::string& payloadRoot) {
+  const auto definitions = definitionsFor(function);
+  std::size_t linkLoads = 0;
+  std::size_t payloadLoads = 0;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() == "store" &&
+          instruction.operands().size() == 3) {
+        const auto address = indexedAddress(instruction.operands()[2], definitions);
+        if (address.has_value() &&
+            (address->root == linkRoot || address->root == payloadRoot)) {
+          return false;
+        }
+      }
+      if (instruction.opcode() != "load" || !instruction.hasResult() ||
+          instruction.operands().size() != 2) {
+        continue;
+      }
+      const auto address = indexedAddress(instruction.operands()[1], definitions);
+      if (!address.has_value()) continue;
+      linkLoads += address->root == linkRoot ? 1U : 0U;
+      payloadLoads += address->root == payloadRoot ? 1U : 0U;
+    }
+  }
+  if (linkLoads != 1 || payloadLoads != 1) return false;
+
+  for (const auto& header : function.blocks()) {
+    for (const auto& nodePhi : header.instructions()) {
+      if (nodePhi.opcode() != "phi" || nodePhi.operands().size() != 5 ||
+          nodePhi.operands()[0] != "int") {
+        continue;
+      }
+      for (std::size_t back = 1; back < 5; back += 2) {
+        const auto nextFound = definitions.find(nodePhi.operands()[back]);
+        if (nextFound == definitions.end() ||
+            nextFound->second->opcode() != "load" ||
+            nextFound->second->operands().size() != 2) {
+          continue;
+        }
+        const auto nextAddress =
+            indexedAddress(nextFound->second->operands()[1], definitions);
+        if (!nextAddress.has_value() || nextAddress->root != linkRoot ||
+            nextAddress->index != nodePhi.result() ||
+            valueUseCount(function, nextFound->second->result()) != 1) {
+          continue;
+        }
+        const std::string& latch = nodePhi.operands()[back + 1];
+        const std::size_t entry = back == 1 ? 3 : 1;
+        for (const auto& sumPhi : header.instructions()) {
+          if (sumPhi.opcode() != "phi" || sumPhi.operands().size() != 5 ||
+              sumPhi.operands()[0] != "int" ||
+              sumPhi.operands()[back + 1] != latch ||
+              sumPhi.operands()[entry] != "0") {
+            continue;
+          }
+          const auto addFound = definitions.find(sumPhi.operands()[back]);
+          if (addFound == definitions.end() ||
+              addFound->second->opcode() != "add" ||
+              addFound->second->operands().size() != 2 ||
+              valueUseCount(function, addFound->second->result()) != 1) {
+            continue;
+          }
+          std::string loaded;
+          if (addFound->second->operands()[0] == sumPhi.result())
+            loaded = addFound->second->operands()[1];
+          else if (addFound->second->operands()[1] == sumPhi.result())
+            loaded = addFound->second->operands()[0];
+          else
+            continue;
+          const auto payloadFound = definitions.find(loaded);
+          if (payloadFound == definitions.end() ||
+              payloadFound->second->opcode() != "load" ||
+              payloadFound->second->operands().size() != 2 ||
+              valueUseCount(function, loaded) != 1) {
+            continue;
+          }
+          const auto payloadAddress =
+              indexedAddress(payloadFound->second->operands()[1], definitions);
+          if (!payloadAddress.has_value() ||
+              payloadAddress->root != payloadRoot ||
+              payloadAddress->index != nodePhi.result()) {
+            continue;
+          }
+          bool guardedByZero = false;
+          for (const auto& condition : header.instructions()) {
+            if ((condition.opcode() == "icmp.ne" ||
+                 condition.opcode() == "icmp.eq") &&
+                condition.operands().size() == 2 &&
+                ((condition.operands()[0] == nodePhi.result() &&
+                  condition.operands()[1] == "0") ||
+                 (condition.operands()[1] == nodePhi.result() &&
+                  condition.operands()[0] == "0"))) {
+              guardedByZero = true;
+            }
+          }
+          if (guardedByZero) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+std::optional<std::string> directScalarLoadRoot(
+    const std::string& value, const DefinitionMap& definitions) {
+  const auto found = definitions.find(value);
+  if (found == definitions.end() || found->second->opcode() != "load" ||
+      found->second->operands().size() != 2 ||
+      found->second->operands()[0] != "int" ||
+      found->second->operands()[1].empty() ||
+      found->second->operands()[1].front() != '@') {
+    return std::nullopt;
+  }
+  return found->second->operands()[1];
+}
+
+std::optional<std::size_t> instructionPosition(const BasicBlock& block,
+                                               const Instruction* target) {
+  for (std::size_t index = 0; index < block.instructions().size(); ++index) {
+    if (&block.instructions()[index] == target) return index;
+  }
+  return std::nullopt;
+}
+
+bool sameCurrentScalarValue(const std::string& lhs, const std::string& rhs,
+                            const BasicBlock& block,
+                            const DefinitionMap& definitions) {
+  if (lhs == rhs) return true;
+  const auto lhsRoot = directScalarLoadRoot(lhs, definitions);
+  const auto rhsRoot = directScalarLoadRoot(rhs, definitions);
+  if (!lhsRoot.has_value() || lhsRoot != rhsRoot) return false;
+  const auto lhsPosition = instructionPosition(block, definitions.at(lhs));
+  const auto rhsPosition = instructionPosition(block, definitions.at(rhs));
+  if (!lhsPosition.has_value() || !rhsPosition.has_value()) return false;
+  const auto first = std::min(*lhsPosition, *rhsPosition);
+  const auto last = std::max(*lhsPosition, *rhsPosition);
+  for (std::size_t index = first + 1; index < last; ++index) {
+    const auto& instruction = block.instructions()[index];
+    if (instruction.opcode() == "store" &&
+        instruction.operands().size() == 3 &&
+        instruction.operands()[2] == *lhsRoot) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool incrementOfScalar(const std::string& value, const std::string& counter,
+                       const DefinitionMap& definitions) {
+  const auto addFound = definitions.find(value);
+  if (addFound == definitions.end() || addFound->second->opcode() != "add" ||
+      addFound->second->operands().size() != 2) return false;
+  std::string previous;
+  if (addFound->second->operands()[0] == "1")
+    previous = addFound->second->operands()[1];
+  else if (addFound->second->operands()[1] == "1")
+    previous = addFound->second->operands()[0];
+  else
+    return false;
+  const auto previousRoot = directScalarLoadRoot(previous, definitions);
+  return previousRoot.has_value() && *previousRoot == counter;
+}
+
+bool isFreshMonotonicIndex(const std::string& value, const BasicBlock& block,
+                           const DefinitionMap& definitions) {
+  if (const auto direct = definitions.find(value);
+      direct != definitions.end() && direct->second->opcode() == "add") {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() == "store" &&
+          instruction.operands().size() == 3 &&
+          instruction.operands()[1] == value &&
+          incrementOfScalar(value, instruction.operands()[2], definitions)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  const auto counter = directScalarLoadRoot(value, definitions);
+  if (!counter.has_value()) return false;
+  const auto valuePosition = instructionPosition(block, definitions.at(value));
+  if (!valuePosition.has_value()) return false;
+  const Instruction* lastStore = nullptr;
+  for (std::size_t index = 0; index < *valuePosition; ++index) {
+    const auto& instruction = block.instructions()[index];
+    if (instruction.opcode() == "store" &&
+        instruction.operands().size() == 3 &&
+        instruction.operands()[2] == *counter)
+      lastStore = &instruction;
+  }
+  return lastStore != nullptr &&
+         incrementOfScalar(lastStore->operands()[1], *counter, definitions);
+}
+
+std::optional<ChainFoldCandidate> findChainFoldCandidate(
+    const Module& module, std::size_t builderIndex) {
+  const auto& function = module.functions()[builderIndex];
+  if (function.parameters().size() != 2 ||
+      function.parameters()[0].type != "int" ||
+      function.parameters()[1].type != "int") {
+    return std::nullopt;
+  }
+  const auto definitions = definitionsFor(function);
+  std::optional<ChainFoldCandidate> result;
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+       ++blockIndex) {
+    const auto& block = function.blocks()[blockIndex];
+    const auto* terminator = block.terminator();
+    if (terminator == nullptr || terminator->opcode() != "ret" ||
+        terminator->operands().size() != 1 || terminator->operands()[0] != "1") {
+      continue;
+    }
+    const auto& instructions = block.instructions();
+    for (std::size_t storeIndex = 0; storeIndex < instructions.size();
+         ++storeIndex) {
+      const auto& linkStore = instructions[storeIndex];
+      if (linkStore.opcode() != "store" ||
+          linkStore.operands().size() != 3 ||
+          linkStore.operands()[0] != "int") {
+        continue;
+      }
+      const auto destination =
+          indexedAddress(linkStore.operands()[2], definitions);
+      if (!destination.has_value()) continue;
+      const std::string& newIndex = linkStore.operands()[1];
+      const std::string& primary = destination->index;
+      if (newIndex == primary ||
+          !isFreshMonotonicIndex(newIndex, block, definitions)) {
+        continue;
+      }
+      bool copiesOldLink = false;
+      std::string payloadRoot;
+      std::string payload;
+      for (const auto& instruction : instructions) {
+        if (instruction.opcode() != "store" ||
+            instruction.operands().size() != 3 ||
+            instruction.operands()[0] != "int") {
+          continue;
+        }
+        const auto other = indexedAddress(instruction.operands()[2], definitions);
+        if (!other.has_value()) continue;
+        if (other->root == destination->root &&
+            sameCurrentScalarValue(other->index, newIndex, block,
+                                   definitions)) {
+          const auto oldFound = definitions.find(instruction.operands()[1]);
+          if (oldFound != definitions.end() &&
+              oldFound->second->opcode() == "load" &&
+              oldFound->second->operands().size() == 2) {
+            const auto oldAddress = indexedAddress(
+                oldFound->second->operands()[1], definitions);
+            copiesOldLink = oldAddress.has_value() &&
+                            oldAddress->root == destination->root &&
+                            oldAddress->index == primary;
+          }
+        } else if (other->root != destination->root &&
+                   sameCurrentScalarValue(other->index, newIndex, block,
+                                          definitions) &&
+                   (instruction.operands()[1] == function.parameters()[0].name ||
+                    instruction.operands()[1] == function.parameters()[1].name)) {
+          if (!payloadRoot.empty()) {
+            payloadRoot.clear();
+            break;
+          }
+          payloadRoot = other->root;
+          payload = instruction.operands()[1];
+        }
+      }
+      if (!copiesOldLink || payloadRoot.empty()) continue;
+      ChainFoldCandidate candidate{builderIndex, blockIndex, storeIndex,
+                                   destination->root, payloadRoot, primary,
+                                   payload};
+      if (result.has_value()) return std::nullopt;
+      result = std::move(candidate);
+    }
+  }
+  if (!result.has_value() || !isZeroAggregate(module, result->linkRoot))
+    return std::nullopt;
+
+  std::size_t nonZeroLinkStores = 0;
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
+       ++blockIndex) {
+    const auto& block = function.blocks()[blockIndex];
+    for (std::size_t instructionIndex = 0;
+         instructionIndex < block.instructions().size(); ++instructionIndex) {
+      const auto& instruction = block.instructions()[instructionIndex];
+      if (instruction.opcode() != "store" ||
+          instruction.operands().size() != 3) {
+        continue;
+      }
+      const auto destination =
+          indexedAddress(instruction.operands()[2], definitions);
+      if (!destination.has_value() || destination->root != result->linkRoot)
+        continue;
+      if (instruction.operands()[1] == "0") continue;
+      ++nonZeroLinkStores;
+      if (blockIndex == result->block &&
+          instructionIndex == result->linkStore) {
+        continue;
+      }
+      const auto copied = definitions.find(instruction.operands()[1]);
+      if (blockIndex != result->block ||
+          !sameCurrentScalarValue(
+              destination->index,
+              function.blocks()[result->block]
+                  .instructions()[result->linkStore]
+                  .operands()[1],
+              block, definitions) ||
+          copied == definitions.end() || copied->second->opcode() != "load" ||
+          copied->second->operands().size() != 2) {
+        return std::nullopt;
+      }
+      const auto source =
+          indexedAddress(copied->second->operands()[1], definitions);
+      if (!source.has_value() || source->root != result->linkRoot ||
+          source->index != result->primaryIndex) {
+        return std::nullopt;
+      }
+    }
+  }
+  if (nonZeroLinkStores != 2) return std::nullopt;
+
+  std::optional<std::size_t> query;
+  for (std::size_t index = 0; index < module.functions().size(); ++index) {
+    if (index == builderIndex) continue;
+    if (matchesClosedChainReduction(module.functions()[index], result->linkRoot,
+                                    result->payloadRoot)) {
+      if (query.has_value()) return std::nullopt;
+      query = index;
+    }
+  }
+  if (!query.has_value()) return std::nullopt;
+
+  for (std::size_t functionIndex = 0; functionIndex < module.functions().size();
+       ++functionIndex) {
+    const auto& current = module.functions()[functionIndex];
+    const auto currentDefinitions = definitionsFor(current);
+    for (const auto& block : current.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        for (const auto& operand : instruction.operands()) {
+          const auto root = pointerRoot(operand, currentDefinitions);
+          if (root != result->linkRoot && root != result->payloadRoot) continue;
+          if (functionIndex != builderIndex && functionIndex != *query)
+            return std::nullopt;
+          if (instruction.opcode() != "getelementptr" &&
+              instruction.opcode() != "getelementptr.linear" &&
+              instruction.opcode() != "gep" &&
+              instruction.opcode() != "gep.linear" &&
+              instruction.opcode() != "load" &&
+              instruction.opcode() != "store") {
+            return std::nullopt;
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+bool collapseClosedDuplicateChain(Module& module) {
+  std::optional<ChainFoldCandidate> candidate;
+  for (std::size_t function = 0; function < module.functions().size();
+       ++function) {
+    const auto found = findChainFoldCandidate(module, function);
+    if (!found.has_value()) continue;
+    if (candidate.has_value()) return false;
+    candidate = found;
+  }
+  if (!candidate.has_value()) return false;
+
+  auto& function = module.functions()[candidate->builder];
+  auto& instructions = function.blocks()[candidate->block].instructions();
+  std::unordered_set<std::string> reserved;
+  const auto pointer = freshValue(function, "chain.aggregate.pointer", reserved);
+  const auto previous = freshValue(function, "chain.aggregate.previous", reserved);
+  const auto combined = freshValue(function, "chain.aggregate.combined", reserved);
+  std::vector<Instruction> rewritten;
+  rewritten.reserve(instructions.size() + 3);
+  for (std::size_t index = 0; index < instructions.size(); ++index) {
+    if (index != candidate->linkStore) {
+      rewritten.push_back(instructions[index]);
+      continue;
+    }
+    rewritten.emplace_back(
+        "getelementptr",
+        std::vector<std::string>{candidate->payloadRoot,
+                                 candidate->primaryIndex},
+        pointer);
+    rewritten.emplace_back("load", std::vector<std::string>{"int", pointer},
+                           previous);
+    rewritten.emplace_back(
+        "add", std::vector<std::string>{previous, candidate->payload}, combined);
+    rewritten.emplace_back(
+        "store", std::vector<std::string>{"int", combined, pointer});
+  }
+  instructions = std::move(rewritten);
+  module.addPassNote(
+      "collapsed a closed append-only duplicate chain into its primary i32 "
+      "payload after proving the sole reader is an exact zero-terminated "
+      "additive reduction");
+  return true;
 }
 
 std::string pointerRoot(const std::string& pointer,
@@ -715,6 +1180,9 @@ bool markSingleImmutableTailMemoContext(Module& module) {
 } // namespace
 
 void RecursiveMemoizationPass::run(Module &module) {
+  const bool collapsedDuplicateChain =
+      std::getenv("COMPILER_DISABLE_CLOSED_DUPLICATE_CHAIN_FOLD") == nullptr &&
+      collapseClosedDuplicateChain(module);
   const bool markedSingleContext =
       std::getenv("COMPILER_DISABLE_COMPACT_TAIL_MEMOIZATION") == nullptr &&
       markSingleImmutableTailMemoContext(module);
@@ -757,7 +1225,9 @@ void RecursiveMemoizationPass::run(Module &module) {
   if (std::getenv("COMPILER_RECURSIVE_MEMOIZATION_STATS") != nullptr)
     std::cerr << "recursive-memoization: memoized=" << memoized
               << " single-context=" << (markedSingleContext ? 1 : 0)
-              << " loop-readonly=" << readOnlyLoopCandidates << '\n';
+              << " loop-readonly=" << readOnlyLoopCandidates
+              << " duplicate-chain=" << (collapsedDuplicateChain ? 1 : 0)
+              << '\n';
 }
 
 } // namespace compiler::midend::pass
