@@ -279,9 +279,6 @@ PositiveHalfCollapseResult collapsePositivePowerOfTwoSteps(
 std::string memoizePureAdditiveTailLoop(
     const PositiveHalfCollapseResult& collapsed,
     bool singleImmutableContext) {
-  const bool checkpointEnabled =
-      singleImmutableContext &&
-      std::getenv("COMPILER_DISABLE_TAIL_MEMO_MISS_CHECKPOINT") == nullptr;
   // The compact layout can spend the same kind of bounded memory budget on a
   // wider useful state domain.  The general multi-context fallback retains its
   // original smaller window and entry format.
@@ -437,22 +434,12 @@ std::string memoizePureAdditiveTailLoop(
         if (lineUsesRegister(lines[index], reserved)) safe = false;
       }
     }
-    if (checkpointEnabled) {
-      for (const auto& reserved : {std::string("w8"), std::string("x8"),
-                                   std::string("w9"), std::string("x9")}) {
-        for (std::size_t index = functionBegin + 1; index < functionEnd;
-             ++index) {
-          if (lineUsesRegister(lines[index], reserved)) safe = false;
-        }
-      }
-    }
     if (!safe) continue;
 
     const std::string cache = ".Ltail_memo_cache_0";
     const std::string miss = header + ".memo_miss";
     const std::string store = header + ".memo_store";
     const std::string noStore = header + ".memo_no_store";
-    const std::string checkpoint = header + ".memo_checkpoint";
 
     // Work backwards so the original indices remain valid.
     std::vector<std::string> storeSequence{
@@ -474,19 +461,8 @@ std::string memoizePureAdditiveTailLoop(
            "  orr x17, x17, x18, lsl #32",
            "  str x17, [x5, w6, uxtw #3]"});
     }
-    if (checkpointEnabled) {
-      storeSequence.insert(
-          storeSequence.end(),
-          {noStore + ":",
-           "  cbz w8, " + epilogue,
-           "  sub w17, w0, w9",
-           "  add w17, w17, #1",
-           "  str w17, [x5, w8, uxtw #2]",
-           "  b " + epilogue});
-    } else {
-      storeSequence.insert(storeSequence.end(),
-                           {noStore + ":", "  b " + epilogue});
-    }
+    storeSequence.insert(storeSequence.end(),
+                         {noStore + ":", "  b " + epilogue});
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
                  storeSequence.begin(), storeSequence.end());
     lines[headerIndex + 5] = "  b " + store;
@@ -509,31 +485,19 @@ std::string memoizePureAdditiveTailLoop(
     }
     lookupSequence.insert(
         lookupSequence.end(),
-        {"  cbz w17, " + (checkpointEnabled ? checkpoint : miss),
+        {"  cbz w17, " + miss,
          "  sub w17, w17, #1",
          "  add w0, " + depth + ", w17",
-         "  b " + store});
-    if (checkpointEnabled) {
-      lookupSequence.insert(lookupSequence.end(),
-                            {checkpoint + ":",
-                             "  mov w8, " + state,
-                             "  mov w9, " + depth});
-    }
-    lookupSequence.push_back(miss + ":");
+         "  b " + store,
+         miss + ":"});
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
                  lookupSequence.begin(), lookupSequence.end());
     const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
-    std::vector<std::string> initSequence{"  mov w6, " + state,
-                                          "  mov w7, " + depth};
-    if (checkpointEnabled) {
-      initSequence.insert(initSequence.end(), {"  mov w8, wzr",
-                                               "  mov w9, wzr"});
-    }
-    initSequence.insert(initSequence.end(),
-                        {"  adrp x5, " + cache,
-                         "  add x5, x5, :lo12:" + cache});
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
-                 initSequence.begin(), initSequence.end());
+                 {"  mov w6, " + state,
+                  "  mov w7, " + depth,
+                  "  adrp x5, " + cache,
+                  "  add x5, x5, :lo12:" + cache});
 
     const auto note = std::find(lines.begin(), lines.end(),
                                 ".section .note.GNU-stack,\"\",%progbits");
