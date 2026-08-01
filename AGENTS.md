@@ -17,6 +17,13 @@ These rules are mandatory for every compiler optimization in this repository.
 - Runtime probing of judge inputs, host properties, timing behavior, environment layout, or other evaluation characteristics.
 - Undefined behavior, unsupported assumptions, or speculative transformations that are not correct for every input satisfying the stated preconditions.
 
+## Scope of sample changes
+
+- A request to optimize one sample family defines the measurement focus only. It is not an optimization trigger, a sample-name whitelist, or a requirement that every other program's assembly remain byte-for-byte identical.
+- A general transformation may change any program that satisfies its semantic preconditions, including programs affected through ordinary pass interaction. Such changes are allowed when correctness is preserved and the generated code has a documented target-relevant cost reduction or no demonstrated regression.
+- Compare all 60 final assemblies to enumerate direct and downstream changes. Byte-for-byte equality is attribution and safety evidence, not a hard acceptance gate. Do not revert a legal positive change solely because another sample changed.
+- For every changed program, record whether the change is a direct match or a downstream consequence, and inspect its static/dynamic cost and target result. A static instruction reduction or QEMU improvement alone does not prove official acceptance; clear target regressions must be isolated and removed.
+
 ## Required acceptance process
 
 1. State the transformation using only general semantic and analysis preconditions.
