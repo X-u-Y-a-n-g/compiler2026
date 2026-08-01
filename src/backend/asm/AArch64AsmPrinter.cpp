@@ -1356,8 +1356,8 @@ std::optional<std::string> globalSymbolForRegister(
 
 // Interchange an i-j-k conditional integer reduction into i-k-j and vectorize
 // the now-contiguous j dimension. Extents divisible by eight use paired vector
-// accumulators; profitable ranges share row-base calculations across four
-// adjacent eight-column chunks, then use exact sixteen/eight-column tails when
+// accumulators; profitable ranges share row-base calculations across up to
+// eight adjacent eight-column chunks, then use exact 32/16/8-column tails when
 // required. Other extents divisible by four retain the single-vector form.
 // The matcher proves three distinct global objects, a single output store,
 // identical static extents, and the exact parity predicate before changing the
@@ -1690,17 +1690,25 @@ std::string vectorizeConditionalMatrixReduction(
         useSixteenColumns && extent >= 32 &&
         std::getenv("COMPILER_DISABLE_CONDITIONAL_MATRIX_"
                     "THIRTY_TWO_COLUMNS") == nullptr;
-    const long long vectorWidth = useThirtyTwoColumns ? 32
+    const bool useSixtyFourColumns =
+        useThirtyTwoColumns && extent >= 64 &&
+        std::getenv("COMPILER_DISABLE_CONDITIONAL_MATRIX_"
+                    "SIXTY_FOUR_COLUMNS") == nullptr;
+    const long long vectorWidth = useSixtyFourColumns ? 64
+                                  : useThirtyTwoColumns ? 32
                                   : useSixteenColumns ? 16
                                   : useEightColumns ? 8
                                                     : 4;
     const long long vectorLimit =
-        useThirtyTwoColumns ? extent - (extent % 32)
+        useSixtyFourColumns ? extent - (extent % 64)
+        : useThirtyTwoColumns ? extent - (extent % 32)
         : useSixteenColumns ? extent - (extent % 16)
                             : extent;
     const long long vectorRemainder = extent - vectorLimit;
+    const bool hasThirtyTwoColumnTail =
+        useSixtyFourColumns && vectorRemainder >= 32;
     const bool hasSixteenColumnTail =
-        useThirtyTwoColumns && vectorRemainder >= 16;
+        useThirtyTwoColumns && vectorRemainder % 32 >= 16;
     const bool hasEightColumnTail =
         useSixteenColumns && vectorRemainder % 16 == 8;
     const std::string prefix = middleBodyLabel +
@@ -1732,8 +1740,14 @@ std::string vectorizeConditionalMatrixReduction(
     const std::string clearStore32 =
         clearStore16 + "  stp q24, q24, [x16, #64]\n"
                        "  stp q24, q24, [x16, #96]\n";
+    const std::string clearStore64 =
+        clearStore32 + "  stp q24, q24, [x16, #128]\n"
+                       "  stp q24, q24, [x16, #160]\n"
+                       "  stp q24, q24, [x16, #192]\n"
+                       "  stp q24, q24, [x16, #224]\n";
     const std::string& clearStore =
-        useThirtyTwoColumns ? clearStore32
+        useSixtyFourColumns ? clearStore64
+        : useThirtyTwoColumns ? clearStore32
         : useSixteenColumns ? clearStore16
         : useEightColumns   ? clearStore8
                             : "  str q24, [x16]\n";
@@ -1889,30 +1903,87 @@ std::string vectorizeConditionalMatrixReduction(
         "  mla v24.4s, v23.4s, v21.4s\n"
         "  mla v27.4s, v26.4s, v21.4s\n"
         "  stp q24, q27, [x16, #96]\n";
+    const auto maskedVectorPairAt = [&](long long byteOffset) {
+      const std::string addressSuffix =
+          ", #" + std::to_string(byteOffset) + "]\n";
+      return "  ldp q22, q25, [x17" + addressSuffix +
+             (parityInvariantFastPath
+                  ? ""
+                  : "  and v22.16b, v22.16b, v20.16b\n"
+                    "  and v25.16b, v25.16b, v20.16b\n") +
+             "  shl v22.4s, v22.4s, #31\n"
+             "  shl v25.4s, v25.4s, #31\n"
+             "  cmeq v22.4s, v22.4s, #0\n"
+             "  cmeq v25.4s, v25.4s, #0\n"
+             "  ldp q23, q26, [x18" + addressSuffix +
+             "  and v23.16b, v23.16b, v22.16b\n"
+             "  and v26.16b, v26.16b, v25.16b\n"
+             "  ldp q24, q27, [x16" + addressSuffix +
+             "  mla v24.4s, v23.4s, v21.4s\n"
+             "  mla v27.4s, v26.4s, v21.4s\n"
+             "  stp q24, q27, [x16" + addressSuffix;
+    };
+    const auto fastVectorPairAt = [](long long byteOffset) {
+      const std::string addressSuffix =
+          ", #" + std::to_string(byteOffset) + "]\n";
+      return "  ldp q23, q26, [x17" + addressSuffix +
+             "  ldp q24, q27, [x16" + addressSuffix +
+             "  mla v24.4s, v23.4s, v21.4s\n"
+             "  mla v27.4s, v26.4s, v21.4s\n"
+             "  stp q24, q27, [x16" + addressSuffix;
+    };
+    const std::string vectorUpdate64 =
+        vectorUpdate32 + maskedVectorPairAt(128) + maskedVectorPairAt(160) +
+        maskedVectorPairAt(192) + maskedVectorPairAt(224);
+    const std::string fastVectorUpdate64 =
+        fastVectorUpdate32 + fastVectorPairAt(128) + fastVectorPairAt(160) +
+        fastVectorPairAt(192) + fastVectorPairAt(224);
     const std::string& vectorUpdate =
-        useThirtyTwoColumns ? vectorUpdate32
+        useSixtyFourColumns ? vectorUpdate64
+        : useThirtyTwoColumns ? vectorUpdate32
         : useSixteenColumns ? vectorUpdate16
                             : vectorUpdate8;
     const std::string& fastVectorUpdate =
-        useThirtyTwoColumns ? fastVectorUpdate32
+        useSixtyFourColumns ? fastVectorUpdate64
+        : useThirtyTwoColumns ? fastVectorUpdate32
         : useSixteenColumns ? fastVectorUpdate16
                             : fastVectorUpdate8;
 
+    const std::string thirtyTwoColumnTail =
+        hasThirtyTwoColumnTail ? vectorUpdate32 : "";
+    const std::string fastThirtyTwoColumnTail =
+        hasThirtyTwoColumnTail ? fastVectorUpdate32 : "";
     const std::string sixteenColumnTail =
         hasSixteenColumnTail ? vectorUpdate16 : "";
     const std::string fastSixteenColumnTail =
         hasSixteenColumnTail ? fastVectorUpdate16 : "";
+    const bool hasTailAfterThirtyTwo =
+        hasThirtyTwoColumnTail &&
+        (hasSixteenColumnTail || hasEightColumnTail);
+    const std::string advancePastThirtyTwoColumnTail =
+        hasTailAfterThirtyTwo
+            ? "  add " + jW + ", " + jW + ", #32\n"
+            : "";
     const std::string advancePastSixteenColumnTail =
         hasSixteenColumnTail && hasEightColumnTail
             ? "  add " + jW + ", " + jW + ", #16\n"
             : "";
     const std::string maskedVectorTail =
+        thirtyTwoColumnTail + advancePastThirtyTwoColumnTail +
         sixteenColumnTail + advancePastSixteenColumnTail +
         (hasEightColumnTail ? vectorUpdate8 : "");
     const std::string fastVectorTail =
+        fastThirtyTwoColumnTail + advancePastThirtyTwoColumnTail +
         fastSixteenColumnTail + advancePastSixteenColumnTail +
         (hasEightColumnTail ? fastVectorUpdate8 : "");
     const std::string clearVectorTail =
+        (hasThirtyTwoColumnTail
+             ? "  add x16, " + outputRow + ", " + jX +
+                   ", lsl #2\n" + clearStore32 +
+                   (hasTailAfterThirtyTwo
+                        ? "  add " + jW + ", " + jW + ", #32\n"
+                        : "")
+             : "") +
         (hasSixteenColumnTail
              ? "  add x16, " + outputRow + ", " + jX +
                    ", lsl #2\n" + clearStore16 +
