@@ -26,6 +26,7 @@
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AdjacentProducerConsumerLoopFusionPass.h"
+#include "../../include/compiler/midend/pass/AssociativeChainAggregationPass.h"
 #include "../../include/compiler/midend/pass/ArraySummaryDimensionCollapsePass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
@@ -209,6 +210,13 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     }
     passManager.add(
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv("COMPILER_DISABLE_ASSOCIATIVE_CHAIN_AGGREGATION") ==
+            nullptr) {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::AssociativeChainAggregationPass>());
+    }
     if ((invocation.options().target == "aarch64" ||
          invocation.options().target == "arm64") &&
         std::getenv("COMPILER_DISABLE_RECURSIVE_MEMOIZATION") == nullptr) {
