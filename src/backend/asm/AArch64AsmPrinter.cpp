@@ -436,21 +436,69 @@ std::string memoizePureAdditiveTailLoop(
     }
     if (!safe) continue;
 
+    // The cache window is a loop invariant.  Keep its upper bound in one
+    // caller-saved scratch register instead of materializing the same
+    // constant at every tail-loop iteration and again at the final store.
+    // Only choose a register proven unused by this leaf function; otherwise
+    // retain the parent lowering unchanged.
+    std::optional<std::string> cacheBoundRegister;
+    if (std::getenv("COMPILER_DISABLE_TAIL_MEMO_BOUND_HOIST") == nullptr) {
+      for (const auto& candidate : {std::string("w8"), std::string("w9"),
+                                    std::string("w10"), std::string("w11")}) {
+        const std::string xCandidate = "x" + candidate.substr(1);
+        bool used = false;
+        for (std::size_t index = functionBegin + 1; index < functionEnd;
+             ++index) {
+          if (lineUsesRegister(lines[index], candidate) ||
+              lineUsesRegister(lines[index], xCandidate)) {
+            used = true;
+            break;
+          }
+        }
+        if (!used) {
+          cacheBoundRegister = candidate;
+          break;
+        }
+      }
+    }
+    const bool hoistCacheBound = cacheBoundRegister.has_value();
+    const std::string cacheBound =
+        hoistCacheBound ? *cacheBoundRegister : "w16";
+    const bool useUnsignedCacheDomainGuard =
+        std::getenv("COMPILER_DISABLE_TAIL_MEMO_SIGN_GUARD") == nullptr &&
+        cacheStates <=
+            static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
+
     const std::string cache = ".Ltail_memo_cache_0";
     const std::string miss = header + ".memo_miss";
     const std::string store = header + ".memo_store";
     const std::string noStore = header + ".memo_no_store";
 
     // Work backwards so the original indices remain valid.
-    std::vector<std::string> storeSequence{
-        store + ":",
-        "  cmp w6, #0",
-        "  b.le " + noStore,
-        "  movz w16, #" + cacheUpperWords + ", lsl #16",
-        "  cmp w6, w16",
-        "  b.hi " + noStore,
-        "  sub w17, w0, w7",
-        "  add w17, w17, #1"};
+    std::vector<std::string> storeSequence{store + ":"};
+    if (useUnsignedCacheDomainGuard) {
+      // The stored key domain is exactly 1..upper.  A 32-bit unsigned
+      // comparison rejects both negative (high-bit-set) and out-of-window
+      // states; zero is the reserved empty slot and is rejected separately.
+      if (!hoistCacheBound)
+        storeSequence.push_back("  movz w16, #" + cacheUpperWords +
+                               ", lsl #16");
+      storeSequence.insert(storeSequence.end(),
+                           {"  cmp w6, " + cacheBound,
+                            "  b.hi " + noStore,
+                            "  cbz w6, " + noStore});
+    } else {
+      storeSequence.insert(storeSequence.end(),
+                           {"  cmp w6, #0", "  b.le " + noStore});
+      if (!hoistCacheBound)
+        storeSequence.push_back("  movz w16, #" + cacheUpperWords +
+                               ", lsl #16");
+      storeSequence.push_back("  cmp w6, " + cacheBound);
+      storeSequence.push_back("  b.hi " + noStore);
+    }
+    storeSequence.insert(storeSequence.end(),
+                         {"  sub w17, w0, w7",
+                          "  add w17, w17, #1"});
     if (singleImmutableContext) {
       storeSequence.push_back("  str w17, [x5, w6, uxtw #2]");
     } else {
@@ -466,12 +514,26 @@ std::string memoizePureAdditiveTailLoop(
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
                  storeSequence.begin(), storeSequence.end());
     lines[headerIndex + 5] = "  b " + store;
-    std::vector<std::string> lookupSequence{
-        "  cmp " + state + ", #0",
-        "  b.le " + miss,
-        "  movz w16, #" + cacheUpperWords + ", lsl #16",
-        "  cmp " + state + ", w16",
-        "  b.hi " + miss};
+    std::vector<std::string> lookupSequence;
+    if (useUnsignedCacheDomainGuard) {
+      // The same unsigned upper-bound check rejects negative and
+      // out-of-window states.  Zero is allowed to probe the reserved empty
+      // slot and is handled by the existing post-load cbz.
+      if (!hoistCacheBound)
+        lookupSequence.push_back("  movz w16, #" + cacheUpperWords +
+                               ", lsl #16");
+      lookupSequence.push_back("  cmp " + state + ", " + cacheBound);
+      lookupSequence.push_back("  b.hi " + miss);
+    } else {
+      lookupSequence.insert(lookupSequence.end(),
+                            {"  cmp " + state + ", #0",
+                             "  b.le " + miss});
+      if (!hoistCacheBound)
+        lookupSequence.push_back("  movz w16, #" + cacheUpperWords +
+                                ", lsl #16");
+      lookupSequence.push_back("  cmp " + state + ", " + cacheBound);
+      lookupSequence.push_back("  b.hi " + miss);
+    }
     if (singleImmutableContext) {
       lookupSequence.push_back(
           "  ldr w17, [x5, " + state + ", uxtw #2]");
@@ -493,11 +555,16 @@ std::string memoizePureAdditiveTailLoop(
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
                  lookupSequence.begin(), lookupSequence.end());
     const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
+    std::vector<std::string> initSequence{
+        "  mov w6, " + state,
+        "  mov w7, " + depth,
+        "  adrp x5, " + cache,
+        "  add x5, x5, :lo12:" + cache};
+    if (hoistCacheBound)
+      initSequence.push_back("  movz " + cacheBound + ", #" + cacheUpperWords +
+                             ", lsl #16");
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
-                 {"  mov w6, " + state,
-                  "  mov w7, " + depth,
-                  "  adrp x5, " + cache,
-                  "  add x5, x5, :lo12:" + cache});
+                 initSequence.begin(), initSequence.end());
 
     const auto note = std::find(lines.begin(), lines.end(),
                                 ".section .note.GNU-stack,\"\",%progbits");
