@@ -46,9 +46,13 @@ These rules are mandatory for every compiler optimization in this repository.
    meaningful target improvement; promptly revert and push an isolated target
    regression, statistically flat result, or wrong result before developing
    the next candidate.
-7. The current owner-designated delivery branch is `zct-arm-no-magic`. Never
-   push optimization work to another branch unless the repository owner
-   explicitly requests it.
+7. The current owner-designated AArch64 delivery branch is
+   `zct-arm-no-magic` on the GitLab `eduxiji` remote:
+   `https://gitlab.eduxiji.net/T2026100552010554/compiler2026-aaabianyiqipifa.git`.
+   Publish with `git push eduxiji zct-arm-no-magic`. The GitHub `origin` remote is
+   not an ARM delivery target; never push optimization work there. Never push
+   optimization work to another branch unless the repository owner explicitly
+   requests it.
 8. Document AI-assisted implementation scope and any external technical references.
 
 If a proposed optimization cannot satisfy these rules, do not implement or restore it.
