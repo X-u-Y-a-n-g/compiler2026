@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "IRPassUtils.h"
+#include "../../../include/compiler/midend/analysis/FunctionEffectAnalysis.h"
 
 namespace compiler::midend::pass {
 namespace {
@@ -104,6 +105,7 @@ struct CollapsePlan {
   std::vector<CallSite> calls;
   std::unordered_map<std::string, ArrayType> matrices;
   std::unordered_map<std::string, ReductionPattern> reductions;
+  bool precomputeCoefficients = false;
 };
 
 bool isGep(const std::string &opcode) {
@@ -712,19 +714,27 @@ std::optional<TransformPattern> analyzeTransform(const Module &module,
       }
     }
   }
-  if (skipComparisons != 1) {
+  if (skipComparisons > 1) {
     return std::nullopt;
   }
-  result->skipsUnitFactor = true;
+  result->skipsUnitFactor = skipComparisons == 1;
   for (const auto blockIndex : stageLoop->blocks) {
     const auto *terminator = function.blocks()[blockIndex].terminator();
     if (terminator == nullptr || terminator->opcode() != "br" ||
         terminator->operands().size() != 3) {
+      if (!result->skipsUnitFactor && terminator != nullptr &&
+          terminator->opcode() == "br" &&
+          terminator->operands().size() == 1) {
+        continue;
+      }
       continue;
     }
     if (blockIndex != stageLoop->headerIndex &&
         blockIndex != rowLoop->headerIndex &&
         blockIndex != columnLoop->headerIndex) {
+      if (!result->skipsUnitFactor) {
+        return std::nullopt;
+      }
       const auto condition = definitions.find(terminator->operands()[0]);
       if (condition == definitions.end() ||
           condition->second.instruction->opcode() != "icmp.eq") {
@@ -862,9 +872,91 @@ bool isDirectGlobal(const std::string &value,
   return arrays.find(value) != arrays.end();
 }
 
+bool factorWriteIsOutsideCallLoop(const CFG &cfg,
+                                  const CanonicalLoop &callLoop,
+                                  std::size_t block) {
+  if (callLoop.blocks.find(block) != callLoop.blocks.end()) {
+    return false;
+  }
+  // A store that is not reachable from the call-loop header is before the
+  // first call.  A store reachable from the header is safe only after the
+  // unique loop exit; otherwise it can change the factor between calls.
+  if (!reachable(cfg, callLoop.headerIndex, block)) {
+    return true;
+  }
+  return dominates(cfg, callLoop.exitIndex, block);
+}
+
+bool factorIsStableDuringCallLoop(const Module &module, std::size_t callerIndex,
+                                  const CanonicalLoop &callLoop,
+                                  const std::string &factor,
+                                  const std::string &transformName,
+                                  const analysis::FunctionEffectAnalysis &effects) {
+  for (std::size_t functionIndex = 0; functionIndex < module.functions().size();
+       ++functionIndex) {
+    const auto &function = module.functions()[functionIndex];
+    const auto definitions = buildDefinitions(function);
+    const auto &cfg = functionIndex == callerIndex
+                          ? buildCFG(function)
+                          : CFG{};
+    for (std::size_t block = 0; block < function.blocks().size(); ++block) {
+      const auto &instructions = function.blocks()[block].instructions();
+      for (const auto &instruction : instructions) {
+        if (functionIndex == callerIndex &&
+            callLoop.blocks.find(block) != callLoop.blocks.end() &&
+            instruction.opcode() == "call" &&
+            (instruction.operands().empty() ||
+             instruction.operands()[0] != "@" + transformName)) {
+          if (instruction.operands().empty() ||
+              instruction.operands()[0].size() < 2 ||
+              instruction.operands()[0].front() != '@' ||
+              !effects.isReadNone(instruction.operands()[0].substr(1))) {
+            return false;
+          }
+        }
+        for (std::size_t operand = 0; operand < instruction.operands().size();
+             ++operand) {
+          const auto path = pointerPath(instruction.operands()[operand],
+                                        definitions);
+          if (!path.has_value() || path->base != factor) {
+            continue;
+          }
+          if ((isGep(instruction.opcode()) && operand == 0) ||
+              (instruction.opcode() == "load" && operand == 1)) {
+            continue;
+          }
+          if (instruction.opcode() == "call" && operand > 0 &&
+              !instruction.operands().empty() &&
+              instruction.operands()[0] == "@" + transformName) {
+            continue;
+          }
+          if (instruction.opcode() == "call" &&
+              !instruction.operands().empty() &&
+              instruction.operands()[0] != "@" + transformName &&
+              instruction.operands()[0].size() >= 2 &&
+              instruction.operands()[0].front() == '@' &&
+              effects.isReadNone(instruction.operands()[0].substr(1))) {
+            continue;
+          }
+          if (instruction.opcode() == "store" && operand == 2 &&
+              functionIndex == callerIndex &&
+              factorWriteIsOutsideCallLoop(cfg, callLoop, block)) {
+            continue;
+          }
+          // Any pointer escape, call, return, or store in the repeated region
+          // would invalidate a coefficient table built before the loop.
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 std::optional<CollapsePlan> buildPlan(Module &module,
                                       const TransformPattern &transform) {
   const auto arrays = collectGlobalArrays(module);
+  const analysis::FunctionEffectAnalysis effects(module);
   std::optional<CollapsePlan> plan;
   const auto &callee = module.functions()[transform.functionIndex];
   for (std::size_t callerIndex = 0; callerIndex < module.functions().size();
@@ -876,7 +968,6 @@ std::optional<CollapsePlan> buildPlan(Module &module,
     const auto definitions = buildDefinitions(caller);
     const auto cfg = buildCFG(caller);
     std::vector<CallSite> calls;
-    std::optional<std::size_t> callBlock;
     for (std::size_t block = 0; block < caller.blocks().size(); ++block) {
       const auto &instructions = caller.blocks()[block].instructions();
       for (std::size_t index = 0; index < instructions.size(); ++index) {
@@ -908,11 +999,6 @@ std::optional<CollapsePlan> buildPlan(Module &module,
             source->second == destination->second) {
           return std::nullopt;
         }
-        if (!callBlock.has_value()) {
-          callBlock = block;
-        } else if (*callBlock != block) {
-          return std::nullopt;
-        }
         calls.push_back({{block, index},
                          count->second,
                          factor->second,
@@ -923,6 +1009,7 @@ std::optional<CollapsePlan> buildPlan(Module &module,
     if (calls.empty()) {
       continue;
     }
+    const auto callAnchor = calls.front().location.block;
     if (plan.has_value()) {
       return std::nullopt;
     }
@@ -953,7 +1040,7 @@ std::optional<CollapsePlan> buildPlan(Module &module,
           canonicalLoop(caller, cfg, definitions, name,
                         condition->second.instruction->operands()[1]);
       if (loop.has_value() &&
-          loop->blocks.find(*callBlock) != loop->blocks.end()) {
+          loop->blocks.find(callAnchor) != loop->blocks.end()) {
         if (callLoop.has_value()) {
           return std::nullopt;
         }
@@ -963,12 +1050,33 @@ std::optional<CollapsePlan> buildPlan(Module &module,
     if (!callLoop.has_value()) {
       return std::nullopt;
     }
+    for (const auto &call : calls) {
+      if (callLoop->blocks.find(call.location.block) == callLoop->blocks.end()) {
+        return std::nullopt;
+      }
+    }
+    for (std::size_t first = 0; first < calls.size(); ++first) {
+      for (std::size_t second = first + 1; second < calls.size(); ++second) {
+        if (calls[first].location.block == calls[second].location.block) {
+          continue;
+        }
+        if (!dominates(cfg, calls[first].location.block,
+                       calls[second].location.block)) {
+          return std::nullopt;
+        }
+      }
+    }
     for (const auto block : callLoop->blocks) {
       for (const auto &instruction : caller.blocks()[block].instructions()) {
         if (instruction.opcode() == "call" &&
             (instruction.operands().empty() ||
              instruction.operands()[0] != "@" + callee.name())) {
-          return std::nullopt;
+          if (instruction.operands().empty() ||
+              instruction.operands()[0].size() < 2 ||
+              instruction.operands()[0].front() != '@' ||
+              !effects.isReadNone(instruction.operands()[0].substr(1))) {
+            return std::nullopt;
+          }
         }
       }
     }
@@ -977,6 +1085,20 @@ std::optional<CollapsePlan> buildPlan(Module &module,
     candidate.transform = transform;
     candidate.callLoop = *callLoop;
     candidate.calls = calls;
+    long long staticTripCount = 0;
+    const bool repeatedCall =
+        calls.size() >= 2 ||
+        (detail::parseIntegerLiteral(callLoop->bound, staticTripCount) &&
+         staticTripCount > 1);
+    // The table is the suffix-product form of the affine recurrence.  It is
+    // legal only when the same factor object is stable for every transformed
+    // call; readnone calls in the loop are harmless, while unknown effects or
+    // an escaping factor force the ordinary row-summary path.
+    candidate.precomputeCoefficients =
+        repeatedCall &&
+        factorIsStableDuringCallLoop(module, callerIndex, *callLoop,
+                                     calls.front().factor, callee.name(),
+                                     effects);
     for (const auto &call : calls) {
       candidate.matrices.emplace(call.source, arrays.at(call.source));
       candidate.matrices.emplace(call.destination, arrays.at(call.destination));
@@ -1155,6 +1277,251 @@ Function buildSummarizeFunction(const std::string &name, std::size_t columns) {
   return function;
 }
 
+Function buildCoefficientFunction(const std::string &name,
+                                  std::size_t columns,
+                                  bool skipsUnitFactor) {
+  Function function(name, "void",
+                    {{"%count", "int"},
+                     {"%factor", "int[][" + std::to_string(columns) + "]"},
+                     {"%coefficient",
+                      "int[][" + std::to_string(columns) + "]"}});
+  BasicBlock entry("coefficient.init.entry");
+  entry.addInstruction(Instruction{
+      "icmp.sgt", {"%count", "0"}, "%coefficient.init.positive"});
+  entry.addInstruction(Instruction{
+      "br", {"%coefficient.init.positive", "coefficient.init.row.cond",
+             "coefficient.init.exit"}});
+  function.addBlock(std::move(entry));
+
+  BasicBlock rowCond("coefficient.init.row.cond");
+  rowCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "coefficient.init.entry",
+                   "%coefficient.init.row.next", "coefficient.init.row.latch"},
+                  "%coefficient.init.row"});
+  rowCond.addInstruction(Instruction{
+      "icmp.slt", {"%coefficient.init.row", "%count"},
+      "%coefficient.init.row.more"});
+  rowCond.addInstruction(Instruction{
+      "br", {"%coefficient.init.row.more", "coefficient.init.row.body",
+             "coefficient.init.exit"}});
+  function.addBlock(std::move(rowCond));
+
+  BasicBlock rowBody("coefficient.init.row.body");
+  rowBody.addInstruction(Instruction{
+      "getelementptr", {"%factor", "%coefficient.init.row"},
+      "%coefficient.init.factor.row"});
+  rowBody.addInstruction(Instruction{
+      "getelementptr", {"%coefficient", "%coefficient.init.row"},
+      "%coefficient.init.output.row"});
+  rowBody.addInstruction(Instruction{
+      "sub", {"%count", "1"}, "%coefficient.init.stage.initial"});
+  rowBody.addInstruction(Instruction{"br", {"coefficient.init.stage.cond"}});
+  function.addBlock(std::move(rowBody));
+
+  BasicBlock stageCond("coefficient.init.stage.cond");
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "%coefficient.init.stage.initial",
+                   "coefficient.init.row.body", "%coefficient.init.stage.next",
+                   "coefficient.init.stage.latch"},
+                  "%coefficient.init.stage"});
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "1", "coefficient.init.row.body",
+                   "%coefficient.init.suffix.next",
+                   "coefficient.init.stage.latch"},
+                  "%coefficient.init.suffix"});
+  stageCond.addInstruction(Instruction{
+      "icmp.sge", {"%coefficient.init.stage", "0"},
+      "%coefficient.init.stage.more"});
+  stageCond.addInstruction(Instruction{
+      "br", {"%coefficient.init.stage.more", "coefficient.init.stage.body",
+             "coefficient.init.row.latch"}});
+  function.addBlock(std::move(stageCond));
+
+  BasicBlock stageBody("coefficient.init.stage.body");
+  stageBody.addInstruction(Instruction{
+      "getelementptr", {"%coefficient.init.factor.row",
+                         "%coefficient.init.stage"},
+      "%coefficient.init.factor.pointer"});
+  stageBody.addInstruction(Instruction{
+      "load", {"int", "%coefficient.init.factor.pointer"},
+      "%coefficient.init.factor.value"});
+  if (skipsUnitFactor) {
+    stageBody.addInstruction(Instruction{
+        "icmp.eq", {"%coefficient.init.factor.value", "1"},
+        "%coefficient.init.factor.is.unit"});
+    stageBody.addInstruction(Instruction{
+        "br", {"%coefficient.init.factor.is.unit", "coefficient.init.skip",
+               "coefficient.init.apply"}});
+  } else {
+    stageBody.addInstruction(Instruction{"br", {"coefficient.init.apply"}});
+  }
+  function.addBlock(std::move(stageBody));
+
+  if (skipsUnitFactor) {
+    BasicBlock skip("coefficient.init.skip");
+    skip.addInstruction(Instruction{
+        "getelementptr", {"%coefficient.init.output.row",
+                           "%coefficient.init.stage"},
+        "%coefficient.init.skip.pointer"});
+    skip.addInstruction(Instruction{
+        "store", {"int", "0", "%coefficient.init.skip.pointer"}});
+    skip.addInstruction(Instruction{"br", {"coefficient.init.stage.latch"}});
+    function.addBlock(std::move(skip));
+  }
+
+  BasicBlock apply("coefficient.init.apply");
+  apply.addInstruction(Instruction{
+      "getelementptr", {"%coefficient.init.output.row",
+                         "%coefficient.init.stage"},
+      "%coefficient.init.apply.pointer"});
+  apply.addInstruction(Instruction{
+      "store", {"int", "%coefficient.init.suffix",
+                 "%coefficient.init.apply.pointer"}});
+  apply.addInstruction(Instruction{
+      "mul", {"%coefficient.init.suffix", "%coefficient.init.factor.value"},
+      "%coefficient.init.suffix.updated"});
+  apply.addInstruction(Instruction{"br", {"coefficient.init.stage.latch"}});
+  function.addBlock(std::move(apply));
+
+  BasicBlock stageLatch("coefficient.init.stage.latch");
+  if (skipsUnitFactor) {
+    stageLatch.addInstruction(
+        Instruction{"phi",
+                    {"int", "%coefficient.init.suffix.updated",
+                     "coefficient.init.apply", "%coefficient.init.suffix",
+                     "coefficient.init.skip"},
+                    "%coefficient.init.suffix.next"});
+  } else {
+    stageLatch.addInstruction(Instruction{
+        "add", {"%coefficient.init.suffix.updated", "0"},
+        "%coefficient.init.suffix.next"});
+  }
+  stageLatch.addInstruction(Instruction{
+      "sub", {"%coefficient.init.stage", "1"},
+      "%coefficient.init.stage.next"});
+  stageLatch.addInstruction(Instruction{"br", {"coefficient.init.stage.cond"}});
+  function.addBlock(std::move(stageLatch));
+
+  BasicBlock rowLatch("coefficient.init.row.latch");
+  rowLatch.addInstruction(Instruction{
+      "add", {"%coefficient.init.row", "1"}, "%coefficient.init.row.next"});
+  rowLatch.addInstruction(Instruction{"br", {"coefficient.init.row.cond"}});
+  function.addBlock(std::move(rowLatch));
+
+  BasicBlock exit("coefficient.init.exit");
+  exit.addInstruction(Instruction{"ret", {}});
+  function.addBlock(std::move(exit));
+  return function;
+}
+
+Function buildCoefficientTransformFunction(const std::string &name,
+                                            std::size_t columns) {
+  Function function(name, "void",
+                    {{"%count", "int"},
+                     {"%coefficient",
+                      "int[][" + std::to_string(columns) + "]"},
+                     {"%source", "int[]"},
+                     {"%destination", "int[]"}});
+  BasicBlock entry("coefficient.update.entry");
+  entry.addInstruction(Instruction{"br", {"coefficient.update.row.cond"}});
+  function.addBlock(std::move(entry));
+
+  BasicBlock rowCond("coefficient.update.row.cond");
+  rowCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "coefficient.update.entry",
+                   "%coefficient.update.row.next", "coefficient.update.row.latch"},
+                  "%coefficient.update.row"});
+  rowCond.addInstruction(Instruction{
+      "icmp.slt", {"%coefficient.update.row", "%count"},
+      "%coefficient.update.row.more"});
+  rowCond.addInstruction(Instruction{
+      "br", {"%coefficient.update.row.more", "coefficient.update.row.body",
+             "coefficient.update.exit"}});
+  function.addBlock(std::move(rowCond));
+
+  BasicBlock rowBody("coefficient.update.row.body");
+  rowBody.addInstruction(Instruction{
+      "getelementptr", {"%coefficient", "%coefficient.update.row"},
+      "%coefficient.update.coefficient.row"});
+  rowBody.addInstruction(Instruction{"br", {"coefficient.update.stage.cond"}});
+  function.addBlock(std::move(rowBody));
+
+  BasicBlock stageCond("coefficient.update.stage.cond");
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "coefficient.update.row.body",
+                   "%coefficient.update.stage.next",
+                   "coefficient.update.stage.latch"},
+                  "%coefficient.update.stage"});
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "coefficient.update.row.body",
+                   "%coefficient.update.accum.next",
+                   "coefficient.update.stage.latch"},
+                  "%coefficient.update.accum"});
+  stageCond.addInstruction(Instruction{
+      "icmp.slt", {"%coefficient.update.stage", "%count"},
+      "%coefficient.update.stage.more"});
+  stageCond.addInstruction(Instruction{
+      "br", {"%coefficient.update.stage.more", "coefficient.update.stage.body",
+             "coefficient.update.row.latch"}});
+  function.addBlock(std::move(stageCond));
+
+  BasicBlock stageBody("coefficient.update.stage.body");
+  stageBody.addInstruction(Instruction{
+      "getelementptr", {"%coefficient.update.coefficient.row",
+                         "%coefficient.update.stage"},
+      "%coefficient.update.coefficient.pointer"});
+  stageBody.addInstruction(Instruction{
+      "load", {"int", "%coefficient.update.coefficient.pointer"},
+      "%coefficient.update.coefficient.value"});
+  stageBody.addInstruction(Instruction{
+      "getelementptr", {"%source", "%coefficient.update.stage"},
+      "%coefficient.update.source.pointer"});
+  stageBody.addInstruction(Instruction{
+      "load", {"int", "%coefficient.update.source.pointer"},
+      "%coefficient.update.source.value"});
+  stageBody.addInstruction(Instruction{
+      "mul", {"%coefficient.update.coefficient.value",
+               "%coefficient.update.source.value"},
+      "%coefficient.update.product"});
+  stageBody.addInstruction(Instruction{
+      "add", {"%coefficient.update.accum", "%coefficient.update.product"},
+      "%coefficient.update.accum.next"});
+  stageBody.addInstruction(Instruction{"br", {"coefficient.update.stage.latch"}});
+  function.addBlock(std::move(stageBody));
+
+  BasicBlock stageLatch("coefficient.update.stage.latch");
+  stageLatch.addInstruction(Instruction{
+      "add", {"%coefficient.update.stage", "1"},
+      "%coefficient.update.stage.next"});
+  stageLatch.addInstruction(Instruction{
+      "br", {"coefficient.update.stage.cond"}});
+  function.addBlock(std::move(stageLatch));
+
+  BasicBlock rowLatch("coefficient.update.row.latch");
+  rowLatch.addInstruction(Instruction{
+      "getelementptr", {"%destination", "%coefficient.update.row"},
+      "%coefficient.update.destination.pointer"});
+  rowLatch.addInstruction(Instruction{
+      "store", {"int", "%coefficient.update.accum",
+                 "%coefficient.update.destination.pointer"}});
+  rowLatch.addInstruction(Instruction{
+      "add", {"%coefficient.update.row", "1"},
+      "%coefficient.update.row.next"});
+  rowLatch.addInstruction(Instruction{"br", {"coefficient.update.row.cond"}});
+  function.addBlock(std::move(rowLatch));
+
+  BasicBlock exit("coefficient.update.exit");
+  exit.addInstruction(Instruction{"ret", {}});
+  function.addBlock(std::move(exit));
+  return function;
+}
+
 Function buildTransformFunction(const std::string &name, std::size_t columns,
                                 bool skipsUnitFactor) {
   Function function(name, "void",
@@ -1163,53 +1530,12 @@ Function buildTransformFunction(const std::string &name, std::size_t columns,
                      {"%source", "int[]"},
                      {"%destination", "int[]"}});
   BasicBlock entry("summary.update.entry");
-  entry.addInstruction(Instruction{"br", {"summary.update.clear.cond"}});
+  entry.addInstruction(Instruction{"br", {"summary.update.row.cond"}});
   function.addBlock(std::move(entry));
-  BasicBlock clearCond("summary.update.clear.cond");
-  clearCond.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", "summary.update.entry",
-                   "%summary.update.clear.next", "summary.update.clear.body"},
-                  "%summary.update.clear.index"});
-  clearCond.addInstruction(
-      Instruction{"icmp.slt",
-                  {"%summary.update.clear.index", "%count"},
-                  "%summary.update.clear.more"});
-  clearCond.addInstruction(
-      Instruction{"br",
-                  {"%summary.update.clear.more", "summary.update.clear.body",
-                   "summary.update.stage.cond"}});
-  function.addBlock(std::move(clearCond));
-  BasicBlock clearBody("summary.update.clear.body");
-  clearBody.addInstruction(
-      Instruction{"getelementptr",
-                  {"%destination", "%summary.update.clear.index"},
-                  "%summary.update.clear.pointer"});
-  clearBody.addInstruction(
-      Instruction{"store", {"int", "0", "%summary.update.clear.pointer"}});
-  clearBody.addInstruction(Instruction{"add",
-                                       {"%summary.update.clear.index", "1"},
-                                       "%summary.update.clear.next"});
-  clearBody.addInstruction(Instruction{"br", {"summary.update.clear.cond"}});
-  function.addBlock(std::move(clearBody));
-  BasicBlock stageCond("summary.update.stage.cond");
-  stageCond.addInstruction(
-      Instruction{"phi",
-                  {"int", "0", "summary.update.clear.cond",
-                   "%summary.update.stage.next", "summary.update.stage.latch"},
-                  "%summary.update.stage"});
-  stageCond.addInstruction(Instruction{"icmp.slt",
-                                       {"%summary.update.stage", "%count"},
-                                       "%summary.update.stage.more"});
-  stageCond.addInstruction(
-      Instruction{"br",
-                  {"%summary.update.stage.more", "summary.update.row.cond",
-                   "summary.update.exit"}});
-  function.addBlock(std::move(stageCond));
   BasicBlock rowCond("summary.update.row.cond");
   rowCond.addInstruction(
       Instruction{"phi",
-                  {"int", "0", "summary.update.stage.cond",
+                  {"int", "0", "summary.update.entry",
                    "%summary.update.row.next", "summary.update.row.latch"},
                   "%summary.update.row"});
   rowCond.addInstruction(Instruction{"icmp.slt",
@@ -1218,39 +1544,54 @@ Function buildTransformFunction(const std::string &name, std::size_t columns,
   rowCond.addInstruction(
       Instruction{"br",
                   {"%summary.update.row.more", "summary.update.row.body",
-                   "summary.update.stage.latch"}});
+                   "summary.update.exit"}});
   function.addBlock(std::move(rowCond));
   BasicBlock rowBody("summary.update.row.body");
   rowBody.addInstruction(Instruction{"getelementptr",
                                      {"%factor", "%summary.update.row"},
                                      "%summary.update.factor.row"});
-  rowBody.addInstruction(
-      Instruction{"getelementptr",
-                  {"%summary.update.factor.row", "%summary.update.stage"},
-                  "%summary.update.factor.pointer"});
-  rowBody.addInstruction(Instruction{"load",
-                                     {"int", "%summary.update.factor.pointer"},
-                                     "%summary.update.factor.value"});
+  rowBody.addInstruction(Instruction{"br", {"summary.update.stage.cond"}});
+  function.addBlock(std::move(rowBody));
+  BasicBlock stageCond("summary.update.stage.cond");
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "summary.update.row.body",
+                   "%summary.update.stage.next", "summary.update.stage.latch"},
+                  "%summary.update.stage"});
+  stageCond.addInstruction(
+      Instruction{"phi",
+                  {"int", "0", "summary.update.row.body",
+                   "%summary.update.accum.next", "summary.update.stage.latch"},
+                  "%summary.update.accum"});
+  stageCond.addInstruction(Instruction{"icmp.slt",
+                                       {"%summary.update.stage", "%count"},
+                                       "%summary.update.stage.more"});
+  stageCond.addInstruction(
+      Instruction{"br",
+                  {"%summary.update.stage.more", "summary.update.stage.body",
+                   "summary.update.row.latch"}});
+  function.addBlock(std::move(stageCond));
+  BasicBlock stageBody("summary.update.stage.body");
+  stageBody.addInstruction(Instruction{"getelementptr",
+                                       {"%summary.update.factor.row",
+                                        "%summary.update.stage"},
+                                       "%summary.update.factor.pointer"});
+  stageBody.addInstruction(Instruction{
+      "load", {"int", "%summary.update.factor.pointer"},
+      "%summary.update.factor.value"});
   if (skipsUnitFactor) {
-    rowBody.addInstruction(Instruction{"icmp.eq",
-                                       {"%summary.update.factor.value", "1"},
-                                       "%summary.update.skip"});
-    rowBody.addInstruction(
+    stageBody.addInstruction(Instruction{
+        "icmp.eq", {"%summary.update.factor.value", "1"},
+        "%summary.update.skip"});
+    stageBody.addInstruction(
         Instruction{"br",
-                    {"%summary.update.skip", "summary.update.row.latch",
+                    {"%summary.update.skip", "summary.update.stage.latch",
                      "summary.update.apply"}});
   } else {
-    rowBody.addInstruction(Instruction{"br", {"summary.update.apply"}});
+    stageBody.addInstruction(Instruction{"br", {"summary.update.apply"}});
   }
-  function.addBlock(std::move(rowBody));
+  function.addBlock(std::move(stageBody));
   BasicBlock apply("summary.update.apply");
-  apply.addInstruction(Instruction{"getelementptr",
-                                   {"%destination", "%summary.update.row"},
-                                   "%summary.update.destination.pointer"});
-  apply.addInstruction(
-      Instruction{"load",
-                  {"int", "%summary.update.destination.pointer"},
-                  "%summary.update.destination.value"});
   apply.addInstruction(Instruction{"getelementptr",
                                    {"%source", "%summary.update.stage"},
                                    "%summary.update.source.pointer"});
@@ -1259,27 +1600,44 @@ Function buildTransformFunction(const std::string &name, std::size_t columns,
                                    "%summary.update.source.value"});
   apply.addInstruction(Instruction{
       "mul",
-      {"%summary.update.destination.value", "%summary.update.factor.value"},
+      {"%summary.update.accum", "%summary.update.factor.value"},
       "%summary.update.scaled"});
   apply.addInstruction(
       Instruction{"add",
                   {"%summary.update.scaled", "%summary.update.source.value"},
                   "%summary.update.next.value"});
-  apply.addInstruction(Instruction{"store",
-                                   {"int", "%summary.update.next.value",
-                                    "%summary.update.destination.pointer"}});
-  apply.addInstruction(Instruction{"br", {"summary.update.row.latch"}});
+  apply.addInstruction(Instruction{"br", {"summary.update.stage.latch"}});
   function.addBlock(std::move(apply));
-  BasicBlock rowLatch("summary.update.row.latch");
-  rowLatch.addInstruction(Instruction{
-      "add", {"%summary.update.row", "1"}, "%summary.update.row.next"});
-  rowLatch.addInstruction(Instruction{"br", {"summary.update.row.cond"}});
-  function.addBlock(std::move(rowLatch));
   BasicBlock stageLatch("summary.update.stage.latch");
+  if (skipsUnitFactor) {
+    stageLatch.addInstruction(
+        Instruction{"phi",
+                    {"int", "%summary.update.accum",
+                     "summary.update.stage.body",
+                     "%summary.update.next.value", "summary.update.apply"},
+                    "%summary.update.accum.next"});
+  } else {
+    stageLatch.addInstruction(
+        Instruction{"phi",
+                    {"int", "%summary.update.next.value",
+                     "summary.update.apply"},
+                    "%summary.update.accum.next"});
+  }
   stageLatch.addInstruction(Instruction{
       "add", {"%summary.update.stage", "1"}, "%summary.update.stage.next"});
   stageLatch.addInstruction(Instruction{"br", {"summary.update.stage.cond"}});
   function.addBlock(std::move(stageLatch));
+  BasicBlock rowLatch("summary.update.row.latch");
+  rowLatch.addInstruction(Instruction{"getelementptr",
+                                      {"%destination", "%summary.update.row"},
+                                      "%summary.update.destination.pointer"});
+  rowLatch.addInstruction(Instruction{
+      "store", {"int", "%summary.update.accum",
+                 "%summary.update.destination.pointer"}});
+  rowLatch.addInstruction(Instruction{
+      "add", {"%summary.update.row", "1"}, "%summary.update.row.next"});
+  rowLatch.addInstruction(Instruction{"br", {"summary.update.row.cond"}});
+  function.addBlock(std::move(rowLatch));
   BasicBlock exit("summary.update.exit");
   exit.addInstruction(Instruction{"ret", {}});
   function.addBlock(std::move(exit));
@@ -1289,11 +1647,29 @@ Function buildTransformFunction(const std::string &name, std::size_t columns,
 void applyPlan(Module &module, const CollapsePlan &plan) {
   const auto originalTransformName =
       module.functions()[plan.transform.functionIndex].name();
+  const auto arrays = collectGlobalArrays(module);
+  const bool useCoefficients =
+      plan.precomputeCoefficients &&
+      std::getenv("COMPILER_DISABLE_ARRAY_SUMMARY_COEFFICIENT_PRECOMPUTE") ==
+          nullptr;
   const auto initName = freshSymbol(module, "__array_summary_init_");
   module.addFunction(buildSummarizeFunction(initName, plan.transform.columns));
+  std::string coefficientInitName;
+  std::string coefficientGlobal;
+  if (useCoefficients) {
+    coefficientInitName = freshSymbol(module, "__array_summary_coeff_init_");
+    module.addFunction(buildCoefficientFunction(coefficientInitName,
+                                                plan.transform.columns,
+                                                plan.transform.skipsUnitFactor));
+  }
   const auto updateName = freshSymbol(module, "__array_summary_update_");
-  module.addFunction(buildTransformFunction(updateName, plan.transform.columns,
-                                            plan.transform.skipsUnitFactor));
+  if (useCoefficients) {
+    module.addFunction(buildCoefficientTransformFunction(
+        updateName, plan.transform.columns));
+  } else {
+    module.addFunction(buildTransformFunction(updateName, plan.transform.columns,
+                                              plan.transform.skipsUnitFactor));
+  }
   std::unordered_map<std::string, std::string> summaries;
   for (const auto &[matrix, type] : plan.matrices) {
     const auto globalName = freshSymbol(module, "__array_summary_rows_");
@@ -1301,6 +1677,19 @@ void applyPlan(Module &module, const CollapsePlan &plan) {
         globalName, "int[" + std::to_string(type.rows) + "]",
         Constant::aggregate("int[" + std::to_string(type.rows) + "]", {})));
     summaries.emplace(matrix, "@" + globalName);
+  }
+  if (useCoefficients) {
+    const auto &factorType = arrays.at(plan.calls.front().factor);
+    const auto globalName = freshSymbol(module, "__array_summary_coeff_");
+    module.addGlobal(GlobalVariable(
+        globalName,
+        "int[" + std::to_string(factorType.rows) + "][" +
+            std::to_string(plan.transform.columns) + "]",
+        Constant::aggregate(
+            "int[" + std::to_string(factorType.rows) + "][" +
+                std::to_string(plan.transform.columns) + "]",
+            {})));
+    coefficientGlobal = "@" + globalName;
   }
   auto &caller = module.functions()[plan.callerIndex];
   auto &preheader =
@@ -1319,6 +1708,12 @@ void applyPlan(Module &module, const CollapsePlan &plan) {
     (void)reduction;
     initialized.insert(matrix);
   }
+  if (useCoefficients) {
+    preheader.emplace_back(
+        "call", std::vector<std::string>{
+                    "@" + coefficientInitName, plan.calls.front().count,
+                    plan.calls.front().factor, coefficientGlobal});
+  }
   for (const auto &matrix : initialized) {
     const auto &summary = summaries.at(matrix);
     preheader.emplace_back(
@@ -1329,10 +1724,16 @@ void applyPlan(Module &module, const CollapsePlan &plan) {
   for (const auto &call : plan.calls) {
     auto &instruction = caller.blocks()[call.location.block]
                             .instructions()[call.location.instruction];
-    instruction = Instruction{"call",
-                              {"@" + updateName, call.count, call.factor,
-                               summaries.at(call.source),
-                               summaries.at(call.destination)}};
+    if (useCoefficients) {
+      instruction = Instruction{
+          "call", {"@" + updateName, call.count, coefficientGlobal,
+                   summaries.at(call.source), summaries.at(call.destination)}};
+    } else {
+      instruction = Instruction{"call",
+                                {"@" + updateName, call.count, call.factor,
+                                 summaries.at(call.source),
+                                 summaries.at(call.destination)}};
+    }
   }
   std::unordered_set<std::string> names;
   for (const auto &block : caller.blocks()) {

@@ -1830,5 +1830,32 @@ associative reduction、hash-chain scalar replacement、store-to-load forwarding
 
 本候选由 AI 辅助完成缓存键/冲突证明、私有分配游标 use-def 分析、CFG 改写、
 匿名边界/fallback、60 项 AArch64 门禁和汇编隔离。技术依据为经典 hash-table
- direct mapping、scalar replacement、store-to-load forwarding、dead state
- elimination 和 alias/effect analysis；未复制外部编译器实现。
+direct mapping、scalar replacement、store-to-load forwarding、dead state
+elimination 和 alias/effect analysis；未复制外部编译器实现。
+
+### 2026-08-01 `01_mm` 行摘要递推的结构化泛化与系数后缀变换（待平台判定）
+
+- 通用语义条件：沿用二维仿射更新的 CFG、SSA、别名、逃逸和效果证明，不读取
+  样例、路径、函数/变量/全局/块名字面量、固定维度、输入或输出。放宽后的匹配
+  允许同一规范调用循环中存在多个按支配关系串行分布的调用点，也允许没有
+  `factor == 1` 跳过分支的同构递推；其他调用仅在过程间效果分析证明为
+  `readnone` 时放行。
+- 变换：原有二维递推先折叠为一维行摘要。若调用重复或静态可证明循环行程大于
+  一，且因子对象在所有变换调用期间由指针路径、CFG 支配和效果分析证明稳定，
+  则预计算递推的后缀系数，把多次 `acc = acc * factor + source` 更新改写为一次
+  系数与源行的点积；稳定性证明失败时保留行摘要路径，未知写入、逃逸、别名或
+  顺序不确定时完整回退。
+- 正确性：匿名测试覆盖 `n=0/1/4`、负数、i32 回绕、有/无单位因子跳过、多个
+  调用点和 fallback；候选与 O0、关闭版本输出一致。AArch64 correctness 为
+  `140/140 AC`；performance 为 `57 AC + 3` 个既有 h-4 末尾输出格式例外。
+- 汇编隔离：与父路径逐项比较后，只有 `01_mm1/2/3` 的汇编指标变化；三项静态
+  指令均由 `133` 增至 `162`，分支由 `3` 增至 `4`，乘法由 `0` 增至 `1`。这
+  反映预计算入口和系数表的代码/初始化成本，不能仅凭静态指令减少或本地 QEMU
+  结果接受；官方 Cortex-A53 结果是最终判定依据。
+- 状态：D。候选已完成本地正确性、性能和合规门禁，推送供官方平台提测；若平台
+  对 `01_mm` 无稳定净收益或出现回归，只独立撤回本候选，不影响父路径。
+
+本候选由 AI 辅助完成结构化调用 CFG 扩展、因子稳定性效果证明、后缀系数生成、
+匿名边界/fallback、60 项汇编归因和 140 项 correctness 回归。技术依据为经典
+affine recurrence summarization、loop-invariant code motion、dependence/effect
+analysis 与 Horner-to-dot-product 变换；未复制外部编译器实现。
