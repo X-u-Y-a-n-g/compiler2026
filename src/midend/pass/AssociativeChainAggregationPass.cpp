@@ -11,13 +11,17 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/ir/core/Constant.h"
+#include "../../../include/compiler/ir/core/GlobalVariable.h"
 #include "IRPassUtils.h"
 
 namespace compiler::midend::pass {
 namespace {
 
 using compiler::ir::core::BasicBlock;
+using compiler::ir::core::Constant;
 using compiler::ir::core::Function;
+using compiler::ir::core::GlobalVariable;
 using compiler::ir::core::Instruction;
 using compiler::ir::core::Module;
 
@@ -62,6 +66,7 @@ struct ProducerCandidate {
   std::size_t nextValueNewStoreIndex = 0;
   std::size_t nextValueCurrentStoreIndex = 0;
   std::size_t valueStoreIndex = 0;
+  bool canFoldDuplicateCounter = false;
 };
 
 struct ConsumerCandidate {
@@ -82,6 +87,15 @@ struct PairCandidate {
   ProducerCandidate producer;
   ConsumerCandidate consumer;
   std::unordered_set<std::string> relevantRoots;
+};
+
+struct InsertCacheInfo {
+  std::string keyGlobal;
+  std::string nodeGlobal;
+  std::string modGlobal;
+  std::string hashGlobal;
+  std::string index;
+  std::string nodePointer;
 };
 
 bool isProjection(const std::string& opcode) {
@@ -336,6 +350,113 @@ std::optional<CounterUpdate> findCounterUpdate(
     result = CounterUpdate{address->root, instruction.operands()[1], index};
   }
   return result;
+}
+
+bool canFoldDuplicateCounter(const Module& module, const Function& function,
+                             const ProducerCandidate& candidate,
+                             const DefinitionMap& definitions) {
+  // The counter may be folded only when it is a private allocation cursor.
+  // Any use outside the producer, address escape, or non-canonical update
+  // keeps the original increment so externally visible state is preserved.
+  for (const auto& currentFunction : module.functions()) {
+    for (const auto& block : currentFunction.blocks()) {
+      for (const auto& instruction : block.instructions()) {
+        for (std::size_t operand = 0;
+             operand < instruction.operands().size(); ++operand) {
+          if (instruction.operands()[operand] != candidate.counterRoot) {
+            continue;
+          }
+          if (&currentFunction != &function) {
+            return false;
+          }
+          const bool directLoad =
+              instruction.opcode() == "load" &&
+              operand + 1 == instruction.operands().size() &&
+              instruction.operands().size() == 2;
+          const bool directStore =
+              instruction.opcode() == "store" &&
+              operand + 1 == instruction.operands().size() &&
+              instruction.operands().size() == 3;
+          if (!directLoad && !directStore) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+
+  const BasicBlock* duplicate = nullptr;
+  for (const auto& block : function.blocks()) {
+    if (block.name() == candidate.duplicateBlock) {
+      duplicate = &block;
+      break;
+    }
+  }
+  if (duplicate == nullptr ||
+      candidate.counterStoreIndex >= duplicate->instructions().size()) {
+    return false;
+  }
+  const auto& counterStore = duplicate->instructions()[candidate.counterStoreIndex];
+  if (!isI32Store(counterStore) ||
+      counterStore.operands().back() != candidate.counterRoot) {
+    return false;
+  }
+
+  const auto counterValue = counterStore.operands()[1];
+  const auto counterDefinition = definitions.find(counterValue);
+  if (counterDefinition == definitions.end() ||
+      counterDefinition->second.instruction == nullptr ||
+      counterDefinition->second.block != candidate.duplicateBlock ||
+      counterDefinition->second.instruction->opcode() != "add" ||
+      counterDefinition->second.instruction->operands().size() != 2) {
+    return false;
+  }
+  const auto& add = *counterDefinition->second.instruction;
+  std::string previous;
+  if (isIntegerLiteral(add.operands()[0], 1)) {
+    previous = add.operands()[1];
+  } else if (isIntegerLiteral(add.operands()[1], 1)) {
+    previous = add.operands()[0];
+  } else {
+    return false;
+  }
+
+  const auto previousDefinition = definitions.find(previous);
+  if (previousDefinition == definitions.end() ||
+      previousDefinition->second.instruction == nullptr ||
+      previousDefinition->second.block != candidate.duplicateBlock ||
+      !isI32Load(*previousDefinition->second.instruction) ||
+      previousDefinition->second.instruction->operands().back() !=
+          candidate.counterRoot) {
+    return false;
+  }
+
+  // The increment result and the old counter load must feed only this
+  // canonical counter update.  If either value is observed elsewhere, the
+  // increment may carry a semantic use that the aggregate rewrite cannot
+  // replace.
+  std::size_t valueUses = 0;
+  std::size_t previousUses = 0;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      for (std::size_t operand = 0;
+           operand < instruction.operands().size(); ++operand) {
+        if (instruction.operands()[operand] == counterValue) {
+          ++valueUses;
+          if (&instruction != &counterStore) {
+            return false;
+          }
+        }
+        if (instruction.operands()[operand] == previous) {
+          ++previousUses;
+          if (&instruction != &add) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return valueUses == 1 && previousUses == 1;
 }
 
 struct ValueEquivalenceContext {
@@ -996,7 +1117,12 @@ std::vector<ProducerCandidate> findProducerCandidates(
                                   counter->storeIndex,
                                   nextValueNewStoreIndex,
                                   nextValueCurrentStoreIndex,
-                                  valueStoreIndex};
+                                  valueStoreIndex,
+                                  false};
+      candidate.canFoldDuplicateCounter =
+          std::getenv("COMPILER_DISABLE_ASSOCIATIVE_CHAIN_DUPLICATE_COUNTER_FOLD") ==
+              nullptr &&
+          canFoldDuplicateCounter(module, function, candidate, definitions);
       if (!validNodeUses(function, candidate, definitions, allowedAddresses)) {
         if (debug) {
           std::cerr << "assoc-debug invalid node uses\n";
@@ -1592,6 +1718,129 @@ std::string freshValue(const Function& function, const std::string& stem,
   }
 }
 
+std::string freshBlock(const Function& function, const std::string& stem) {
+  std::unordered_set<std::string> names;
+  for (const auto& block : function.blocks()) {
+    names.insert(block.name());
+  }
+  for (std::size_t suffix = 0;; ++suffix) {
+    const auto name = stem + "." + std::to_string(suffix);
+    if (names.insert(name).second) {
+      return name;
+    }
+  }
+}
+
+std::string freshGlobal(Module& module, const std::string& stem) {
+  std::unordered_set<std::string> names;
+  for (const auto& global : module.globals()) {
+    names.insert(global.name());
+  }
+  for (std::size_t suffix = 0;; ++suffix) {
+    const auto name = stem + "." + std::to_string(suffix);
+    if (names.insert(name).second) {
+      return name;
+    }
+  }
+}
+
+void addInsertCacheGlobals(Module& module, InsertCacheInfo& cache) {
+  constexpr std::size_t kCapacity = 1U << 20U;
+  cache.keyGlobal = freshGlobal(module, "__assoc_chain_cache_key");
+  cache.nodeGlobal = freshGlobal(module, "__assoc_chain_cache_node");
+  cache.modGlobal = freshGlobal(module, "__assoc_chain_cache_mod");
+  const auto type = "int[" + std::to_string(kCapacity) + "]";
+  module.addGlobal(GlobalVariable{cache.keyGlobal, type,
+                                  Constant::aggregate(type, {})});
+  module.addGlobal(GlobalVariable{cache.nodeGlobal, type,
+                                  Constant::aggregate(type, {})});
+  module.addGlobal(GlobalVariable{cache.modGlobal, type,
+                                  Constant::aggregate(type, {})});
+}
+
+Instruction cacheAddress(const InsertCacheInfo& cache, const std::string& global,
+                         const std::string& index, const std::string& result) {
+  (void)cache;
+  return Instruction{"getelementptr", {"@" + global, index}, result};
+}
+
+void appendCacheUpdate(std::vector<Instruction>& instructions,
+                       const InsertCacheInfo& cache,
+                       const std::string& keyParameter,
+                       const std::string& node, std::size_t serial) {
+  const auto keyAddress = "%assoc.cache.key.ptr." + std::to_string(serial);
+  const auto nodeAddress = "%assoc.cache.node.ptr." + std::to_string(serial);
+  const auto modAddress = "%assoc.cache.mod.ptr." + std::to_string(serial);
+  const auto modValue = "%assoc.cache.mod.value." + std::to_string(serial);
+  instructions.emplace_back(cacheAddress(cache, cache.keyGlobal, cache.index,
+                                         keyAddress));
+  instructions.emplace_back("store",
+                            std::vector<std::string>{"int", keyParameter,
+                                                     keyAddress});
+  instructions.emplace_back(cacheAddress(cache, cache.nodeGlobal, cache.index,
+                                         nodeAddress));
+  instructions.emplace_back("store",
+                            std::vector<std::string>{"int", node,
+                                                     nodeAddress});
+  instructions.emplace_back("load", std::vector<std::string>{"int",
+                                                               "@" + cache.hashGlobal},
+                            modValue);
+  instructions.emplace_back(cacheAddress(cache, cache.modGlobal, cache.index,
+                                         modAddress));
+  instructions.emplace_back("store",
+                            std::vector<std::string>{"int", modValue,
+                                                     modAddress});
+}
+
+std::optional<std::string> findHashGlobal(const Module& module,
+                                          const Function& producer) {
+  std::string hashFunctionName;
+  for (const auto& block : producer.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "call" || instruction.operands().empty()) {
+        continue;
+      }
+      const auto& callee = instruction.operands().front();
+      if (!callee.empty() && callee.front() == '@') {
+        hashFunctionName = callee.substr(1);
+        break;
+      }
+    }
+    if (!hashFunctionName.empty()) {
+      break;
+    }
+  }
+  if (hashFunctionName.empty()) {
+    return std::nullopt;
+  }
+  const Function* hashFunction = nullptr;
+  for (const auto& function : module.functions()) {
+    if (function.name() == hashFunctionName) {
+      hashFunction = &function;
+      break;
+    }
+  }
+  if (hashFunction == nullptr) {
+    return std::nullopt;
+  }
+  std::string global;
+  for (const auto& block : hashFunction->blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "load" || instruction.operands().size() != 2 ||
+          instruction.operands()[1].empty() ||
+          instruction.operands()[1].front() != '@') {
+        continue;
+      }
+      const auto candidate = instruction.operands()[1].substr(1);
+      if (!global.empty() && global != candidate) {
+        return std::nullopt;
+      }
+      global = candidate;
+    }
+  }
+  return global.empty() ? std::nullopt : std::optional<std::string>{global};
+}
+
 bool applyProducer(Module& module, const ProducerCandidate& candidate) {
   auto& function = module.functions()[candidate.functionIndex];
   auto* block = findBlock(function, candidate.duplicateBlock);
@@ -1601,16 +1850,23 @@ bool applyProducer(Module& module, const ProducerCandidate& candidate) {
       candidate.valueStoreIndex >= block->instructions().size()) {
     return false;
   }
-  std::unordered_set<std::string> names;
-  const auto address = freshValue(function, "assoc.chain.aggregate.address", names);
-  const auto oldValue = freshValue(function, "assoc.chain.aggregate.old", names);
-  const auto sum = freshValue(function, "assoc.chain.aggregate.sum", names);
+  std::unordered_set<std::string> aggregateNames;
+  const auto address =
+      freshValue(function, "assoc.chain.aggregate.address", aggregateNames);
+  const auto aggregateOldValue =
+      freshValue(function, "assoc.chain.aggregate.old", aggregateNames);
+  const auto aggregateSum =
+      freshValue(function, "assoc.chain.aggregate.sum", aggregateNames);
   const std::unordered_set<std::size_t> removed{
       candidate.nextValueNewStoreIndex,
       candidate.nextValueCurrentStoreIndex,
       candidate.valueStoreIndex};
+  auto removedStores = removed;
+  if (candidate.canFoldDuplicateCounter) {
+    removedStores.insert(candidate.counterStoreIndex);
+  }
   const auto first =
-      *std::min_element(removed.begin(), removed.end());
+      *std::min_element(removedStores.begin(), removedStores.end());
   std::vector<Instruction> rewritten;
   rewritten.reserve(block->instructions().size() + 4);
   for (std::size_t index = 0; index < block->instructions().size(); ++index) {
@@ -1620,20 +1876,144 @@ bool applyProducer(Module& module, const ProducerCandidate& candidate) {
                                                        candidate.currentNode},
                               address);
       rewritten.emplace_back("load", std::vector<std::string>{"int", address},
-                             oldValue);
+                             aggregateOldValue);
       rewritten.emplace_back("add",
-                             std::vector<std::string>{oldValue,
+                             std::vector<std::string>{aggregateOldValue,
                                                       candidate.valueParameter},
-                             sum);
+                             aggregateSum);
       rewritten.emplace_back(
-          "store", std::vector<std::string>{"int", sum, address});
+          "store", std::vector<std::string>{"int", aggregateSum, address});
     }
-    if (removed.count(index) != 0) {
+    if (removedStores.count(index) != 0) {
       continue;
     }
     rewritten.push_back(block->instructions()[index]);
   }
   block->instructions() = std::move(rewritten);
+
+  // Cache stable key->node mappings for repeated insertions.  The cache is
+  // attached only after the associative rewrite has succeeded, so a hit is
+  // exactly the same value update as the proven duplicate branch.  The
+  // current hash-modulus value is stored with each entry; this keeps the
+  // fallback correct even when a legal program changes the modulus between
+  // batches.
+  if (std::getenv("COMPILER_DISABLE_ASSOCIATIVE_CHAIN_INSERT_CACHE") != nullptr) {
+    return true;
+  }
+  const auto hashGlobal = findHashGlobal(module, function);
+  if (!hashGlobal.has_value()) {
+    return true;
+  }
+
+  // Populate only after a proven duplicate.  This keeps singleton-key
+  // workloads on the original insertion stores while still making the
+  // frequent-repeat case bypass hash and chain traversal.  A cache miss still
+  // executes the complete original path, so eviction and collisions are safe.
+  const auto duplicateBlockName = candidate.duplicateBlock;
+
+  InsertCacheInfo cache;
+  cache.hashGlobal = *hashGlobal;
+  addInsertCacheGlobals(module, cache);
+
+  const auto& entryBlock = function.blocks().front();
+  const auto originalEntry = entryBlock.name();
+  const auto cacheEntryName = freshBlock(function, "assoc.chain.cache.entry");
+  const auto cacheCheckName = freshBlock(function, "assoc.chain.cache.check");
+  const auto cacheModName = freshBlock(function, "assoc.chain.cache.mod");
+  const auto cacheHitName = freshBlock(function, "assoc.chain.cache.hit");
+  std::unordered_set<std::string> names;
+  cache.index = freshValue(function, "assoc.chain.cache.index", names);
+  cache.nodePointer = freshValue(function, "assoc.chain.cache.node.pointer", names);
+  const auto cachedNode = freshValue(function, "assoc.chain.cache.node", names);
+  const auto hasNode = freshValue(function, "assoc.chain.cache.has.node", names);
+  const auto keyPointer = freshValue(function, "assoc.chain.cache.key.pointer", names);
+  const auto cachedKey = freshValue(function, "assoc.chain.cache.key", names);
+  const auto keyEqual = freshValue(function, "assoc.chain.cache.key.equal", names);
+  const auto currentMod = freshValue(function, "assoc.chain.cache.current.mod", names);
+  const auto modPointer = freshValue(function, "assoc.chain.cache.mod.pointer", names);
+  const auto cachedMod = freshValue(function, "assoc.chain.cache.mod", names);
+  const auto modEqual = freshValue(function, "assoc.chain.cache.mod.equal", names);
+
+  BasicBlock cacheEntry{cacheEntryName};
+  cacheEntry.addInstruction(
+      Instruction{"and", {candidate.keyParameter, "1048575"}, cache.index});
+  cacheEntry.addInstruction(
+      cacheAddress(cache, cache.nodeGlobal, cache.index, cache.nodePointer));
+  cacheEntry.addInstruction(
+      Instruction{"load", {"int", cache.nodePointer}, cachedNode});
+  cacheEntry.addInstruction(
+      Instruction{"icmp.ne", {cachedNode, "0"}, hasNode});
+  cacheEntry.addInstruction(
+      Instruction{"br", {hasNode, cacheCheckName, originalEntry}});
+
+  BasicBlock cacheCheck{cacheCheckName};
+  cacheCheck.addInstruction(
+      cacheAddress(cache, cache.keyGlobal, cache.index, keyPointer));
+  cacheCheck.addInstruction(
+      Instruction{"load", {"int", keyPointer}, cachedKey});
+  cacheCheck.addInstruction(
+      Instruction{"icmp.eq", {cachedKey, candidate.keyParameter}, keyEqual});
+  cacheCheck.addInstruction(
+      Instruction{"br", {keyEqual, cacheModName, originalEntry}});
+
+  BasicBlock cacheMod{cacheModName};
+  cacheMod.addInstruction(
+      Instruction{"load", {"int", "@" + cache.hashGlobal}, currentMod});
+  cacheMod.addInstruction(
+      cacheAddress(cache, cache.modGlobal, cache.index, modPointer));
+  cacheMod.addInstruction(
+      Instruction{"load", {"int", modPointer}, cachedMod});
+  cacheMod.addInstruction(
+      Instruction{"icmp.eq", {cachedMod, currentMod}, modEqual});
+  cacheMod.addInstruction(
+      Instruction{"br", {modEqual, cacheHitName, originalEntry}});
+
+  BasicBlock cacheHit{cacheHitName};
+  const auto countValue = freshValue(function, "assoc.chain.cache.count", names);
+  const auto nextCount = freshValue(function, "assoc.chain.cache.next.count", names);
+  const auto valueAddress = freshValue(function, "assoc.chain.cache.value.pointer", names);
+  const auto oldValue = freshValue(function, "assoc.chain.cache.old.value", names);
+  const auto newValue = freshValue(function, "assoc.chain.cache.new.value", names);
+  if (!candidate.canFoldDuplicateCounter) {
+    cacheHit.addInstruction(Instruction{"load", {"int", candidate.counterRoot},
+                                        countValue});
+    cacheHit.addInstruction(Instruction{"add", {countValue, "1"}, nextCount});
+    cacheHit.addInstruction(
+        Instruction{"store", {"int", nextCount, candidate.counterRoot}});
+  }
+  cacheHit.addInstruction(Instruction{candidate.valueGepOpcode,
+                                      {candidate.valueRoot, cachedNode},
+                                      valueAddress});
+  cacheHit.addInstruction(
+      Instruction{"load", {"int", valueAddress}, oldValue});
+  cacheHit.addInstruction(
+      Instruction{"add", {oldValue, candidate.valueParameter}, newValue});
+  cacheHit.addInstruction(
+      Instruction{"store", {"int", newValue, valueAddress}});
+  cacheHit.addInstruction(Instruction{"ret", {"1"}});
+
+  auto& blocks = function.blocks();
+  blocks.insert(blocks.begin(), std::move(cacheEntry));
+  function.addBlock(std::move(cacheCheck));
+  function.addBlock(std::move(cacheMod));
+  function.addBlock(std::move(cacheHit));
+
+  std::size_t serial = 0;
+  for (auto& candidateBlock : function.blocks()) {
+    if (candidateBlock.name() != duplicateBlockName) {
+      continue;
+    }
+    std::vector<Instruction> updated;
+    updated.reserve(candidateBlock.instructions().size() + 8);
+    for (const auto& instruction : candidateBlock.instructions()) {
+      if (instruction.opcode() == "ret") {
+        appendCacheUpdate(updated, cache, candidate.keyParameter,
+                          candidate.currentNode, serial++);
+      }
+      updated.push_back(instruction);
+    }
+    candidateBlock.instructions() = std::move(updated);
+  }
   return true;
 }
 

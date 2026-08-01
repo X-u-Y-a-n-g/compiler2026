@@ -1797,3 +1797,38 @@ versioning 与 recurrence summarization；未复制外部编译器源码。
 改写、匿名边界与 fallback 审查、60/140 门禁和汇编隔离。技术依据为经典
 associative reduction、hash-chain scalar replacement、store-to-load forwarding
 和 alias/effect analysis；未复制外部编译器实现。
+
+### 2026-08-01 关联哈希链的重复插入节点缓存与私有游标折叠（待平台判定）
+
+- 通用语义条件：建立在上一候选的完整关联链证明之上。对已证明的生产函数，
+  为整数键建立带完整键校验、节点号和当前 hash-modulus 校验的 direct-mapped
+  缓存；命中时直接更新聚合根值并保留原函数返回状态，键不匹配、模数变化、
+  冲突或未命中均回到完整哈希桶/链路径。缓存容量和索引只由变换的目标成本
+  参数决定，不读取样例、路径、函数/变量/全局/块名字面量、输入或输出。
+- 更激进的子变换：若 `cnt` 只在生产函数中作为节点分配游标使用，所有访问都
+  是规范 `load + 1 + store`，且重复分支的递增结果和旧值只用于该次计数更新，
+  则折叠重复插入时删除该分支的 `cnt` 递增。后续真正新增节点仍按同一游标
+  连续分配；若 `cnt` 被其他函数、调用、地址或返回值观察，或 use-def 证明
+  不完整，则保留原递增。消融开关为
+  `COMPILER_DISABLE_ASSOCIATIVE_CHAIN_DUPLICATE_COUNTER_FOLD=1`，缓存总开关为
+  `COMPILER_DISABLE_ASSOCIATIVE_CHAIN_INSERT_CACHE=1`。
+- 正确性与合规：换名关联链、bucket 碰撞、零键、负值和 i32 回绕的匿名 O0/O1
+  对拍通过；把 `cnt` 通过外部调用观察的结构保留原递增。缓存命中只改变已由
+  CFG/SSA、别名、逃逸和效果分析证明为等价的聚合路径，未使用生成标签文本或
+  汇编字符串作为输入。
+- 隔离与门禁：最终 AArch64 performance 为 `57 AC + 3` 个既有 h-4 末尾输出
+  格式例外；候选与父路径逐项汇编比较只有 `shuffle0/1/2` 变化，其余 57 项
+  逐字不变。最终候选三项静态汇编均为 263 条指令；父路径为 230 条，新增的
+  代码只出现在命中函数及其缓存全局中。候选与父路径在同一 Docker 的三项
+  单轮程序计时为 `1.450383s` 对 `1.877931s`，下降约 `22.8%`；该数据只作
+  QEMU 诊断，不能替代 Cortex-A53。
+- 共享回归：AArch64 correctness `140/140 AC`；该通道为 O0，未启用本候选，
+  用于确认缓存全局和新 IR 分析没有破坏公共 ABI/语义路径。
+- 状态：D。缓存和私有游标折叠均已完成本地门禁，但尚无官方 Cortex-A53
+  结果；提交前仍需由仓库所有者上板，若 shuffle 三项无稳定目标收益或出现
+  回归，只独立撤回本候选。
+
+本候选由 AI 辅助完成缓存键/冲突证明、私有分配游标 use-def 分析、CFG 改写、
+匿名边界/fallback、60 项 AArch64 门禁和汇编隔离。技术依据为经典 hash-table
+ direct mapping、scalar replacement、store-to-load forwarding、dead state
+ elimination 和 alias/effect analysis；未复制外部编译器实现。
