@@ -288,7 +288,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         isAArch64 ? 32 : 10, isAArch64));
     passManager.add(
         std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>(true));
     passManager.add(
         std::make_unique<compiler::midend::pass::DivRemPairStrengthReductionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::RemainderComparisonPass>());
