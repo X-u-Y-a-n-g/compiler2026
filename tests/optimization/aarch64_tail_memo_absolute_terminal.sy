@@ -1,0 +1,22 @@
+int ceiling;
+
+int walk(int value, int depth) {
+  if (value == 1) return depth;
+  if (value % 2 == 0) return walk(value / 2, depth + 1);
+  if (value * 3 + 1 <= ceiling) return walk(value * 3 + 1, depth + 1);
+  if (value * 4 + 1 <= ceiling) return walk(value * 4 + 1, depth + 1);
+  return 7;
+}
+
+int main() {
+  ceiling = 35;
+  int sum = 0;
+  int value = 1;
+  while (value <= ceiling) {
+    sum = sum + walk(value, 0);
+    value = value + 1;
+  }
+  putint(sum);
+  putch(10);
+  return 0;
+}

@@ -470,9 +470,33 @@ std::string memoizePureAdditiveTailLoop(
             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
 
     const std::string cache = ".Ltail_memo_cache_0";
+    const std::string absoluteCache = ".Ltail_memo_absolute_0";
     const std::string miss = header + ".memo_miss";
     const std::string store = header + ".memo_store";
     const std::string noStore = header + ".memo_no_store";
+    const bool absoluteRegistersFree =
+        cacheBound != "w9" && cacheBound != "w10" &&
+        std::none_of(lines.begin() + static_cast<std::ptrdiff_t>(functionBegin),
+                     lines.begin() + static_cast<std::ptrdiff_t>(functionEnd),
+                     [](const std::string& line) {
+                       return lineUsesRegister(line, "w9") ||
+                              lineUsesRegister(line, "x9") ||
+                              lineUsesRegister(line, "w10") ||
+                              lineUsesRegister(line, "x10");
+                     });
+    const bool cacheAbsoluteFallthrough =
+        singleImmutableContext && absoluteRegistersFree &&
+        std::getenv("COMPILER_DISABLE_TAIL_MEMO_FALLTHROUGH_STORE") == nullptr;
+
+    // Explicit base-case returns already branch through the memo store below.
+    // A terminal arm may instead fall through directly into the shared
+    // epilogue; route only that fallthrough edge through the same store while
+    // preserving every existing branch to the epilogue.
+    if (cacheAbsoluteFallthrough) {
+      lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionEnd),
+                   {"  movz w9, #1", "  b " + store});
+      functionSize += 2;
+    }
 
     // Work backwards so the original indices remain valid.
     std::vector<std::string> storeSequence{store + ":"};
@@ -496,18 +520,35 @@ std::string memoizePureAdditiveTailLoop(
       storeSequence.push_back("  cmp w6, " + cacheBound);
       storeSequence.push_back("  b.hi " + noStore);
     }
-    storeSequence.insert(storeSequence.end(),
-                         {"  sub w17, w0, w7",
-                          "  add w17, w17, #1"});
-    if (singleImmutableContext) {
-      storeSequence.push_back("  str w17, [x5, w6, uxtw #2]");
-    } else {
+    if (cacheAbsoluteFallthrough) {
+      const std::string summaryStore = store + ".summary";
       storeSequence.insert(
           storeSequence.end(),
-          {"  uxtw x17, w17",
-           "  uxtw x18, " + context,
-           "  orr x17, x17, x18, lsl #32",
-           "  str x17, [x5, w6, uxtw #3]"});
+          {"  cbz w9, " + summaryStore,
+           "  add w17, w0, #1",
+           "  str w17, [x5, w6, uxtw #2]",
+           "  movz w18, #1",
+           "  strb w18, [x10, w6, uxtw]",
+           "  b " + noStore,
+           summaryStore + ":",
+           "  sub w17, w0, w7",
+           "  add w17, w17, #1",
+           "  str w17, [x5, w6, uxtw #2]",
+           "  strb wzr, [x10, w6, uxtw]"});
+    } else {
+      storeSequence.insert(storeSequence.end(),
+                           {"  sub w17, w0, w7",
+                            "  add w17, w17, #1"});
+      if (singleImmutableContext) {
+        storeSequence.push_back("  str w17, [x5, w6, uxtw #2]");
+      } else {
+        storeSequence.insert(
+            storeSequence.end(),
+            {"  uxtw x17, w17",
+             "  uxtw x18, " + context,
+             "  orr x17, x17, x18, lsl #32",
+             "  str x17, [x5, w6, uxtw #3]"});
+      }
     }
     storeSequence.insert(storeSequence.end(),
                          {noStore + ":", "  b " + epilogue});
@@ -545,13 +586,30 @@ std::string memoizePureAdditiveTailLoop(
            "  cmp w18, " + context,
            "  b.ne " + miss});
     }
-    lookupSequence.insert(
-        lookupSequence.end(),
-        {"  cbz w17, " + miss,
-         "  sub w17, w17, #1",
-         "  add w0, " + depth + ", w17",
-         "  b " + store,
-         miss + ":"});
+    if (cacheAbsoluteFallthrough) {
+      const std::string additiveHit = header + ".memo_additive_hit";
+      lookupSequence.insert(
+          lookupSequence.end(),
+          {"  cbz w17, " + miss,
+           "  ldrb w18, [x10, " + state + ", uxtw]",
+           "  cbz w18, " + additiveHit,
+           "  sub w0, w17, #1",
+           "  movz w9, #1",
+           "  b " + store,
+           additiveHit + ":",
+           "  sub w17, w17, #1",
+           "  add w0, " + depth + ", w17",
+           "  b " + store,
+           miss + ":"});
+    } else {
+      lookupSequence.insert(
+          lookupSequence.end(),
+          {"  cbz w17, " + miss,
+           "  sub w17, w17, #1",
+           "  add w0, " + depth + ", w17",
+           "  b " + store,
+           miss + ":"});
+    }
     lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
                  lookupSequence.begin(), lookupSequence.end());
     const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
@@ -560,6 +618,12 @@ std::string memoizePureAdditiveTailLoop(
         "  mov w7, " + depth,
         "  adrp x5, " + cache,
         "  add x5, x5, :lo12:" + cache};
+    if (cacheAbsoluteFallthrough) {
+      initSequence.insert(initSequence.end(),
+                          {"  movz w9, #0",
+                           "  adrp x10, " + absoluteCache,
+                           "  add x10, x10, :lo12:" + absoluteCache});
+    }
     if (hoistCacheBound)
       initSequence.push_back("  movz " + cacheBound + ", #" + cacheUpperWords +
                              ", lsl #16");
@@ -569,8 +633,18 @@ std::string memoizePureAdditiveTailLoop(
     const auto note = std::find(lines.begin(), lines.end(),
                                 ".section .note.GNU-stack,\"\",%progbits");
     if (note == lines.end()) return collapsed.assembly;
-    lines.insert(note, {".bss", ".balign 64", cache + ":",
-                        "  .zero " + std::to_string(cacheBytes)});
+    std::vector<std::string> cacheStorage{
+        ".bss", ".balign 64", cache + ":",
+        "  .zero " + std::to_string(cacheBytes)};
+    if (cacheAbsoluteFallthrough) {
+      cacheStorage.insert(cacheStorage.end(),
+                          {".balign 64", absoluteCache + ":",
+                           "  .zero " +
+                               std::to_string(
+                                   static_cast<std::uint64_t>(cacheStates) +
+                                   1U)});
+    }
+    lines.insert(note, cacheStorage.begin(), cacheStorage.end());
     break;  // Enforce a fixed per-module memory budget.
   }
 
