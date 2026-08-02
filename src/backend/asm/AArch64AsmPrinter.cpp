@@ -717,6 +717,8 @@ std::string vectorizeContiguousConstantFills(const std::string& assembly) {
       std::regex_search(assembly, reservedVectorPattern)) {
     return assembly;
   }
+  const bool unrollVectorFill =
+      std::getenv("COMPILER_AARCH64_DISABLE_VECTOR_FILL_UNROLL") == nullptr;
   auto lines = splitLines(assembly);
   bool changed = false;
   for (std::size_t bodyLabel = 1; bodyLabel + 5 < lines.size(); ++bodyLabel) {
@@ -818,6 +820,8 @@ std::string vectorizeContiguousConstantFills(const std::string& assembly) {
     const std::string aliasSafe = prefix + ".alias_safe";
     const std::string vectorBody = prefix + ".body";
     const std::string vectorHeader = prefix + ".header";
+    const std::string vectorTailBody = prefix + ".tail.body";
+    const std::string vectorTailHeader = prefix + ".tail.header";
 
     std::ostringstream blocks;
     blocks << entry << ":\n";
@@ -843,15 +847,37 @@ std::string vectorizeContiguousConstantFills(const std::string& assembly) {
     blocks << "  b " << vectorHeader << "\n" << vectorBody << ":\n";
     for (std::size_t store = 0; store < stores.size(); ++store) {
       blocks << "  add x16, " << stores[store].base << ", " << indexX
-             << ", lsl #2\n"
-             << "  str q" << (16 + store) << ", [x16]\n";
+             << ", lsl #2\n";
+      if (unrollVectorFill) {
+        blocks << "  stp q" << (16 + store) << ", q" << (16 + store)
+               << ", [x16]\n"
+               << "  stp q" << (16 + store) << ", q" << (16 + store)
+               << ", [x16, #32]\n";
+      } else {
+        blocks << "  str q" << (16 + store) << ", [x16]\n";
+      }
     }
-    blocks << "  add " << indexW << ", " << indexW << ", #4\n"
+    blocks << "  add " << indexW << ", " << indexW << ", #"
+           << (unrollVectorFill ? 16 : 4) << "\n"
            << vectorHeader << ":\n"
            << "  sub w17, " << boundW << ", " << indexW << "\n"
-           << "  cmp w17, #4\n"
-           << "  b.ge " << vectorBody << "\n"
-           << "  b " << header;
+           << "  cmp w17, #" << (unrollVectorFill ? 16 : 4) << "\n"
+           << "  b.ge " << vectorBody << "\n";
+    if (unrollVectorFill) {
+      blocks << "  b " << vectorTailHeader << "\n"
+             << vectorTailBody << ":\n";
+      for (std::size_t store = 0; store < stores.size(); ++store) {
+        blocks << "  add x16, " << stores[store].base << ", " << indexX
+               << ", lsl #2\n"
+               << "  str q" << (16 + store) << ", [x16]\n";
+      }
+      blocks << "  add " << indexW << ", " << indexW << ", #4\n"
+             << vectorTailHeader << ":\n"
+             << "  sub w17, " << boundW << ", " << indexW << "\n"
+             << "  cmp w17, #4\n"
+             << "  b.ge " << vectorTailBody << "\n";
+    }
+    blocks << "  b " << header;
 
     lines[bodyLabel - 1] = "  b " + entry;
     lines[bodyLabel] = blocks.str() + "\n" + lines[bodyLabel];
