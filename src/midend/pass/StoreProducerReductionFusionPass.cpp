@@ -391,7 +391,7 @@ bool transform(Function& function, const ReductionScan& scan) {
           opcode != "aarch64.neon.mla.acc.i32x32" &&
           opcode != "aarch64.neon.store.acc.i32x32" &&
           opcode.rfind("aarch64.neon.ordered.panel.i32x16.", 0) != 0 &&
-          opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.", 0) != 0) {
+          opcode.rfind("aarch64.neon.ordered.panel8.i32x8.lazy.", 0) != 0) {
         return false;
       }
       if (instruction.opcode() == "aarch64.neon.store.acc.i32x32") {
@@ -411,13 +411,13 @@ bool transform(Function& function, const ReductionScan& scan) {
           return false;
         }
         ++vectorStores;
-      } else if (instruction.opcode() ==
-                 "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
-        if (instruction.operands().size() != 4) return false;
-        for (const auto& operand : instruction.operands()) {
-          if (pointerRoot(operand, definitions) != scan.matrixRoot) {
-            return false;
-          }
+      } else if (instruction.opcode().rfind(
+                     "aarch64.neon.ordered.panel8.i32x8.lazy.store.row", 0) ==
+                 0) {
+        if (instruction.operands().size() != 1 ||
+            pointerRoot(instruction.operands()[0], definitions) !=
+                scan.matrixRoot) {
+          return false;
         }
         ++vectorStores;
       } else if (instruction.opcode() == "store") {
@@ -483,9 +483,9 @@ bool transform(Function& function, const ReductionScan& scan) {
         rewritten.emplace_back(
             "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2");
       } else if (instruction.opcode() ==
-                 "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
+                 "aarch64.neon.ordered.panel8.i32x8.lazy.store.row7") {
         rewritten.emplace_back(
-            "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16");
+            "aarch64.neon.square.sum.i32.accumulate.panel8.i32x8");
       } else if (scalarStores[block.name()].find(index) !=
                  scalarStores[block.name()].end()) {
         rewritten.emplace_back(

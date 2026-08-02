@@ -3227,41 +3227,49 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q14, q15, [" << row1 << ", #32]\n";
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
-    for (int row = 0; row < 4; ++row) {
-      const auto initial =
-          integerOperand(os, function, instruction.operands[4 + row],
-                         kImmScratch);
-      for (int vector = row * 4; vector < row * 4 + 4; ++vector) {
-        os << "  dup v" << vector << ".4s, "
-           << integerRegister(initial, ValueType::int32Type()) << '\n';
-      }
+  const std::string panelBeginPrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.begin.row";
+  if (opcode.rfind(panelBeginPrefix, 0) == 0 &&
+      opcode.size() == panelBeginPrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto initial =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    for (int vector = row * 2; vector < row * 2 + 2; ++vector) {
+      os << "  dup v" << vector << ".4s, "
+         << integerRegister(initial, ValueType::int32Type()) << '\n';
     }
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
+  if (opcode == "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load") {
     const auto source =
         integerOperand(os, function, instruction.operands[0], kAddrScratch);
     os << "  ldp q21, q22, [" << source << "]\n";
-    os << "  ldp q23, q24, [" << source << ", #32]\n";
-    for (int row = 0; row < 4; ++row) {
-      const auto coefficient =
-          integerOperand(os, function, instruction.operands[1 + row],
-                         kImmScratch);
-      os << "  dup v20.4s, "
-         << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      for (int vector = 0; vector < 4; ++vector) {
-        os << "  mla v" << row * 4 + vector << ".4s, v"
-           << 21 + vector << ".4s, v20.4s\n";
-      }
+    return;
+  }
+  const std::string panelSharedRowPrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row";
+  if (opcode.rfind(panelSharedRowPrefix, 0) == 0 &&
+      opcode.size() == panelSharedRowPrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  dup v20.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    for (int vector = 0; vector < 2; ++vector) {
+      os << "  mla v" << row * 2 + vector << ".4s, v"
+         << 21 + vector << ".4s, v20.4s\n";
     }
     return;
   }
-  for (int destination = 0; destination < 4; ++destination) {
-    for (int source = 0; source < 4; ++source) {
+  for (int destination = 0; destination < 8; ++destination) {
+    for (int source = 0; source < 8; ++source) {
       const std::string version = source < destination ? "new" : "old";
       const std::string expected =
-          "aarch64.neon.ordered.panel4.i32x16.lazy." + version +
+          "aarch64.neon.ordered.panel8.i32x8.lazy." + version +
           std::to_string(source) + ".to.row" +
           std::to_string(destination);
       const bool useNewValue = source < destination;
@@ -3270,14 +3278,13 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
           instruction.operands.size() != expectedOperands) {
         continue;
       }
-      int sourceFirst = source * 4;
+      int sourceFirst = source * 2;
       std::size_t coefficientIndex = 0;
       if (!useNewValue) {
         const auto sourceAddress =
             integerOperand(os, function, instruction.operands[0],
                            kAddrScratch);
         os << "  ldp q21, q22, [" << sourceAddress << "]\n";
-        os << "  ldp q23, q24, [" << sourceAddress << ", #32]\n";
         sourceFirst = 21;
         coefficientIndex = 1;
       }
@@ -3286,24 +3293,25 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
                          instruction.operands[coefficientIndex], kImmScratch);
       os << "  dup v20.4s, "
          << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      const int destinationFirst = destination * 4;
-      for (int vector = 0; vector < 4; ++vector) {
+      const int destinationFirst = destination * 2;
+      for (int vector = 0; vector < 2; ++vector) {
         os << "  mla v" << destinationFirst + vector << ".4s, v"
            << sourceFirst + vector << ".4s, v20.4s\n";
       }
       return;
     }
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
-    for (int row = 0; row < 4; ++row) {
-      const auto address =
-          integerOperand(os, function, instruction.operands[row],
-                         kAddrScratch);
-      os << "  stp q" << row * 4 << ", q" << row * 4 + 1 << ", ["
-         << address << "]\n";
-      os << "  stp q" << row * 4 + 2 << ", q" << row * 4 + 3 << ", ["
-         << address << ", #32]\n";
-    }
+  const std::string panelStorePrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.store.row";
+  if (opcode.rfind(panelStorePrefix, 0) == 0 &&
+      opcode.size() == panelStorePrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  stp q" << row * 2 << ", q" << row * 2 + 1 << ", ["
+       << address << "]\n";
     return;
   }
   if (opcode == "aarch64.neon.square.sum.i32.init" &&
@@ -3332,7 +3340,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     return;
   }
   if (opcode ==
-          "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16" &&
+          "aarch64.neon.square.sum.i32.accumulate.panel8.i32x8" &&
       instruction.operands.empty()) {
     for (int vector = 0; vector < 16; ++vector) {
       os << "  mla v" << 16 + (vector & 3) << ".4s, v" << vector
