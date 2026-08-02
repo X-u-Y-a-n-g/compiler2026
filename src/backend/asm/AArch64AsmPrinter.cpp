@@ -487,6 +487,14 @@ std::string memoizePureAdditiveTailLoop(
     const bool cacheAbsoluteFallthrough =
         singleImmutableContext && absoluteRegistersFree &&
         std::getenv("COMPILER_DISABLE_TAIL_MEMO_FALLTHROUGH_STORE") == nullptr;
+    const bool skipRedundantAdditiveTagClear =
+        cacheAbsoluteFallthrough &&
+        std::getenv("COMPILER_DISABLE_TAIL_MEMO_REDUNDANT_TAG_CLEAR") ==
+            nullptr;
+    // BSS initializes every tag to the additive class.  Under the immutable
+    // context proof a key's terminal class is deterministic, and entries are
+    // never evicted or reused, so an additive key's bit can never have been
+    // set by an earlier store of that same key.
 
     // Explicit base-case returns already branch through the memo store below.
     // A terminal arm may instead fall through directly into the shared
@@ -533,8 +541,10 @@ std::string memoizePureAdditiveTailLoop(
            summaryStore + ":",
            "  sub w17, w0, w7",
            "  add w17, w17, #1",
-           "  str w17, [x5, w6, uxtw #2]",
-           "  strb wzr, [x10, w6, uxtw]"});
+           "  str w17, [x5, w6, uxtw #2]"});
+      if (!skipRedundantAdditiveTagClear) {
+        storeSequence.push_back("  strb wzr, [x10, w6, uxtw]");
+      }
     } else {
       storeSequence.insert(storeSequence.end(),
                            {"  sub w17, w0, w7",
