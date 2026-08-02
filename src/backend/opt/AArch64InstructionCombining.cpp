@@ -651,6 +651,104 @@ void combinePostRACountedBranches(MachineFunction& function) {
   }
 }
 
+void combinePostRAIndexedReloadInductions(MachineFunction& function) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_INDEX_RELOAD_RENAMING") !=
+      nullptr) {
+    return;
+  }
+
+  for (auto& block : function.blocks) {
+    bool scratchIsFree = true;
+    for (const auto& instruction : block.instructions) {
+      if ((instruction.hasResult &&
+           instruction.result.kind == MachineOperandKind::PhysicalRegister &&
+           instruction.result.text == "x16") ||
+          std::any_of(instruction.operands.begin(), instruction.operands.end(),
+                      [](const MachineOperand& operand) {
+                        return operand.kind ==
+                                   MachineOperandKind::PhysicalRegister &&
+                               operand.text == "x16";
+                      })) {
+        scratchIsFree = false;
+        break;
+      }
+    }
+    if (!scratchIsFree) continue;
+
+    auto& instructions = block.instructions;
+    for (std::size_t addIndex = 0; addIndex + 2 < instructions.size();
+         ++addIndex) {
+      auto& increment = instructions[addIndex];
+      if (increment.opcode != "add" || !increment.hasResult ||
+          increment.result.kind != MachineOperandKind::PhysicalRegister ||
+          !increment.result.type.isInt32() ||
+          increment.operands.size() != 2 ||
+          increment.operands[0].kind !=
+              MachineOperandKind::PhysicalRegister ||
+          !increment.operands[0].type.isInt32() ||
+          increment.operands[1].kind != MachineOperandKind::ImmediateInt ||
+          increment.operands[1].intValue != 1 ||
+          samePhysicalRegister(increment.result, increment.operands[0])) {
+        continue;
+      }
+
+      auto& reload = instructions[addIndex + 1];
+      if (reload.opcode != "load.indexed" || !reload.hasResult ||
+          !samePhysicalRegister(reload.result, increment.operands[0]) ||
+          reload.operands.size() != 3 ||
+          reload.operands[0].kind != MachineOperandKind::PhysicalRegister ||
+          samePhysicalRegister(reload.operands[0], increment.operands[0]) ||
+          !samePhysicalRegister(reload.operands[1], increment.result) ||
+          reload.operands[2].kind != MachineOperandKind::ImmediateInt ||
+          reload.operands[2].intValue != 4) {
+        continue;
+      }
+
+      std::optional<std::size_t> copyIndex;
+      bool safe = true;
+      const std::size_t searchEnd =
+          std::min(instructions.size(), addIndex + 12);
+      for (std::size_t index = addIndex + 2; index < searchEnd; ++index) {
+        const auto& current = instructions[index];
+        if (current.opcode == "copy" && current.hasResult &&
+            samePhysicalRegister(current.result, increment.operands[0]) &&
+            current.operands.size() == 1 &&
+            samePhysicalRegister(current.operands[0], increment.result)) {
+          copyIndex = index;
+          break;
+        }
+        if ((current.hasResult &&
+             (samePhysicalRegister(current.result, increment.operands[0]) ||
+              samePhysicalRegister(current.result, increment.result))) ||
+            std::any_of(current.operands.begin(), current.operands.end(),
+                        [&](const MachineOperand& operand) {
+                          return samePhysicalRegister(operand,
+                                                      increment.result);
+                        })) {
+          safe = false;
+          break;
+        }
+      }
+      if (!safe || !copyIndex.has_value()) continue;
+
+      const MachineOperand induction = increment.operands[0];
+      const MachineOperand scratch = MachineOperand::physicalRegister(
+          "x16", compiler::backend::mir::ValueType::int32Type());
+      increment.result = induction;
+      reload.result = scratch;
+      reload.operands[1] = induction;
+      for (std::size_t index = addIndex + 2; index < *copyIndex; ++index) {
+        for (auto& operand : instructions[index].operands) {
+          if (samePhysicalRegister(operand, induction)) operand = scratch;
+        }
+      }
+      instructions.erase(instructions.begin() +
+                         static_cast<std::ptrdiff_t>(*copyIndex));
+      break;
+    }
+  }
+}
+
 void redirectPostRANoOpBlocks(MachineFunction& function) {
   std::unordered_map<std::string, std::string> redirects;
   for (std::size_t blockIndex = 1; blockIndex < function.blocks.size();
@@ -740,6 +838,7 @@ void AArch64InstructionCombining::runPostRA(
       combinedZeroStores += combinePostRAStackZeroRanges(function);
     }
     combinePostRACountedBranches(function);
+    combinePostRAIndexedReloadInductions(function);
     redirectPostRANoOpBlocks(function);
   }
   if (std::getenv("COMPILER_AARCH64_STACK_ZERO_RANGE_STATS") != nullptr) {
