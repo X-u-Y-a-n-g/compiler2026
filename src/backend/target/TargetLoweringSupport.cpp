@@ -467,9 +467,13 @@ class FunctionLoweringContext {
     }
 
     if (opcode == "aarch64.neon.mls.acc.i32x32") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0]),
-            lowerValueOperand(operands[1], ValueType::int32Type())});
+      std::vector<MachineOperand> lowered{
+          lowerValueOperand(operands[0]),
+          lowerValueOperand(operands[1], ValueType::int32Type())};
+      if (operands.size() == 3)
+        lowered.push_back(
+            lowerValueOperand(operands[2], ValueType::int32Type()));
+      emit(block, opcode, {}, std::move(lowered));
       return;
     }
 

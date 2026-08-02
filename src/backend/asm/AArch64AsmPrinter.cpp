@@ -3039,11 +3039,19 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     return;
   }
   if (opcode == "aarch64.neon.mls.acc.i32x32" &&
-      instruction.operands.size() == 2) {
+      (instruction.operands.size() == 2 || instruction.operands.size() == 3)) {
     const auto address =
         integerOperand(os, function, instruction.operands[0], kAddrScratch);
     const auto coefficient =
         integerOperand(os, function, instruction.operands[1], kImmScratch);
+    if (instruction.operands.size() == 3 &&
+        instruction.operands[2].kind == MachineOperandKind::ImmediateInt &&
+        std::getenv("COMPILER_DISABLE_AARCH64_ROW_UPDATE_PREFETCH") == nullptr) {
+      const auto stride = instruction.operands[2].intValue;
+      os << "  prfm pldl1keep, [" << address << ", #" << stride << "]\n";
+      os << "  prfm pldl1keep, [" << address << ", #" << stride + 64
+         << "]\n";
+    }
     os << "  dup v29.4s, "
        << integerRegister(coefficient, ValueType::int32Type()) << '\n';
     os << "  ldp q28, q30, [" << address << "]\n";

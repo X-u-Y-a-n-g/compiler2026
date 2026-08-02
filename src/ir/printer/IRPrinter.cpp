@@ -612,6 +612,8 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
 
   if (opcode == "aarch64.neon.mls.acc.i32x32") {
     os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    if (operands.size() == 3)
+      os << ", i32 " << operands[2];
     return os.str();
   }
 
