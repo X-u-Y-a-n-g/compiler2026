@@ -2197,3 +2197,48 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
   分支收益的判断未能映射到真实平台，不能作为接受依据。
 - 状态：R。已完整撤回生成路径及消融开关；后续有序递推候选必须取得目标
   平台明确收益才可保留。
+
+## 2026-08-03 AArch64 文本向量化迁移到结构化 post-RA Machine IR
+
+- 合规问题：`AArch64AsmPrinter::print()` 原先在最终汇编字符串上依次运行四个
+  向量化 matcher，并解析寄存器文本、指令排列和生成标签来恢复 CFG。即使没有
+  读取样例名，这仍把输出文本和生成基本块标签当作优化输入，不符合当前规则。
+- 迁移架构：新增 `AArch64PostRAVectorization`，在寄存器分配和 AArch64
+  combining 后直接检查 typed Machine IR 指令、操作数、CFG 边、支配关系和
+  全局对象身份；成立时插入显式 `aarch64.neon.vector.fill` 或
+  `aarch64.neon.conditional.matrix.reduction` pseudo。AsmPrinter 只根据 pseudo
+  操作数 lowering；内部 `.Lcompiler_*` 标签仅是输出控制流，不参与判定。
+- 连续填充证明：规范 `i32` 单位步长循环、零初值、`i < bound`、一或两个相同
+  IV 的 scale-4 store、任意循环不变量 i32 常量，以及唯一外部预头。双目标版
+  在运行时证明两个实际写区间不重叠，否则跳回完整标量循环；零趟、短尾和任意
+  边界均由向量头与原标量尾处理。常量不再局限于 `0..255`，不能直接 `movi`
+  时使用通用立即数构造加 `dup`。
+- 条件矩阵归约证明：三种互异全局对象、相同静态 i32 方阵 extent/stride、规范
+  i-j-k CFG、每个输出唯一 store、k 顺序不变的 i32 wrapping MADD，以及精确
+  `((row[k] & column[k]) & 1) == 0` guard。matcher 同时接受每趟重算列地址和
+  strength-reduction 后的列指针归纳；向量化仅交换独立 j lane，保持每个输出的
+  k 归约顺序。4/8/16/32/64 列 lowering、尾块和 parity unswitch 均有标量语义
+  对照开关。
+- 清理：删除最终汇编上的连续整数 MADD、guarded MADD、条件矩阵归约和常量填充
+  四个文本 matcher，以及只为这些 matcher 服务的标签/汇编块解析辅助函数。
+  前两条旧 MADD 路径在迁移前重新扫描当前 60 项为零命中，因此删除失效路径，
+  不引入缺少真实覆盖和效果证明的新变换。
+- 合成验证：匿名双目标填充覆盖零趟、短行程、17 元素尾部、完全别名 fallback
+  和超出 `movi` 范围的负 i32 常量；匿名 12×12 条件矩阵覆盖 4 列路径。当前
+  200×200 三项覆盖 64 列主体与 8 列尾；通过开关各执行一次 32 列、16 列和
+  禁用 parity-unswitch 路径，全部与关闭版输出一致。
+- 门禁与隔离：Docker `compiler-impl2026-dev` 内使用 `/workspace/build/compiler`
+  完成 AArch64 correctness `140/140 AC`。启用和关闭版的 60 项 performance
+  均成功编译、GNU AArch64 静态链接并由 QEMU 执行，结果均为 `57 AC + 3` 个
+  父提交已有的 h-4 末尾空行格式例外；三份 h-4 最终汇编逐字一致。60 份最终
+  汇编只有 `matmul1/2/3` 与 `sl1/2/3` 六项变化，其余 54 项逐字一致。
+- 本地诊断：条件矩阵结构化路径相对关闭版，`matmul1/2/3` 单轮 QEMU timer
+  约为 `5.037627/4.949766/4.977027s → 2.303196/2.301266/2.298024s`，
+  合计下降约 `53.8%`。连续填充相对关闭版约为
+  `2.023918/0.590414/0.246049s → 1.283289/0.381874/0.172965s`，合计
+  下降约 `35.7%`。QEMU 只作诊断，最终 Cortex-A53 收益必须由官方平台确认。
+- AI/资料范围：AI 辅助完成 Machine IR 数据流/支配匹配、pseudo 设计、AArch64
+  NEON lowering、失效文本路径清理、匿名差分和完整门禁。技术依据仅为标准 CFG/
+  dominance/alias-effect 分析、loop vectorization/loop interchange 原理及 ARMv8-A
+  NEON `LDR/LDP/MLA/STR/STP` 语义；未复制外部编译器实现。
+- 状态：D。合规与本地门禁已完成，尚未提交或推送，官方 Cortex-A53 未验证。

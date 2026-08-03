@@ -7,6 +7,7 @@
 #include "../../../include/compiler/backend/frame/FrameLowering.h"
 #include "../../../include/compiler/backend/opt/AddressReassociation.h"
 #include "../../../include/compiler/backend/opt/AArch64InstructionCombining.h"
+#include "../../../include/compiler/backend/opt/AArch64PostRAVectorization.h"
 #include "../../../include/compiler/backend/opt/CompareBranchFusion.h"
 #include "../../../include/compiler/backend/opt/MachineDeadCodeElimination.h"
 #include "../../../include/compiler/backend/opt/MachineLoopBlockPlacement.h"
@@ -71,6 +72,7 @@ class AArch64Backend final : public BackendTarget {
     compiler::backend::opt::MachineTraceBlockPlacement{}.run(machineModule);
     compiler::backend::opt::AArch64InstructionCombining{}.runPostRA(
         machineModule);
+    compiler::backend::opt::AArch64PostRAVectorization{}.run(machineModule);
     return compiler::backend::asmcode::AArch64AsmPrinter{}.print(machineModule);
   }
 };
