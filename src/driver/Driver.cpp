@@ -34,6 +34,7 @@
 #include "../../include/compiler/midend/pass/AArch64VectorConstantRemainderPass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
+#include "../../include/compiler/midend/pass/BoundedRecurrenceExpansionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantArgumentPropagationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
@@ -56,6 +57,7 @@
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/MonotonicContinueEliminationPass.h"
 #include "../../include/compiler/midend/pass/MonotonicLoopBoundPass.h"
+#include "../../include/compiler/midend/pass/ModularAffineCanonicalizationPass.h"
 #include "../../include/compiler/midend/pass/NestedInvariantReductionPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
@@ -315,6 +317,10 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(
           std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::ModularAffineCanonicalizationPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::BoundedRecurrenceExpansionPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::LoopWavefrontColumnPackingPass>());
       passManager.add(std::make_unique<

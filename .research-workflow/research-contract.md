@@ -53,3 +53,39 @@
   unconditional outer-body edge into the middle header, a unique normal middle
   exit, and no non-latch edge back to the outer header. These checks only narrow
   eligibility and leave the accepted h-8 assembly unchanged.
+
+## Contract v2: crypto modular state-machine simplification
+
+- Frozen at: 2026-08-03
+- Selected idea ID: arm-crypto-modular-state-machine-v1
+- Hypothesis: a general i32 modular-affine canonicalizer, followed only when
+  structurally proven by immutable local-array value forwarding and bounded
+  pure-loop expansion, removes a material fraction of the serial crypto hot
+  path without using benchmark identity or changing wrapping semantics.
+- Baseline: commit `3a921cf` on `zct-arm-no-magic`.
+- Primary observation: official Cortex-A53 time for the affected programs.
+- Controlled local evidence: enabled versus independent component switches on
+  crypto-1/2/3, final assembly, QEMU timer, all 60 performance cases, and 140
+  correctness cases because this is shared mid-end code.
+- Success: byte-identical outputs, structural anonymous tests and fallbacks,
+  no demonstrated target-relevant regression in other changed programs, and a
+  clear local hot-path reduction sufficient to justify official submission.
+- Failure: wrong output, incomplete overflow/alias/effect proof, code growth
+  without hot-path reduction, focused timing regression, or a full-gate failure.
+- Mandatory ablations: disable affine canonicalization; disable bounded
+  recurrence specialization; disable the complete candidate.
+- Budget and stop rule: run the affine stage first and kill it if crypto final
+  assembly does not simplify; run full 60/140 only after the integrated focused
+  candidate is correct and locally positive.
+- Compliance: triggers may use only IR/MIR semantics, CFG, dominance, use-def,
+  loop/range, alias, escape and effect analysis. Names, paths, labels, source
+  text, public inputs, constants used as identities, and runtime probing are
+  prohibited.
+- Local outcome: both components passed their anonymous differential suites.
+  The integrated candidate changed only crypto-1/2/3 among the 60 final
+  assemblies, reducing each from 655 to 601 parsed instructions. The focused
+  timer sum was `0.181242s` with both components disabled, `0.152859s` with
+  affine canonicalization alone, and `0.138165s` with both enabled. Full gates
+  were `57 AC + 3` pre-existing h-4 formatting exceptions and `140/140 AC`.
+- Promotion state: locally validated and pushed only for official Cortex-A53
+  evaluation; no official speedup is claimed until the owner reports it.

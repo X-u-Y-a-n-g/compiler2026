@@ -1,7 +1,7 @@
 # 优化实验与消融记录
 
-> 最后更新：2026-07-29
-> 本轮对比基线：`wz-arm` / `d6ca1db`
+> 最后更新：2026-08-03
+> 本轮对比基线：`zct-arm-no-magic` / `3a921cf`
 > README 只描述当前能力；已撤销的专项方案仅在本文 E 类中留档。
 
 ## 1. 目的和判定规则
@@ -2283,3 +2283,42 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
   scalar replacement、SSA value forwarding、CFG/dominance 与 alias/effect 分析；
   未复制外部编译器实现。
 - 状态：D。合规与本地门禁完成，等待提交、推送和官方 Cortex-A53 验证。
+
+## 2026-08-03 i32 模仿射规范化与小行程纯递推展开（待平台判定）
+
+- 通用仿射变换：从任意 i32 `add/sub` 根向上展开最多 64 个纯算术节点，按
+  模 `2^32` 收集叶值系数和常量，抵消系数为零的项并重建更短表达式。共享
+  子表达式允许作为只读输入参与分析，但收益只计算单用途、会被后续 DCE 删除
+  的运算；只有重建操作数严格少于可删除运算时才改写。该规则不读取函数、
+  变量、块、样例或路径名称，也不把常量值当作身份指纹。
+- 通用递推变换：识别唯一预头、唯一回边的动态上界循环；循环头只有一个
+  i32 状态 Phi、私有 counter/bound load 和 signed `<` 条件，循环体只能包含
+  无陷阱纯整数 recurrence、唯一 `counter+1` 和 counter store。bound 来自
+  不逃逸局部数组，编译器从其常量 Store 中选取最多八个、行程为 1～8 的盈利
+  值，生成共享后缀展开；任何其他运行时 bound 精确进入保留的原循环。counter
+  或 bound 在循环外可观察、状态依赖循环头动态值、循环含调用/额外内存效果、
+  除数为 `0/-1` 或结构证明不完整时全部 fallback。
+- 语义依据：SysY i32 加减乘按二补码位宽回绕，仿射系数可在模环中结合抵消；
+  递推展开逐步克隆原 opcode 和操作数顺序，不重结合有序状态，只把已知小行程
+  的循环控制替换为等次数的直线步骤。零趟、负值和未列举 bound 仍执行原 CFG。
+- 匿名验证：仿射用例覆盖共享 DAG、负常量、`INT_MIN/MAX` 和回绕；递推用例
+  更换标识符和常量集合，覆盖动态选择、零趟 fallback、i32 回绕、循环后观察
+  counter、额外全局写入以及危险 `srem -1` fallback。启用、组件关闭和 O0
+  输出逐字一致；统计分别为 `modular-affine transformed=5` 与
+  `bounded-recurrence transformed=1`。
+- 隔离与本地消融：60 份最终汇编相对 `3a921cf` 只有
+  `crypto-1/2/3` 改变，均为直接命中；每项仿射规范化 34 处、递推展开 1 处，
+  汇编 `834→792` 行，评测器解析指令 `655→601`。同一最终编译器的三项 timer
+  合计为：两项均关闭 `0.181242s`，只启用仿射 `0.152859s`，两项启用
+  `0.138165s`；组合相对全关闭下降约 `23.77%`。QEMU 只作提交前诊断。
+- 完整门禁：Docker `compiler-impl2026-dev` 内使用 `/workspace/build/compiler`。
+  ARM performance 为 `57 AC + 3` 个父提交已有的 h-4 末尾空行格式例外；
+  三份 h-4 汇编未变化。共享中端改动通过 AArch64 correctness `140/140 AC`。
+- 合规与披露：实现只消费 IR opcode/type/operand、SSA 身份、CFG、loop、对象
+  逃逸和内存效果；不匹配汇编文本、生成标签拼写、源码、名称、公开 rounds、
+  输入或输出。AI 辅助完成热点归因、模环证明、CFG/SSA 实现、匿名反例、消融
+  与门禁。技术依据为经典 reassociation/canonicalization、bounded loop
+  unrolling 和 scalar replacement，未复制外部编译器实现。
+- 状态：D。本地证据满足推送门槛，提交到 GitLab `eduxiji` 的
+  `zct-arm-no-magic` 后等待官方 Cortex-A53 判定；平台持平、退化或错误则
+  独立回退本候选。

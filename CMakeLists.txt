@@ -29,6 +29,7 @@ add_library(compiler_lib
   src/midend/pass/ArrayDimensionLayoutPass.cpp
   src/midend/pass/BitwiseIdiomRecognitionPass.cpp
   src/midend/pass/BoundedModuloReductionPass.cpp
+  src/midend/pass/BoundedRecurrenceExpansionPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantArgumentPropagationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
@@ -52,6 +53,7 @@ add_library(compiler_lib
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/MonotonicContinueEliminationPass.cpp
   src/midend/pass/MonotonicLoopBoundPass.cpp
+  src/midend/pass/ModularAffineCanonicalizationPass.cpp
   src/midend/pass/NestedInvariantReductionPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/PowerOfTwoDispatchPass.cpp
