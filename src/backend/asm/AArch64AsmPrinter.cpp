@@ -1298,6 +1298,152 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  b " << scalarHeader << '\n';
     return;
   }
+  if (opcode == "aarch64.neon.stencil.i32x4" &&
+      instruction.operands.size() == 11) {
+    const auto& in = instruction.operands[0];
+    const auto& out = instruction.operands[1];
+    const auto& kernel = instruction.operands[2];
+    const auto& bound = instruction.operands[3];
+    const auto& trip = instruction.operands[4];
+    const auto& repeat = instruction.operands[5];
+    if (in.kind != MachineOperandKind::PhysicalRegister ||
+        out.kind != MachineOperandKind::PhysicalRegister ||
+        kernel.kind != MachineOperandKind::PhysicalRegister ||
+        bound.kind != MachineOperandKind::PhysicalRegister ||
+        trip.kind != MachineOperandKind::PhysicalRegister ||
+        repeat.kind != MachineOperandKind::PhysicalRegister ||
+        instruction.operands[6].kind != MachineOperandKind::Label ||
+        instruction.operands[7].kind != MachineOperandKind::Label) {
+      throw std::runtime_error("invalid aarch64.neon.stencil.i32x4 pseudo");
+    }
+    const long long extent = instruction.operands[8].intValue;
+    const long long pad = instruction.operands[9].intValue;
+    const long long site = instruction.operands[10].intValue;
+    if (extent <= 0 || extent > 255 || pad < 0 || pad >= extent)
+      throw std::runtime_error("invalid aarch64 stencil shape");
+    const long long trailing = extent - pad - 1;
+    const auto xreg = [](std::string reg) {
+      if (!reg.empty() && reg[0] == 'w') reg[0] = 'x';
+      return reg;
+    };
+    std::unordered_set<std::string> used{xreg(in.text), xreg(out.text),
+                                         xreg(kernel.text), xreg(bound.text),
+                                         xreg(trip.text), xreg(repeat.text)};
+    std::vector<std::string> regs;
+    for (int n = 3; n <= 18 && regs.size() != 12; ++n) {
+      const auto candidate = "x" + std::to_string(n);
+      if (used.find(candidate) == used.end()) regs.push_back(candidate);
+    }
+    const std::string fallback = labels.at(instruction.operands[6].text);
+    const std::string exit = labels.at(instruction.operands[7].text);
+    if (regs.size() != 12) { os << "  b " << fallback << '\n'; return; }
+    const auto wreg = [](std::string reg) { reg[0] = 'w'; return reg; };
+    const auto& rX = regs[0]; const auto rW = wreg(rX);
+    const auto& cX = regs[1]; const auto cW = wreg(cX);
+    const auto& krX = regs[2]; const auto krW = wreg(krX);
+    const auto& kcX = regs[3]; const auto kcW = wreg(kcX);
+    const auto& sumX = regs[4]; const auto sumW = wreg(sumX);
+    const auto& rrX = regs[5]; const auto rrW = wreg(rrX);
+    const auto& ccX = regs[6]; const auto ccW = wreg(ccX);
+    const auto& indexX = regs[7]; const auto indexW = wreg(indexX);
+    const auto& inputPointer = regs[8];
+    const auto& kernelPointer = regs[9];
+    const auto inputValueW = wreg(regs[10]);
+    const auto& tempX = regs[11]; const auto tempW = wreg(tempX);
+    const std::string boundW = integerRegister(bound.text, bound.type);
+    const std::string tripW = integerRegister(trip.text, trip.type);
+    const std::string p = ".Lcompiler_stencil_" + std::to_string(site);
+    const std::string aliasK = p + "_alias_k", fast = p + "_fast";
+    const std::string rowH = p + "_row_h", dispatch = p + "_dispatch";
+    const std::string vector = p + "_vector", vKr = p + "_vkr";
+    const std::string vKc = p + "_vkc", vKrNext = p + "_vkr_next";
+    const std::string vStore = p + "_vstore", scalar = p + "_scalar";
+    const std::string sKr = p + "_skr", sKc = p + "_skc";
+    const std::string sKcNext = p + "_skc_next", sKrNext = p + "_skr_next";
+    const std::string sStore = p + "_sstore", rowNext = p + "_row_next";
+
+    os << "  cmp " << tripW << ", #0\n  b.le " << exit
+       << "\n  cmp " << tripW << ", #1\n  b.ne " << fallback
+       << "\n  cmp " << boundW << ", #0\n  b.le " << exit << '\n';
+    emitImmediate(os, tempW, 46340, ValueType::int32Type());
+    os << "  cmp " << boundW << ", " << tempW << "\n  b.gt " << fallback
+       << "\n  uxtw " << indexX << ", " << boundW
+       << "\n  mul " << indexX << ", " << indexX << ", " << indexX
+       << "\n  lsl " << indexX << ", " << indexX << ", #2\n"
+       << "  add " << inputPointer << ", " << in.text << ", " << indexX
+       << "\n  cmp " << inputPointer << ", " << in.text << "\n  b.lo "
+       << fallback << "\n  add " << tempX << ", " << out.text << ", "
+       << indexX << "\n  cmp " << tempX << ", " << out.text << "\n  b.lo "
+       << fallback << '\n';
+    emitAddImmediate(os, kernelPointer, kernel.text, extent * extent * 4);
+    os << "  cmp " << kernelPointer << ", " << kernel.text << "\n  b.lo "
+       << fallback << "\n  cmp " << out.text << ", " << inputPointer
+       << "\n  b.hs " << aliasK << "\n  cmp " << in.text << ", " << tempX
+       << "\n  b.lo " << fallback << '\n' << aliasK << ":\n  cmp "
+       << out.text << ", " << kernelPointer << "\n  b.hs " << fast
+       << "\n  cmp " << kernel.text << ", " << tempX << "\n  b.lo "
+       << fallback << '\n' << fast << ":\n  mov " << rW << ", wzr\n"
+       << rowH << ":\n  cmp " << rW << ", " << boundW << "\n  b.ge "
+       << exit << "\n  mov " << cW << ", wzr\n" << dispatch
+       << ":\n  cmp " << cW << ", " << boundW << "\n  b.ge " << rowNext
+       << '\n';
+    if (pad) os << "  cmp " << rW << ", #" << pad << "\n  b.lt " << scalar << '\n';
+    if (trailing) {
+      emitAddImmediate(os, tempW, boundW, -trailing);
+      os << "  cmp " << rW << ", " << tempW << "\n  b.ge " << scalar << '\n';
+    } else os << "  mov " << tempW << ", " << boundW << '\n';
+    if (pad) os << "  cmp " << cW << ", #" << pad << "\n  b.lt " << scalar << '\n';
+    os << "  add " << ccW << ", " << cW << ", #4\n  cmp " << ccW
+       << ", " << tempW << "\n  b.gt " << scalar << "\n  b " << vector
+       << '\n' << vector << ":\n  movi v0.4s, #0\n  mov " << krW
+       << ", wzr\n  mov " << kernelPointer << ", " << kernel.text << '\n'
+       << vKr << ":\n  cmp " << krW << ", #" << extent << "\n  b.ge "
+       << vStore << "\n  add " << rrW << ", " << rW << ", " << krW << '\n';
+    if (pad) os << "  sub " << rrW << ", " << rrW << ", #" << pad << '\n';
+    os << "  madd " << indexW << ", " << rrW << ", " << boundW << ", "
+       << cW << '\n';
+    if (pad) os << "  sub " << indexW << ", " << indexW << ", #" << pad << '\n';
+    os << "  add " << inputPointer << ", " << in.text << ", " << indexW
+       << ", sxtw #2\n  mov " << kcW << ", wzr\n" << vKc
+       << ":\n  cmp " << kcW << ", #" << extent << "\n  b.ge " << vKrNext
+       << "\n  ldr q1, [" << inputPointer << "], #4\n  ldr " << tempW
+       << ", [" << kernelPointer << "], #4\n  dup v2.4s, " << tempW
+       << "\n  mla v0.4s, v1.4s, v2.4s\n  add " << kcW << ", " << kcW
+       << ", #1\n  b " << vKc << '\n' << vKrNext << ":\n  add " << krW
+       << ", " << krW << ", #1\n  b " << vKr << '\n' << vStore
+       << ":\n  madd " << indexW << ", " << rW << ", " << boundW << ", "
+       << cW << "\n  add " << inputPointer << ", " << out.text << ", "
+       << indexW << ", sxtw #2\n  str q0, [" << inputPointer << "]\n  add "
+       << cW << ", " << cW << ", #4\n  b " << dispatch << '\n'
+       << scalar << ":\n  mov " << sumW << ", wzr\n  mov " << krW
+       << ", wzr\n  mov " << kernelPointer << ", " << kernel.text << '\n'
+       << sKr << ":\n  cmp " << krW << ", #" << extent << "\n  b.ge "
+       << sStore << "\n  add " << rrW << ", " << rW << ", " << krW << '\n';
+    if (pad) os << "  sub " << rrW << ", " << rrW << ", #" << pad << '\n';
+    os << "  cmp " << rrW << ", #0\n  b.lt " << sKrNext << "\n  cmp "
+       << rrW << ", " << boundW << "\n  b.ge " << sKrNext << "\n  mov "
+       << kcW << ", wzr\n" << sKc << ":\n  cmp " << kcW << ", #" << extent
+       << "\n  b.ge " << sKrNext << "\n  add " << ccW << ", " << cW
+       << ", " << kcW << '\n';
+    if (pad) os << "  sub " << ccW << ", " << ccW << ", #" << pad << '\n';
+    os << "  cmp " << ccW << ", #0\n  b.lt " << sKcNext << "\n  cmp "
+       << ccW << ", " << boundW << "\n  b.ge " << sKcNext << "\n  madd "
+       << indexW << ", " << rrW << ", " << boundW << ", " << ccW
+       << "\n  ldr " << inputValueW << ", [" << in.text << ", " << indexW
+       << ", sxtw #2]\n  ldr " << tempW << ", [" << kernelPointer << ", "
+       << kcW << ", sxtw #2]\n  madd " << sumW << ", " << inputValueW
+       << ", " << tempW << ", " << sumW << '\n' << sKcNext
+       << ":\n  add " << kcW << ", " << kcW << ", #1\n  b " << sKc << '\n'
+       << sKrNext << ":\n";
+    emitAddImmediate(os, kernelPointer, kernelPointer, extent * 4);
+    os << "  add " << krW << ", " << krW << ", #1\n  b " << sKr << '\n'
+       << sStore << ":\n  madd " << indexW << ", " << rW << ", " << boundW
+       << ", " << cW << "\n  str " << sumW << ", [" << out.text << ", "
+       << indexW << ", sxtw #2]\n  add " << cW << ", " << cW
+       << ", #1\n  b " << dispatch << '\n' << rowNext << ":\n  add "
+       << rW << ", " << rW << ", #1\n  b " << rowH << '\n';
+    return;
+  }
   if (opcode == "aarch64.neon.conditional.matrix.reduction" &&
       instruction.operands.size() == 15) {
     const auto& jOperand = instruction.operands[0];

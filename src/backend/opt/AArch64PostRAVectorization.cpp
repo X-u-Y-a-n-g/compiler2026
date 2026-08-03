@@ -744,6 +744,265 @@ std::size_t migrateConditionalMatrixReductions(MachineFunction& function,
   return nextSite;
 }
 
+const MachineInstruction* singleMeaningful(const MachineBlock& block) {
+  const auto positions = meaningfulInstructions(block);
+  return positions.size() == 1 ? &block.instructions[positions[0]] : nullptr;
+}
+
+bool isZeroCopy(const MachineInstruction& instruction,
+                const MachineOperand* expected = nullptr) {
+  return instruction.opcode == "copy" && instruction.hasResult &&
+         instruction.operands.size() == 1 && isImmediate(instruction.operands[0], 0) &&
+         (expected == nullptr || sameRegister(instruction.result, *expected));
+}
+
+bool isIncrement(const MachineInstruction& instruction,
+                 const MachineOperand& induction) {
+  return instruction.opcode == "add" && instruction.hasResult &&
+         instruction.operands.size() == 2 &&
+         sameRegister(instruction.result, induction) &&
+         sameRegister(instruction.operands[0], induction) &&
+         isImmediate(instruction.operands[1], 1);
+}
+
+std::size_t migrateGuardedStencilConvolutions(MachineFunction& function,
+                                              std::size_t nextSite) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_STENCIL_INTERIOR_VECTORIZATION") !=
+      nullptr) return nextSite;
+  std::unordered_map<std::string, std::size_t> indices;
+  for (std::size_t i = 0; i < function.blocks.size(); ++i)
+    indices.emplace(function.blocks[i].name, i);
+  const auto blockFor = [&](const MachineOperand& operand) -> MachineBlock* {
+    if (!isLabel(operand)) return nullptr;
+    const auto found = indices.find(operand.text);
+    return found == indices.end() ? nullptr : &function.blocks[found->second];
+  };
+  const auto twoInstructionLatch = [&](MachineBlock* block,
+                                       const MachineOperand& induction,
+                                       const MachineBlock& header) {
+    if (block == nullptr) return false;
+    const auto positions = meaningfulInstructions(*block);
+    return positions.size() == 2 &&
+           isIncrement(block->instructions[positions[0]], induction) &&
+           isBranchTo(block->instructions[positions[1]], header.name);
+  };
+
+  for (auto& outputBlock : function.blocks) {
+    const auto outputPositions = meaningfulInstructions(outputBlock);
+    if (outputPositions.size() != 4) continue;
+    const auto& outputIndex = outputBlock.instructions[outputPositions[0]];
+    const auto& outputStore = outputBlock.instructions[outputPositions[1]];
+    const auto& incrementColumn = outputBlock.instructions[outputPositions[2]];
+    const auto& backToColumn = outputBlock.instructions[outputPositions[3]];
+    if (outputIndex.opcode != "madd" || !outputIndex.hasResult ||
+        outputIndex.operands.size() != 3 || outputStore.opcode != "store.indexed" ||
+        outputStore.operands.size() != 4 ||
+        !sameRegister(outputStore.operands[2], outputIndex.result) ||
+        !isImmediate(outputStore.operands[3], 4) ||
+        !isIncrement(incrementColumn, outputIndex.operands[2]) ||
+        backToColumn.opcode != "br" || backToColumn.operands.size() != 1) continue;
+    const MachineOperand row = outputIndex.operands[0];
+    const MachineOperand bound = outputIndex.operands[1];
+    const MachineOperand column = outputIndex.operands[2];
+    const MachineOperand sum = outputStore.operands[0];
+    const MachineOperand outputBase = outputStore.operands[1];
+    auto* columnHeader = blockFor(backToColumn.operands[0]);
+    const auto* columnCondition = columnHeader ? singleMeaningful(*columnHeader) : nullptr;
+    if (!isPhysical(row) || !isPhysical(bound) || !isPhysical(column) ||
+        !isPhysical(sum) || !isPhysical(outputBase) || columnCondition == nullptr ||
+        columnCondition->opcode != "br.icmp.slt" ||
+        columnCondition->operands.size() != 4 ||
+        !sameRegister(columnCondition->operands[0], column) ||
+        !sameRegister(columnCondition->operands[1], bound)) continue;
+    auto* columnBody = blockFor(columnCondition->operands[2]);
+    auto* rowLatch = blockFor(columnCondition->operands[3]);
+    if (columnBody == nullptr || rowLatch == nullptr) continue;
+    const auto columnBodyPositions = meaningfulInstructions(*columnBody);
+    if (columnBodyPositions.size() != 3) continue;
+    const auto& sumInit = columnBody->instructions[columnBodyPositions[0]];
+    const auto& krInit = columnBody->instructions[columnBodyPositions[1]];
+    const auto& enterKr = columnBody->instructions[columnBodyPositions[2]];
+    if (!isZeroCopy(sumInit, &sum) || !isZeroCopy(krInit) ||
+        enterKr.opcode != "br" || enterKr.operands.size() != 1) continue;
+    const MachineOperand kr = krInit.result;
+    auto* krHeader = blockFor(enterKr.operands[0]);
+    const auto* krCondition = krHeader ? singleMeaningful(*krHeader) : nullptr;
+    if (krCondition == nullptr || krCondition->opcode != "br.icmp.slt" ||
+        krCondition->operands.size() != 4 ||
+        !sameRegister(krCondition->operands[0], kr) ||
+        krCondition->operands[1].kind != MachineOperandKind::ImmediateInt ||
+        blockFor(krCondition->operands[3]) != &outputBlock) continue;
+    const long long kernelExtent = krCondition->operands[1].intValue;
+    if (kernelExtent <= 0 || kernelExtent > 255) continue;
+    auto* krBody = blockFor(krCondition->operands[2]);
+    if (krBody == nullptr) continue;
+    const auto krBodyPositions = meaningfulInstructions(*krBody);
+    if (krBodyPositions.size() != 7) continue;
+    const auto& kcInit = krBody->instructions[krBodyPositions[0]];
+    const auto& rrAdd = krBody->instructions[krBodyPositions[1]];
+    const auto& rrSub = krBody->instructions[krBodyPositions[2]];
+    const auto& rrLow = krBody->instructions[krBodyPositions[3]];
+    const auto& rrHigh = krBody->instructions[krBodyPositions[4]];
+    const auto& rrAnd = krBody->instructions[krBodyPositions[5]];
+    const auto& rrBranch = krBody->instructions[krBodyPositions[6]];
+    if (!isZeroCopy(kcInit) || rrAdd.opcode != "add" || !rrAdd.hasResult ||
+        rrAdd.operands.size() != 2 || !sameRegister(rrAdd.operands[0], row) ||
+        !sameRegister(rrAdd.operands[1], kr) || rrSub.opcode != "sub" ||
+        !rrSub.hasResult || rrSub.operands.size() != 2 ||
+        !sameRegister(rrSub.operands[0], rrAdd.result) ||
+        rrSub.operands[1].kind != MachineOperandKind::ImmediateInt ||
+        rrLow.opcode != "icmp.sge" || rrLow.operands.size() != 2 ||
+        !sameRegister(rrLow.operands[0], rrSub.result) || !isImmediate(rrLow.operands[1], 0) ||
+        rrHigh.opcode != "icmp.slt" || rrHigh.operands.size() != 2 ||
+        !sameRegister(rrHigh.operands[0], rrSub.result) ||
+        !sameRegister(rrHigh.operands[1], bound) || rrAnd.opcode != "and" ||
+        rrAnd.operands.size() != 2 || !sameRegister(rrAnd.operands[0], rrLow.result) ||
+        !sameRegister(rrAnd.operands[1], rrHigh.result) || rrBranch.opcode != "br" ||
+        rrBranch.operands.size() != 3 ||
+        !sameRegister(rrBranch.operands[0], rrAnd.result)) continue;
+    const long long padding = rrSub.operands[1].intValue;
+    if (padding < 0 || padding >= kernelExtent) continue;
+    const MachineOperand kc = kcInit.result;
+    auto* kcHeader = blockFor(rrBranch.operands[1]);
+    auto* krLatch = blockFor(rrBranch.operands[2]);
+    if (kcHeader == nullptr || krLatch == nullptr) continue;
+    const auto* kcCondition = kcHeader ? singleMeaningful(*kcHeader) : nullptr;
+    if (kcCondition == nullptr || kcCondition->opcode != "br.icmp.slt" ||
+        kcCondition->operands.size() != 4 ||
+        !sameRegister(kcCondition->operands[0], kc) ||
+        !isImmediate(kcCondition->operands[1], kernelExtent) ||
+        blockFor(kcCondition->operands[3]) != krLatch) continue;
+    auto* kcBody = blockFor(kcCondition->operands[2]);
+    if (kcBody == nullptr) continue;
+    const auto kcBodyPositions = meaningfulInstructions(*kcBody);
+    if (kcBodyPositions.size() != 3) continue;
+    const auto& ccAdd = kcBody->instructions[kcBodyPositions[0]];
+    const auto& ccSub = kcBody->instructions[kcBodyPositions[1]];
+    const auto& enterGuard = kcBody->instructions[kcBodyPositions[2]];
+    if (ccAdd.opcode != "add" || !ccAdd.hasResult || ccAdd.operands.size() != 2 ||
+        !sameRegister(ccAdd.operands[0], column) ||
+        !sameRegister(ccAdd.operands[1], kc) || ccSub.opcode != "sub" ||
+        !ccSub.hasResult || ccSub.operands.size() != 2 ||
+        !sameRegister(ccSub.operands[0], ccAdd.result) ||
+        !isImmediate(ccSub.operands[1], padding) || enterGuard.opcode != "br" ||
+        enterGuard.operands.size() != 1) continue;
+    auto* lowGuard = blockFor(enterGuard.operands[0]);
+    const auto* lowCondition = lowGuard ? singleMeaningful(*lowGuard) : nullptr;
+    if (lowCondition == nullptr || lowCondition->opcode != "br.icmp.sge" ||
+        lowCondition->operands.size() != 4 ||
+        !sameRegister(lowCondition->operands[0], ccSub.result) ||
+        !isImmediate(lowCondition->operands[1], 0)) continue;
+    auto* highGuard = blockFor(lowCondition->operands[2]);
+    auto* kcLatch = blockFor(lowCondition->operands[3]);
+    if (highGuard == nullptr || kcLatch == nullptr) continue;
+    const auto* highCondition = highGuard ? singleMeaningful(*highGuard) : nullptr;
+    if (highCondition == nullptr || highCondition->opcode != "br.icmp.slt" ||
+        highCondition->operands.size() != 4 ||
+        !sameRegister(highCondition->operands[0], ccSub.result) ||
+        !sameRegister(highCondition->operands[1], bound) ||
+        blockFor(highCondition->operands[3]) != kcLatch) continue;
+    auto* tap = blockFor(highCondition->operands[2]);
+    if (tap == nullptr) continue;
+    const auto tapPositions = meaningfulInstructions(*tap);
+    if (tapPositions.size() != 6) continue;
+    const auto& inIndex = tap->instructions[tapPositions[0]];
+    const auto& inLoad = tap->instructions[tapPositions[1]];
+    const auto& kIndex = tap->instructions[tapPositions[2]];
+    const auto& kLoad = tap->instructions[tapPositions[3]];
+    const auto& madd = tap->instructions[tapPositions[4]];
+    const auto& leaveTap = tap->instructions[tapPositions[5]];
+    const bool productsMatch =
+        madd.operands.size() == 3 &&
+        ((sameRegister(madd.operands[0], inLoad.result) &&
+          sameRegister(madd.operands[1], kLoad.result)) ||
+         (sameRegister(madd.operands[1], inLoad.result) &&
+          sameRegister(madd.operands[0], kLoad.result)));
+    if (inIndex.opcode != "madd" || !inIndex.hasResult ||
+        inIndex.operands.size() != 3 ||
+        !sameRegister(inIndex.operands[0], rrSub.result) ||
+        !sameRegister(inIndex.operands[1], bound) ||
+        !sameRegister(inIndex.operands[2], ccSub.result) ||
+        inLoad.opcode != "load.indexed" || !inLoad.hasResult ||
+        inLoad.operands.size() != 3 || !sameRegister(inLoad.operands[1], inIndex.result) ||
+        !isImmediate(inLoad.operands[2], 4) || kIndex.opcode != "madd" ||
+        !kIndex.hasResult || kIndex.operands.size() != 3 ||
+        !sameRegister(kIndex.operands[0], kr) ||
+        !isImmediate(kIndex.operands[1], kernelExtent) ||
+        !sameRegister(kIndex.operands[2], kc) || kLoad.opcode != "load.indexed" ||
+        !kLoad.hasResult || kLoad.operands.size() != 3 ||
+        !sameRegister(kLoad.operands[1], kIndex.result) ||
+        !isImmediate(kLoad.operands[2], 4) || madd.opcode != "madd" ||
+        !madd.hasResult || !sameRegister(madd.result, sum) || !productsMatch ||
+        !sameRegister(madd.operands[2], sum) ||
+        !isBranchTo(leaveTap, kcLatch->name) ||
+        !twoInstructionLatch(kcLatch, kc, *kcHeader) ||
+        !twoInstructionLatch(krLatch, kr, *krHeader)) continue;
+    const MachineOperand inputBase = inLoad.operands[0];
+    const MachineOperand kernelBase = kLoad.operands[0];
+    if (!isPhysical(inputBase) || !isPhysical(kernelBase)) continue;
+
+    const auto rowLatchPositions = meaningfulInstructions(*rowLatch);
+    if (rowLatchPositions.size() != 2 ||
+        !isIncrement(rowLatch->instructions[rowLatchPositions[0]], row) ||
+        rowLatch->instructions[rowLatchPositions[1]].opcode != "br" ||
+        rowLatch->instructions[rowLatchPositions[1]].operands.size() != 1) continue;
+    auto* rowHeader = blockFor(rowLatch->instructions[rowLatchPositions[1]].operands[0]);
+    const auto* rowCondition = rowHeader ? singleMeaningful(*rowHeader) : nullptr;
+    if (rowCondition == nullptr || rowCondition->opcode != "br.icmp.slt" ||
+        rowCondition->operands.size() != 4 ||
+        !sameRegister(rowCondition->operands[0], row) ||
+        !sameRegister(rowCondition->operands[1], bound)) continue;
+    auto* columnInit = blockFor(rowCondition->operands[2]);
+    auto* repeatLatch = blockFor(rowCondition->operands[3]);
+    if (columnInit == nullptr || repeatLatch == nullptr) continue;
+    const auto columnInitPositions = meaningfulInstructions(*columnInit);
+    if (columnInitPositions.size() != 2 ||
+        !isZeroCopy(columnInit->instructions[columnInitPositions[0]], &column) ||
+        !isBranchTo(columnInit->instructions[columnInitPositions[1]], columnHeader->name)) continue;
+    const auto repeatLatchPositions = meaningfulInstructions(*repeatLatch);
+    if (repeatLatchPositions.size() != 2 ||
+        repeatLatch->instructions[repeatLatchPositions[1]].opcode != "br" ||
+        repeatLatch->instructions[repeatLatchPositions[1]].operands.size() != 1) continue;
+    auto* repeatHeader = blockFor(repeatLatch->instructions[repeatLatchPositions[1]].operands[0]);
+    const auto* repeatCondition = repeatHeader ? singleMeaningful(*repeatHeader) : nullptr;
+    if (repeatCondition == nullptr || repeatCondition->opcode != "br.icmp.slt" ||
+        repeatCondition->operands.size() != 4) continue;
+    const MachineOperand repeat = repeatCondition->operands[0];
+    const MachineOperand trip = repeatCondition->operands[1];
+    if (!isPhysical(trip) || !isPhysical(repeat) ||
+        !isIncrement(repeatLatch->instructions[repeatLatchPositions[0]], repeat)) continue;
+    auto* rowInit = blockFor(repeatCondition->operands[2]);
+    auto* exit = blockFor(repeatCondition->operands[3]);
+    if (rowInit == nullptr || exit == nullptr) continue;
+    const auto rowInitPositions = meaningfulInstructions(*rowInit);
+    if (rowInitPositions.size() != 2 ||
+        !isZeroCopy(rowInit->instructions[rowInitPositions[0]], &row) ||
+        !isBranchTo(rowInit->instructions[rowInitPositions[1]], rowHeader->name)) continue;
+    std::optional<std::pair<MachineBlock*, std::size_t>> preheader;
+    for (auto& block : function.blocks) {
+      if (&block == repeatLatch) continue;
+      const auto positions = meaningfulInstructions(block);
+      if (positions.empty() ||
+          !isBranchTo(block.instructions[positions.back()], repeatHeader->name)) continue;
+      bool initializes = false;
+      for (std::size_t p = 0; p + 1 < positions.size(); ++p)
+        initializes |= isZeroCopy(block.instructions[positions[p]], &repeat);
+      if (!initializes || preheader.has_value()) { preheader.reset(); break; }
+      preheader = std::pair{&block, positions.back()};
+    }
+    if (!preheader.has_value()) continue;
+    preheader->first->instructions[preheader->second] = MachineInstruction::target(
+        "aarch64.neon.stencil.i32x4",
+        {inputBase, outputBase, kernelBase, bound, trip, repeat,
+         MachineOperand::label(repeatHeader->name), MachineOperand::label(exit->name),
+         MachineOperand::immediateInt(kernelExtent), MachineOperand::immediateInt(padding),
+         MachineOperand::immediateInt(static_cast<std::int64_t>(nextSite),
+                                      ValueType::int64Type())});
+    return nextSite + 1;
+  }
+  return nextSite;
+}
+
 }  // namespace
 
 void AArch64PostRAVectorization::run(
@@ -753,6 +1012,7 @@ void AArch64PostRAVectorization::run(
   for (auto& function : module.functions) {
     nextSite = migrateConstantFills(function, nextSite);
     nextSite = migrateConditionalMatrixReductions(function, nextSite);
+    nextSite = migrateGuardedStencilConvolutions(function, nextSite);
   }
 }
 

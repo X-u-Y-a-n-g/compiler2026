@@ -2357,3 +2357,48 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
 - 状态：D。本地门禁满足推送条件；提交并推送 GitLab `eduxiji` 的
   `zct-arm-no-magic` 后等待官方 Cortex-A53 keep/revert 判定，再继续独立 crypto
   候选。
+
+## 2026-08-03 AArch64 有边界整数 stencil 的 interior 四列向量化（待平台判定）
+
+- 通用语义条件：在 post-RA typed Machine IR 上识别规范二维输出扫描与二维 tap
+  扫描。输出行列和 kernel 行列均须零起点、单位递增；每个输出从 i32 零开始，
+  tap 只在 `0 <= row+kr-pad < bound` 且
+  `0 <= column+kc-pad < bound` 时按原顺序执行一次 i32 wrapping MADD；最终只向
+  `Out[row*bound+column]` 写一次。kernel extent 和 padding 从比较与地址算术取得，
+  不固定 5×5。外层重复次数只有运行时恰为 1 才进入快速路径，零趟直接退出，
+  其他次数执行完整原循环。
+- 版本化与别名证明：pseudo 入口用 64 位地址区间检查证明完整 Out 写区分别与 In
+  和 K 读区不重叠，并拒绝端地址回绕和可能使 i32 平坦索引溢出的过大边界。任一
+  检查失败跳回原 scalar CFG；In 与 K 之间允许重叠，因为两者均只读。该检查不
+  依赖调用点、对象名或输入值内容。
+- 变换：border 保留带完整行列保护的 scalar tap 路径。对由
+  `padding`、`kernelExtent-padding-1` 推导出的 interior 行列域，每次处理四个连续
+  输出列：每个 tap 连续加载四个输入、广播一个 kernel 标量并执行一条 NEON
+  `MLA`。tap 顺序仍严格为原 `kr` 后 `kc` 顺序，每个 lane 的 i32 模回绕结果与
+  scalar 程序一致；不足四列的前后缀继续走 scalar 路径。消融开关为
+  `COMPILER_DISABLE_AARCH64_STENCIL_INTERIOR_VECTORIZATION=1`。
+- 合规：匹配只消费 Machine IR opcode/type/operand、寄存器 def-use、CFG 边和块
+  身份关系；内部 `.Lcompiler_stencil_*` 标签仅由 AsmPrinter 在 pseudo lowering
+  时生成，不参与优化判定。实现不读取源码路径、样例/函数/变量/全局/块名文本、
+  汇编文本、固定公开 kernel 尺寸、输入或输出。
+- 匿名验证：改名 3×3 stencil 对动态 `N=0..10`、零趟、一次和多趟 fallback、
+  无 interior、向量尾部、负数与 i32 回绕逐项比较 O0、关闭版 O1 和候选 O1；
+  同一程序再以 `In==Out` 调用，确认运行时别名检查进入原 scalar 路径。所有输出
+  逐字一致，候选和关闭版均通过 GNU AArch64 汇编、静态链接和 QEMU。
+- 隔离与门禁：Docker `compiler-impl2026-dev` 内使用 `/workspace/build/compiler`。
+  performance 为 `57 AC + 3` 个父提交已有的 h-4 末尾换行格式例外，三份 h-4
+  汇编未变化；AArch64 correctness `140/140 AC`。启用/关闭的 60 份最终汇编
+  只有 `conv2d-1/2/3` 变化，其余 57 份逐字一致，均为直接结构命中。
+- 本地诊断：三项开启/关闭单轮 timer 分别约为
+  `23.461/8.127/4.628ms` 与 `41.622/12.679/5.475ms`，合计
+  `59.776→36.216ms`，下降约 `39.4%`，三项方向一致。快速路径使 conv2d 函数
+  静态指令由约 58 增至 164，以保留完整 fallback；真实 Cortex-A53 是否接受该
+  代码体积与动态工作量取舍仍由官方平台判定。
+- AI/资料范围：AI 辅助完成结构化 Machine IR matcher、运行时区间无别名检查、
+  border/interior 分流、四 lane NEON lowering、匿名别名与边界差分、60/140
+  门禁和汇编归因。技术依据为经典 loop versioning、stencil interior/border
+  splitting、strip-mining、loop vectorization 和 ARMv8-A Advanced SIMD
+  `LDR/DUP/MLA/STR` 语义；未复制外部编译器实现。
+- 状态：D。作为单一候选提交并推送到 GitLab `eduxiji` 的
+  `zct-arm-no-magic`；官方 Cortex-A53 正确且显著改善则保留，持平、退化或错误
+  则独立回退。
