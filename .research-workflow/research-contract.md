@@ -89,3 +89,39 @@
   were `57 AC + 3` pre-existing h-4 formatting exceptions and `140/140 AC`.
 - Promotion state: locally validated and pushed only for official Cortex-A53
   evaluation; no official speedup is claimed until the owner reports it.
+
+## Contract v3: loop-invariant guard-chain hoisting
+
+- Frozen at: 2026-08-03
+- Selected idea ID: arm-loop-invariant-guard-hoisting-v1
+- Hypothesis: when a counted inner loop begins with a short-circuit guard chain
+  whose leading predicates are invariant for the whole loop, evaluating those
+  predicates once in the unique preheader and skipping the effect-free loop
+  when they fail reduces Cortex-A53 control-flow work without changing results.
+- Baseline: commit `d9db8a8` on `zct-arm-no-magic`.
+- Preconditions: unique preheader/backedge/exit; zero-based unit-step signed
+  induction with a loop-invariant bound; no loop-defined SSA value escaping;
+  no exit Phi; cloned predicates contain only non-trapping pure integer work or
+  loads from non-escaping, loop-unmodified scalar allocas; skipped prefix work
+  has no observable stores, calls, division or remainder. Both true/false CFG
+  orientations are normalized. Dynamic bounds and zero-trip loops are kept.
+- Primary observation: official Cortex-A53 time for structurally affected
+  programs. Local QEMU is a submission screen only.
+- Controls: `COMPILER_DISABLE_LOOP_INVARIANT_GUARD_HOISTING=1`, O0 output,
+  renamed/resized positive cases, reversed branch orientation, zero-trip and
+  invariant-false boundaries, varying-guard fallback, observable-prefix
+  fallback, all 60 performance cases and all 140 correctness cases.
+- Success: structural differential output equality, complete gates, a reduced
+  hot-loop branch count and a meaningful official target improvement.
+- Failure: any skipped observable effect, induction/termination proof gap,
+  output mismatch, full-gate failure, or flat/regressed official result.
+- Local outcome: anonymous enabled/disabled/O0 outputs agree and two differently
+  oriented guard chains transform; the observable-prefix and varying-guard
+  cases fall back. Final performance is `57 AC + 3` unchanged h-4 formatting
+  exceptions, correctness is `140/140 AC`, and only conv2d-1/2/3 assembly
+  changes. Their single final QEMU screen is `0.071782s -> 0.061491s`, about
+  `14.3%` lower.
+- Compliance: the pass consumes only IR opcode/operand/type, CFG, dominance,
+  use-def, loop induction and non-escape/effect facts. It does not inspect any
+  path, source text, symbol/function/block name spelling, benchmark constant,
+  generated label text, input or output.

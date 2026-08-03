@@ -44,6 +44,7 @@ add_library(compiler_lib
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LazyAffineCopyResolutionPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopInvariantGuardHoistingPass.cpp
   src/midend/pass/LoopCarriedStoreToLoadForwardingPass.cpp
   src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopWavefrontColumnPackingPass.cpp

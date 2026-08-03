@@ -2,48 +2,47 @@
 
 ## Current objective
 
-Publish the must-execute legality fix for the officially accelerated transposed-shadow candidate to the owner-designated AArch64 delivery branch.
+Publish the isolated AArch64 loop-invariant guard-chain hoisting candidate to
+the owner-designated GitLab delivery branch, then wait for the official
+Cortex-A53 result before starting the next independent crypto candidate.
 
 ## Confirmed facts
 
-- Loop scalar promotion already removes the repeated destination load/store, but h-8 retains an O(B^3) row-stride dependency load.
-- The final pass matches only a constant-bound descending triangular schedule, exact affine accesses, and a no-call/no-aliasing-store outer region.
-- Anonymous 9x9 renamed/reformulated tests pass, including zero-trip inner loops, i32 wrapping values, and two sequential calls.
-- A structurally similar 11x11 case with an extra matrix write falls back.
-- The 60-case scan transforms only h-8-01/02/03.
-- Final gates: correctness 140/140 AC; performance 57 AC plus the three already documented h-4 evaluator formatting exceptions. h-4 enabled and disabled assembly are byte-identical with SHA-256 1e7e46211863afd4643b72e689f5c9cfd93187b19bca82241f4f16d8384ba433.
-- Official Cortex-A53 h-8 result is 3.55/3.55/3.54s versus the prior accepted 11.51/11.41/11.43s, a 69.0% aggregate reduction.
-- A middle-loop early-break counterexample makes the old pass read stale shadow values and differ from O0; the legality fix rejects it.
-- The fix adds compile-time-only must-execute/effect checks. Positive and h-8 final assembly remains byte-identical.
+- Existing idempotent-iteration collapse already reduces conv2d's repeat loop
+  to at most one iteration; remaining convolution work is scalar and repeats
+  four boundary checks for every kernel tap.
+- The new pass hoists the leading two row-bound predicates from the column-tap
+  loop into its unique preheader. Column-dependent guards and border fallback
+  remain unchanged.
+- Anonymous O0/enabled/disabled tests cover zero trips, false invariant guards,
+  dynamic dimensions, reversed branch orientation, varying guards and an
+  observable-prefix negative case. Outputs agree; two positive loops transform.
+- Final focused QEMU screen: conv2d-1/2/3 total `0.071782s -> 0.061491s`, about
+  `14.3%` lower. QEMU is diagnostic only.
+- Final gates: correctness `140/140 AC`; performance `57 AC + 3` parent-existing
+  h-4 trailing-newline formatting exceptions. The three h-4 assemblies are
+  unchanged. Only conv2d-1/2/3 final assemblies differ from the disabled build.
 
 ## Decisions and rationale
 
-- Keep original table writes and add a compiler-private transposed mirror rather than replacing the source object, preserving output and alias-visible behavior.
-- Initialize each diagonal at its descending outer-row entry and mirror both zero-trip and nonzero-trip middle iterations.
-- Cap bound-derived shadow storage at 16 MiB and transform at most one candidate per module.
-- Treat local QEMU timing as inconclusive because it does not model the cache-locality mechanism; use official Cortex-A53 performance for keep/revert.
-
-## Best valid result
-
-The hot second load is contiguous with the same hot-loop instruction count. Official Cortex-A53 h-8 time is 10.64s total versus 34.35s before the shadow, about 3.23x faster; the legality fix does not alter those assemblies.
-
-## Active experiments
-
-- Commit and push the isolated must-execute legality fix.
-
-## Blocked or uncertain
-
-- The checked-out public test copies currently lack `.out` files; full local runs therefore report `NO_EXPECTED` despite successful compile/link/run. Assembly differential against the accepted parent is used as the exact isolation check.
+- Reject the earlier Phi remainder-sinking screen: it only removed one RNG
+  fast-path remainder and showed no meaningful focused gain.
+- Keep guard hoisting independent from interior-loop vectorization so official
+  attribution is clear.
+- Do not begin or publish the next crypto candidate until this pushed revision
+  receives an official keep/revert decision.
 
 ## Next actions
 
-Commit and push the isolated legality fix to `zct-arm-no-magic` after the final parent/candidate assembly differential completes.
+1. Commit only the guard-hoisting implementation, tests and documentation.
+2. Push `zct-arm-no-magic` to GitLab remote `eduxiji`.
+3. Await official Cortex-A53 results; keep on meaningful improvement, otherwise
+   revert and push before continuing crypto.
 
-## Files and commands to reread
+## Relevant artifacts
 
-- `src/midend/pass/TriangularTransposeShadowPass.cpp`
-- `tests/optimization/triangular_transpose_shadow.sy`
-- `tests/optimization/triangular_transpose_shadow_fallback.sy`
-- `tests/optimization/triangular_transpose_shadow_control_flow_fallback.sy`
-- `/tmp/eval-transpose-final-performance-60`
-- `/tmp/eval-transpose-final-correctness-140`
+- `src/midend/pass/LoopInvariantGuardHoistingPass.cpp`
+- `tests/optimization/loop_invariant_guard_hoisting.sy`
+- `/tmp/eval-guard-final2`
+- `/tmp/eval-guard-disabled`
+- `/tmp/eval-guard-correctness-final`

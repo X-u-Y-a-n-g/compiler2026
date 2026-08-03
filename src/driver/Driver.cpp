@@ -49,6 +49,7 @@
 #include "../../include/compiler/midend/pass/IdempotentIterationCollapsePass.h"
 #include "../../include/compiler/midend/pass/LazyAffineCopyResolutionPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopInvariantGuardHoistingPass.h"
 #include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
@@ -277,6 +278,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::LoopInvariantGuardHoistingPass>());
+    }
     const bool isAArch64 = invocation.options().target == "aarch64" ||
                            invocation.options().target == "arm64";
     if (isAArch64) {
