@@ -2402,3 +2402,41 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
 - 状态：D。作为单一候选提交并推送到 GitLab `eduxiji` 的
   `zct-arm-no-magic`；官方 Cortex-A53 正确且显著改善则保留，持平、退化或错误
   则独立回退。
+
+## 2026-08-03 AArch64 剩余汇编文本后处理的完整 Machine IR 迁移
+
+- 合规目标：删除 `AArch64AsmPrinter::print()` 之后的全部汇编字符串优化。原路径
+  包括连续正数除二折叠、纯加法尾递推摘要缓存、常量乘法合成和相邻栈访问配对；
+  它们曾拆分最终汇编行、使用正则恢复指令和寄存器关系，或依赖生成标签间的文本
+  关系。即使不读取样例名，这也不符合“不得把汇编文本或生成基本块名字作为优化
+  输入”的严格规则。
+- 结构化实现：新增 `AArch64LateMachineOptimization`，在 post-RA Machine IR
+  上以 typed opcode/operand、物理寄存器 def-use、显式 Label CFG operand、块身份、
+  唯一前驱和内存效果证明连续除二及尾摘要；生成
+  `aarch64.positive.half.collapse` 和 `aarch64.tail.memo.*` pseudo。常量乘法与
+  栈配对迁入 `AArch64InstructionCombining::runPostRA`，分别检查 typed `mul`
+  immediate 和 FrameIndex/StackObject 的最终偏移。AsmPrinter 只展开已经证明的
+  pseudo，内部 `.Lcompiler_*` 标签只作为输出，不参与任何后续判定。
+- 性能保持：迁移不扩大旧成本策略。栈配对只接受原单条访问本来就会使用 unsigned
+  scaled `LDR/STR` 的非负 8 字节对齐偏移；原本打印为 `LDUR/STUR` 的负 frame
+  offset 不产生新配对，避免恢复历史上 A53 已退化的广义保存恢复配对。常量乘法
+  的结构化输出与旧 matcher 在当前性能集完全一致。
+- 汇编隔离：以提交 `46351fd` 的独立编译器为基线生成全部 60 份最终汇编。收紧
+  栈配对后 57 份逐字一致，仅 `h-1-01/02/03` 变化；变化来自内部标签重命名和
+  新共享 store MachineBlock 直接落入 epilogue，缓存 lookup、连续折半、加性/
+  绝对返回写回和 BSS 容量不变，并删除一条 store-block 到 epilogue 的无条件
+  分支。
+- 边界回归：绝对终止值匿名用例的 O0/O1 输出均为 `221`；多上下文切换用例均为
+  `115/221/115`，证明紧凑单上下文和完整 context-key fallback 仍正确。CFG
+  matcher 额外要求 header 的 `state!=1` 边直接进入 parity 块，parity 零边唯一
+  进入偶数块，拒绝仅在其他位置出现相似 `&1` 的无关结构。
+- 完整门禁：Docker `compiler-impl2026-dev` 中 `/workspace/build/compiler` Release
+  构建成功；AArch64 correctness `140/140 AC`。performance 为 `57 AC + 3`
+  个父提交已有的 h-4 末尾格式例外，三份 h-4 最终汇编与迁移前逐字一致，未引入
+  新错误。后端源码扫描不再存在 `std::regex`、`regex_match/search`、`splitLines`
+  或最终 assembly rewrite pipeline。
+- 状态：合规重构完成，未提交、未推送，不作为新的 Cortex-A53 性能候选。AI 辅助
+  完成结构化 MIR 设计、CFG/寄存器/栈对象证明、等价范围收紧、基线汇编隔离、
+  合成对拍、60/140 门禁和文档更新；技术依据为经典 Machine IR peephole、CFG/
+  def-use/effect analysis、bounded memoization 与 AArch64 指令编码，未复制外部
+  编译器实现。

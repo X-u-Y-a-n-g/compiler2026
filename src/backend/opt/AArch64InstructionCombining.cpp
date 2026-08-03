@@ -21,6 +21,7 @@ using compiler::backend::mir::MachineFunction;
 using compiler::backend::mir::MachineInstruction;
 using compiler::backend::mir::MachineOperand;
 using compiler::backend::mir::MachineOperandKind;
+using compiler::backend::mir::ValueType;
 
 struct Definition {
   std::size_t block = 0;
@@ -810,6 +811,200 @@ void redirectPostRANoOpBlocks(MachineFunction& function) {
       function.blocks.end());
 }
 
+bool positivePowerOfTwo(std::int64_t value, unsigned& shift) {
+  if (value <= 0) return false;
+  const auto bits = static_cast<std::uint64_t>(value);
+  if ((bits & (bits - 1U)) != 0) return false;
+  shift = 0;
+  for (auto remaining = bits; remaining > 1U; remaining >>= 1U) ++shift;
+  return true;
+}
+
+void combinePostRAConstantMultiplies(MachineFunction& function) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_SUPEROPT_MUL") != nullptr) return;
+  for (auto& block : function.blocks) {
+    for (auto& instruction : block.instructions) {
+      if (instruction.opcode != "mul" || !instruction.hasResult ||
+          instruction.operands.size() != 2 ||
+          (!instruction.result.type.isInt32() &&
+           !instruction.result.type.isInt64())) {
+        continue;
+      }
+      std::optional<std::size_t> constantIndex;
+      for (std::size_t index = 0; index < 2; ++index) {
+        if (instruction.operands[index].kind ==
+            MachineOperandKind::ImmediateInt) {
+          constantIndex = index;
+          break;
+        }
+      }
+      if (!constantIndex.has_value()) continue;
+      const auto constant = instruction.operands[*constantIndex].intValue;
+      const auto value = instruction.operands[1U - *constantIndex];
+      unsigned shift = 0;
+      const unsigned width = instruction.result.type.isInt32() ? 32U : 64U;
+      if (positivePowerOfTwo(constant, shift) && shift < width) {
+        instruction = MachineInstruction::target(
+            "shl", instruction.result,
+            {value, MachineOperand::immediateInt(
+                        shift, instruction.result.type)});
+        continue;
+      }
+      if (constant > 1 && positivePowerOfTwo(constant - 1, shift) &&
+          shift > 0 && shift < width) {
+        instruction = MachineInstruction::target(
+            "aarch64.add.shifted", instruction.result,
+            {value, MachineOperand::immediateInt(
+                        shift, instruction.result.type)});
+      }
+    }
+  }
+}
+
+struct StackPairAccess {
+  bool load = false;
+  MachineOperand reg;
+  MachineOperand base;
+  long long offset = 0;
+};
+
+long long finalFrameOffset(const MachineFunction& function,
+                           long long cfaOffset) {
+  return function.usesFramePointer
+             ? cfaOffset
+             : static_cast<long long>(function.frameSize) + cfaOffset;
+}
+
+std::optional<long long> stackOperandOffset(const MachineFunction& function,
+                                            const MachineOperand& operand) {
+  if (operand.kind != MachineOperandKind::FrameIndex &&
+      operand.kind != MachineOperandKind::StackSlot &&
+      operand.kind != MachineOperandKind::StackObject) {
+    return std::nullopt;
+  }
+  if (operand.index < 0 ||
+      static_cast<std::size_t>(operand.index) >= function.stackObjects.size()) {
+    return std::nullopt;
+  }
+  return finalFrameOffset(
+      function,
+      -static_cast<long long>(
+          function.stackObjects[static_cast<std::size_t>(operand.index)].offset));
+}
+
+bool pairableXRegister(const MachineOperand& operand) {
+  return operand.kind == MachineOperandKind::PhysicalRegister &&
+         (operand.type.isInt64() || operand.type.isPointer()) &&
+         !operand.text.empty() && operand.text.front() == 'x';
+}
+
+std::optional<StackPairAccess> stackPairAccess(
+    const MachineFunction& function, const MachineInstruction& instruction) {
+  const MachineOperand frameBase = MachineOperand::physicalRegister(
+      function.usesFramePointer ? "x29" : "sp", ValueType::int64Type());
+  if (instruction.opcode == "stack.save" && instruction.operands.size() == 2 &&
+      pairableXRegister(instruction.operands[0]) &&
+      instruction.operands[1].kind == MachineOperandKind::ImmediateInt) {
+    return StackPairAccess{false, instruction.operands[0],
+                           MachineOperand::physicalRegister(
+                               "sp", ValueType::int64Type()),
+                           instruction.operands[1].intValue};
+  }
+  if (instruction.opcode == "stack.restore" && instruction.hasResult &&
+      instruction.operands.size() == 1 && pairableXRegister(instruction.result) &&
+      instruction.operands[0].kind == MachineOperandKind::ImmediateInt) {
+    return StackPairAccess{true, instruction.result, frameBase,
+                           finalFrameOffset(function,
+                                            instruction.operands[0].intValue)};
+  }
+  if ((instruction.opcode == "spill.reload" ||
+       instruction.opcode == "frame.load") &&
+      instruction.hasResult && instruction.operands.size() == 1 &&
+      pairableXRegister(instruction.result)) {
+    const auto offset = stackOperandOffset(function, instruction.operands[0]);
+    if (offset.has_value())
+      return StackPairAccess{true, instruction.result, frameBase, *offset};
+  }
+  if ((instruction.opcode == "spill.store" ||
+       instruction.opcode == "frame.store") &&
+      instruction.operands.size() == 2 &&
+      pairableXRegister(instruction.operands[0])) {
+    const auto offset = stackOperandOffset(function, instruction.operands[1]);
+    if (offset.has_value())
+      return StackPairAccess{false, instruction.operands[0], frameBase, *offset};
+  }
+  if (instruction.opcode == "load" && instruction.hasResult &&
+      instruction.operands.size() == 1 && pairableXRegister(instruction.result)) {
+    const auto offset = stackOperandOffset(function, instruction.operands[0]);
+    if (offset.has_value())
+      return StackPairAccess{true, instruction.result, frameBase, *offset};
+  }
+  if (instruction.opcode == "store" && instruction.operands.size() == 2 &&
+      pairableXRegister(instruction.operands[0])) {
+    const auto offset = stackOperandOffset(function, instruction.operands[1]);
+    if (offset.has_value())
+      return StackPairAccess{false, instruction.operands[0], frameBase, *offset};
+  }
+  return std::nullopt;
+}
+
+void combineStackPairsInSequence(MachineFunction& function,
+                                 std::vector<MachineInstruction>& instructions) {
+  std::vector<MachineInstruction> rewritten;
+  rewritten.reserve(instructions.size());
+  for (std::size_t index = 0; index < instructions.size();) {
+    if (index + 1 < instructions.size()) {
+      const auto first = stackPairAccess(function, instructions[index]);
+      const auto second = stackPairAccess(function, instructions[index + 1]);
+      if (first.has_value() && second.has_value() &&
+          first->load == second->load &&
+          samePhysicalRegister(first->base, second->base) &&
+          !samePhysicalRegister(first->reg, second->reg)) {
+        // Preserve the exact scope of the former assembly-level combiner: it
+        // only saw accesses that had already selected the unsigned scaled
+        // LDR/STR encoding.  Negative frame offsets are emitted as LDUR/STUR
+        // and must not become a new pairing opportunity during this
+        // compliance-only migration.
+        const auto isScalarUnsignedScaledAccess = [](long long offset) {
+          return offset >= 0 && offset % 8 == 0 && offset / 8 <= 4095;
+        };
+        if (!isScalarUnsignedScaledAccess(first->offset) ||
+            !isScalarUnsignedScaledAccess(second->offset)) {
+          rewritten.push_back(std::move(instructions[index++]));
+          continue;
+        }
+        const StackPairAccess* low = &*first;
+        const StackPairAccess* high = &*second;
+        if (second->offset < first->offset) {
+          low = &*second;
+          high = &*first;
+        }
+        if (low->offset + 8 == high->offset && low->offset >= -512 &&
+            low->offset <= 504 && low->offset % 8 == 0) {
+          rewritten.push_back(MachineInstruction::target(
+              first->load ? "aarch64.stack.pair.load"
+                          : "aarch64.stack.pair.store",
+              {low->reg, high->reg, low->base,
+               MachineOperand::immediateInt(low->offset,
+                                            ValueType::int64Type())}));
+          index += 2;
+          continue;
+        }
+      }
+    }
+    rewritten.push_back(std::move(instructions[index++]));
+  }
+  instructions = std::move(rewritten);
+}
+
+void combinePostRAStackPairs(MachineFunction& function) {
+  if (std::getenv("COMPILER_DISABLE_AARCH64_STP_LDP") != nullptr) return;
+  combineStackPairsInSequence(function, function.prologueInstructions);
+  for (auto& block : function.blocks)
+    combineStackPairsInSequence(function, block.instructions);
+  combineStackPairsInSequence(function, function.epilogueInstructions);
+}
+
 }  // namespace
 
 void AArch64InstructionCombining::run(
@@ -840,6 +1035,8 @@ void AArch64InstructionCombining::runPostRA(
     combinePostRACountedBranches(function);
     combinePostRAIndexedReloadInductions(function);
     redirectPostRANoOpBlocks(function);
+    combinePostRAConstantMultiplies(function);
+    combinePostRAStackPairs(function);
   }
   if (std::getenv("COMPILER_AARCH64_STACK_ZERO_RANGE_STATS") != nullptr) {
     std::cerr << "aarch64-stack-zero-range: combined-i32-stores="

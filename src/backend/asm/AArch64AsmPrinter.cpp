@@ -9,7 +9,6 @@
 #include <cstring>
 #include <limits>
 #include <optional>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -32,640 +31,6 @@ constexpr const char* kAddrScratch = "x16";
 constexpr const char* kImmScratch = "x17";
 constexpr const char* kHiddenScratch = "x18";
 constexpr const char* kFloatScratch = "s16";
-
-struct ContiguousMaddLane {
-  std::size_t maddLine = 0;
-  std::string accumulator;
-};
-
-bool lineUsesRegister(const std::string& line, const std::string& reg);
-
-std::vector<std::string> splitLines(const std::string& assembly) {
-  std::vector<std::string> lines;
-  std::size_t begin = 0;
-  while (begin < assembly.size()) {
-    const auto end = assembly.find('\n', begin);
-    if (end == std::string::npos) {
-      lines.push_back(assembly.substr(begin));
-      break;
-    }
-    lines.push_back(assembly.substr(begin, end - begin));
-    begin = end + 1;
-  }
-  return lines;
-}
-
-struct PositiveHalfLoopSite {
-  std::string header;
-  std::string fallback;
-  std::string state;
-  std::string depth;
-};
-
-struct PositiveHalfCollapseResult {
-  std::string assembly;
-  std::vector<PositiveHalfLoopSite> sites;
-};
-
-std::string pairAdjacentStackAccesses(const std::string& assembly) {
-  if (std::getenv("COMPILER_DISABLE_AARCH64_STP_LDP") != nullptr) return assembly;
-  static const std::regex accessPattern{
-      R"(^  (str|ldr) (x[0-9]+), \[(sp|x29)(?:, #(-?[0-9]+))?\]$)"};
-  auto lines = splitLines(assembly);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
-    std::smatch first;
-    std::smatch second;
-    if (!std::regex_match(lines[i], first, accessPattern) ||
-        !std::regex_match(lines[i + 1], second, accessPattern) ||
-        first[1].str() != second[1].str() || first[3].str() != second[3].str() ||
-        first[2].str() == second[2].str())
-      continue;
-    const auto firstOffset = first[4].matched ? std::stoll(first[4].str()) : 0;
-    const auto secondOffset = second[4].matched ? std::stoll(second[4].str()) : 0;
-    std::string lowRegister;
-    std::string highRegister;
-    long long lowOffset = 0;
-    if (firstOffset + 8 == secondOffset) {
-      lowRegister = first[2].str();
-      highRegister = second[2].str();
-      lowOffset = firstOffset;
-    } else if (secondOffset + 8 == firstOffset) {
-      lowRegister = second[2].str();
-      highRegister = first[2].str();
-      lowOffset = secondOffset;
-    } else {
-      continue;
-    }
-    if (lowOffset < -512 || lowOffset > 504 || lowOffset % 8 != 0) continue;
-    std::string replacement = "  " + std::string(first[1].str() == "str" ? "stp " : "ldp ") +
-                              lowRegister + ", " + highRegister + ", [" + first[3].str();
-    if (lowOffset != 0) replacement += ", #" + std::to_string(lowOffset);
-    replacement += "]";
-    lines[i] = std::move(replacement);
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
-  }
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-std::string synthesizeConstantMultiplies(const std::string& assembly) {
-  if (std::getenv("COMPILER_DISABLE_AARCH64_SUPEROPT_MUL") != nullptr) return assembly;
-  static const std::regex constantPattern{
-      R"(^  movz ([wx][0-9]+), #([0-9]+)(?:, lsl #([0-9]+))?$)"};
-  static const std::regex multiplyPattern{
-      R"(^  mul ([wx][0-9]+), ([wx][0-9]+), ([wx][0-9]+)$)"};
-  auto lines = splitLines(assembly);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
-    std::smatch materialize;
-    std::smatch multiply;
-    if (!std::regex_match(lines[i], materialize, constantPattern) ||
-        !std::regex_match(lines[i + 1], multiply, multiplyPattern))
-      continue;
-    const std::string constantRegister = materialize[1].str();
-    const std::string constantNumber = constantRegister.substr(1);
-    if (constantNumber != "16" && constantNumber != "17" && constantNumber != "18") continue;
-    std::string valueRegister;
-    if (multiply[2].str() == constantRegister && multiply[3].str() != constantRegister)
-      valueRegister = multiply[3].str();
-    else if (multiply[3].str() == constantRegister && multiply[2].str() != constantRegister)
-      valueRegister = multiply[2].str();
-    else
-      continue;
-    const std::string destination = multiply[1].str();
-    if (destination.front() != valueRegister.front() ||
-        destination.front() != constantRegister.front())
-      continue;
-
-    const auto immediate = static_cast<std::uint64_t>(std::stoull(materialize[2].str()));
-    const auto materializeShift = materialize[3].matched
-                                      ? static_cast<unsigned>(std::stoul(materialize[3].str()))
-                                      : 0U;
-    const unsigned width = destination.front() == 'w' ? 32U : 64U;
-    if (materializeShift >= width || immediate > (UINT64_MAX >> materializeShift)) continue;
-    const std::uint64_t constant = immediate << materializeShift;
-    if (constant == 0) continue;
-
-    std::string replacement;
-    if ((constant & (constant - 1U)) == 0) {
-      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(constant));
-      if (shift >= width) continue;
-      replacement = "  lsl " + destination + ", " + valueRegister + ", #" +
-                    std::to_string(shift);
-    } else {
-      const std::uint64_t remainder = constant - 1U;
-      if ((remainder & (remainder - 1U)) != 0) continue;
-      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(remainder));
-      if (shift == 0 || shift >= width) continue;
-      replacement = "  add " + destination + ", " + valueRegister + ", " + valueRegister +
-                    ", lsl #" + std::to_string(shift);
-    }
-    lines[i] = std::move(replacement);
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
-  }
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-PositiveHalfCollapseResult collapsePositivePowerOfTwoSteps(
-    const std::string& assembly) {
-  static const std::regex signedHalfPattern{
-      R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
-  static const std::regex shiftPattern{
-      R"(^  asr (w[0-9]+), (w[0-9]+), #1$)"};
-  static const std::regex incrementPattern{
-      R"(^  add (w[0-9]+), \1, #1$)"};
-  static const std::regex branchPattern{R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
-  auto lines = splitLines(assembly);
-  std::vector<PositiveHalfLoopSite> sites;
-  std::unordered_set<std::string> labels;
-  for (const auto& line : lines) {
-    if (!line.empty() && line.back() == ':') labels.insert(line.substr(0, line.size() - 1));
-  }
-
-  for (std::size_t index = 0; index + 3 < lines.size(); ++index) {
-    constexpr const char* signedHalfSuffix = ", lsr #31";
-    constexpr std::size_t signedHalfSuffixSize = 9;
-    if (lines[index].compare(0, 7, "  add w") != 0 ||
-        lines[index].size() < signedHalfSuffixSize ||
-        lines[index].compare(lines[index].size() - signedHalfSuffixSize,
-                             signedHalfSuffixSize, signedHalfSuffix) != 0) {
-      continue;
-    }
-    std::smatch signedHalf;
-    std::smatch shift;
-    std::smatch increment;
-    std::smatch branch;
-    if (!std::regex_match(lines[index], signedHalf, signedHalfPattern) ||
-        !std::regex_match(lines[index + 1], shift, shiftPattern) ||
-        !std::regex_match(lines[index + 2], increment, incrementPattern) ||
-        !std::regex_match(lines[index + 3], branch, branchPattern)) {
-      continue;
-    }
-    const auto state = signedHalf[1].str();
-    const auto depth = increment[1].str();
-    const auto header = branch[1].str();
-    if (shift[1].str() != state || shift[2].str() != state ||
-        state == depth || state == "w16" || depth == "w16") {
-      continue;
-    }
-
-    const auto headerLine = std::find(lines.begin(), lines.end(), header + ":");
-    if (headerLine == lines.end()) continue;
-    const auto headerIndex = static_cast<std::size_t>(headerLine - lines.begin());
-    if (headerIndex + 2 >= lines.size() ||
-        lines[headerIndex + 1] != "  cmp " + state + ", #1") {
-      continue;
-    }
-
-    // Prove that this block is the even successor of the same loop header:
-    // the header's non-terminal path reaches an AND-by-one test whose false
-    // fallthrough is exactly this block.  No source or symbol names are used.
-    bool provenEvenSuccessor = false;
-    const std::size_t scanEnd = std::min(lines.size(), headerIndex + 16);
-    for (std::size_t probe = headerIndex + 2; probe + 3 < scanEnd; ++probe) {
-      static const std::regex parityPattern{
-          R"(^  and (w[0-9]+), (w[0-9]+), #1$)"};
-      static const std::regex nonzeroBranchPattern{
-          R"(^  cbnz (w[0-9]+), (\.[A-Za-z0-9_.$]+)$)"};
-      std::smatch parity;
-      std::smatch nonzeroBranch;
-      if (!std::regex_match(lines[probe], parity, parityPattern) ||
-          parity[2].str() != state ||
-          !std::regex_match(lines[probe + 1], nonzeroBranch,
-                            nonzeroBranchPattern) ||
-          nonzeroBranch[1].str() != parity[1].str() ||
-          lines[probe + 2].empty() || lines[probe + 2].back() != ':' ||
-          probe + 3 != index) {
-        continue;
-      }
-      provenEvenSuccessor = true;
-      break;
-    }
-    if (!provenEvenSuccessor) continue;
-
-    std::string fallback = header + ".positive_half_fallback";
-    for (unsigned suffix = 0; labels.find(fallback) != labels.end(); ++suffix) {
-      fallback = header + ".positive_half_fallback." + std::to_string(suffix);
-    }
-    labels.insert(fallback);
-    const std::vector<std::string> replacement{
-        "  cmp " + state + ", #0",
-        "  b.le " + fallback,
-        "  rbit w16, " + state,
-        "  clz w16, w16",
-        "  lsr " + state + ", " + state + ", w16",
-        "  add " + depth + ", " + depth + ", w16",
-        "  b " + header,
-        fallback + ":",
-        lines[index],
-        lines[index + 1],
-        lines[index + 2],
-        lines[index + 3]};
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(index),
-                lines.begin() + static_cast<std::ptrdiff_t>(index + 4));
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
-                 replacement.begin(), replacement.end());
-    sites.push_back(PositiveHalfLoopSite{header, fallback, state, depth});
-    index += replacement.size() - 1;
-  }
-
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return PositiveHalfCollapseResult{result.str(), std::move(sites)};
-}
-
-std::string memoizePureAdditiveTailLoop(
-    const PositiveHalfCollapseResult& collapsed,
-    bool singleImmutableContext) {
-  // The compact layout can spend the same kind of bounded memory budget on a
-  // wider useful state domain.  The general multi-context fallback retains its
-  // original smaller window and entry format.
-  const std::uint32_t cacheStates =
-      singleImmutableContext ? (1U << 24) : (1U << 20);
-  const std::string cacheUpperWords = singleImmutableContext ? "256" : "16";
-  const std::uint64_t cacheEntryBytes = singleImmutableContext ? 4U : 8U;
-  const std::uint64_t cacheBytes =
-      (static_cast<std::uint64_t>(cacheStates) + 1U) * cacheEntryBytes;
-  static const std::regex headerComparePattern{
-      R"(^  cmp (w[0-9]+), #1$)"};
-  static const std::regex conditionalBranchPattern{
-      R"(^  b\.ne (\.[A-Za-z0-9_.$]+)$)"};
-  static const std::regex movePattern{
-      R"(^  mov (w[0-9]+), (w[0-9]+)$)"};
-  static const std::regex loadPattern{
-      R"(^  ldr (w[0-9]+), \[(x[0-9]+)\]$)"};
-  static const std::regex branchPattern{
-      R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
-
-  auto lines = splitLines(collapsed.assembly);
-  for (const auto& site : collapsed.sites) {
-    const auto headerIt =
-        std::find(lines.begin(), lines.end(), site.header + ":");
-    const auto fallbackIt =
-        std::find(lines.begin(), lines.end(), site.fallback + ":");
-    if (headerIt == lines.end() || fallbackIt == lines.end()) continue;
-    const std::size_t headerIndex =
-        static_cast<std::size_t>(headerIt - lines.begin());
-    if (headerIndex + 5 >= lines.size()) continue;
-
-    std::smatch headerCompare;
-    std::smatch headerBranch;
-    std::smatch baseMove;
-    std::smatch baseBranch;
-    if (!std::regex_match(lines[headerIndex + 1], headerCompare,
-                          headerComparePattern) ||
-        !std::regex_match(lines[headerIndex + 2], headerBranch,
-                          conditionalBranchPattern) ||
-        lines[headerIndex + 3].empty() ||
-        lines[headerIndex + 3].back() != ':' ||
-        !std::regex_match(lines[headerIndex + 4], baseMove, movePattern) ||
-        baseMove[1].str() != "w0" ||
-        !std::regex_match(lines[headerIndex + 5], baseBranch,
-                          branchPattern)) {
-      continue;
-    }
-    if (headerCompare[1].str() != site.state ||
-        baseMove[2].str() != site.depth) {
-      continue;
-    }
-    const std::string& header = site.header;
-    const std::string& state = site.state;
-    const std::string& depth = site.depth;
-    const std::string epilogue = baseBranch[1].str();
-    if (state == depth || state == "w16" || state == "w17" ||
-        state == "w18" || depth == "w16" || depth == "w17" ||
-        depth == "w18") {
-      continue;
-    }
-
-    std::size_t functionBegin = headerIndex;
-    while (functionBegin > 0) {
-      --functionBegin;
-      if (lines[functionBegin].compare(0, 6, ".type ") == 0 &&
-          lines[functionBegin].size() >= 11 &&
-          lines[functionBegin].compare(lines[functionBegin].size() - 11, 11,
-                                       ", %function") == 0) {
-        break;
-      }
-    }
-    if (lines[functionBegin].compare(0, 6, ".type ") != 0) continue;
-    std::size_t functionEnd = headerIndex;
-    while (functionEnd < lines.size() && lines[functionEnd] != epilogue + ":") {
-      ++functionEnd;
-    }
-    if (functionEnd == lines.size()) continue;
-    std::size_t functionSize = functionEnd;
-    while (functionSize < lines.size() &&
-           lines[functionSize].compare(0, 6, ".size ") != 0) {
-      ++functionSize;
-    }
-    if (functionSize == lines.size()) continue;
-
-    // The summary key is sound only for a leaf, side-effect-free two-input
-    // recurrence.  The second input must be a pure additive accumulator; the
-    // sole memory read becomes the per-entry immutable context.
-    std::size_t stateInit = lines.size();
-    std::size_t depthInit = lines.size();
-    std::size_t contextLoad = lines.size();
-    std::string context;
-    bool safe = true;
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (line.compare(0, 5, "  bl ") == 0 ||
-          line.compare(0, 6, "  str ") == 0 ||
-          line.compare(0, 7, "  stur ") == 0) {
-        safe = false;
-        break;
-      }
-      std::smatch move;
-      if (std::regex_match(line, move, movePattern)) {
-        if (move[1].str() == state && move[2].str() == "w0") stateInit = index;
-        if (move[1].str() == depth && move[2].str() == "w1") depthInit = index;
-      }
-      std::smatch load;
-      if (std::regex_match(line, load, loadPattern)) {
-        if (contextLoad != lines.size()) {
-          safe = false;
-          break;
-        }
-        contextLoad = index;
-        context = load[1].str();
-      } else if (line.compare(0, 6, "  ldr ") == 0 ||
-                 line.compare(0, 7, "  ldur ") == 0) {
-        safe = false;
-        break;
-      }
-    }
-    if (!safe || stateInit == lines.size() || depthInit == lines.size() ||
-        contextLoad == lines.size() || stateInit >= headerIndex ||
-        depthInit >= headerIndex || context == state || context == depth ||
-        context == "w16" || context == "w17" || context == "w18") {
-      continue;
-    }
-
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (!lineUsesRegister(line, depth)) continue;
-      const bool allowed = index == depthInit || index == headerIndex + 4 ||
-                           line == "  add " + depth + ", " + depth + ", #1" ||
-                           line == "  add " + depth + ", " + depth + ", w16";
-      if (!allowed) {
-        safe = false;
-        break;
-      }
-    }
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (!lineUsesRegister(line, context)) continue;
-      const bool allowed = index == contextLoad ||
-                           std::regex_match(
-                               line, std::regex{"^  cmp w[0-9]+, " + context + "$"});
-      if (!allowed) {
-        safe = false;
-        break;
-      }
-    }
-    for (const auto& reserved : {std::string("w5"), std::string("x5"),
-                                 std::string("w6"), std::string("x6"),
-                                 std::string("w7"), std::string("x7")}) {
-      for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-        if (lineUsesRegister(lines[index], reserved)) safe = false;
-      }
-    }
-    if (!safe) continue;
-
-    // The cache window is a loop invariant.  Keep its upper bound in one
-    // caller-saved scratch register instead of materializing the same
-    // constant at every tail-loop iteration and again at the final store.
-    // Only choose a register proven unused by this leaf function; otherwise
-    // retain the parent lowering unchanged.
-    std::optional<std::string> cacheBoundRegister;
-    if (std::getenv("COMPILER_DISABLE_TAIL_MEMO_BOUND_HOIST") == nullptr) {
-      for (const auto& candidate : {std::string("w8"), std::string("w9"),
-                                    std::string("w10"), std::string("w11")}) {
-        const std::string xCandidate = "x" + candidate.substr(1);
-        bool used = false;
-        for (std::size_t index = functionBegin + 1; index < functionEnd;
-             ++index) {
-          if (lineUsesRegister(lines[index], candidate) ||
-              lineUsesRegister(lines[index], xCandidate)) {
-            used = true;
-            break;
-          }
-        }
-        if (!used) {
-          cacheBoundRegister = candidate;
-          break;
-        }
-      }
-    }
-    const bool hoistCacheBound = cacheBoundRegister.has_value();
-    const std::string cacheBound =
-        hoistCacheBound ? *cacheBoundRegister : "w16";
-    const bool useUnsignedCacheDomainGuard =
-        std::getenv("COMPILER_DISABLE_TAIL_MEMO_SIGN_GUARD") == nullptr &&
-        cacheStates <=
-            static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max());
-
-    const std::string cache = ".Ltail_memo_cache_0";
-    const std::string absoluteCache = ".Ltail_memo_absolute_0";
-    const std::string miss = header + ".memo_miss";
-    const std::string store = header + ".memo_store";
-    const std::string noStore = header + ".memo_no_store";
-    const bool absoluteRegistersFree =
-        cacheBound != "w9" && cacheBound != "w10" &&
-        std::none_of(lines.begin() + static_cast<std::ptrdiff_t>(functionBegin),
-                     lines.begin() + static_cast<std::ptrdiff_t>(functionEnd),
-                     [](const std::string& line) {
-                       return lineUsesRegister(line, "w9") ||
-                              lineUsesRegister(line, "x9") ||
-                              lineUsesRegister(line, "w10") ||
-                              lineUsesRegister(line, "x10");
-                     });
-    const bool cacheAbsoluteFallthrough =
-        singleImmutableContext && absoluteRegistersFree &&
-        std::getenv("COMPILER_DISABLE_TAIL_MEMO_FALLTHROUGH_STORE") == nullptr;
-
-    // Explicit base-case returns already branch through the memo store below.
-    // A terminal arm may instead fall through directly into the shared
-    // epilogue; route only that fallthrough edge through the same store while
-    // preserving every existing branch to the epilogue.
-    if (cacheAbsoluteFallthrough) {
-      lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionEnd),
-                   {"  movz w9, #1", "  b " + store});
-      functionSize += 2;
-    }
-
-    // Work backwards so the original indices remain valid.
-    std::vector<std::string> storeSequence{store + ":"};
-    if (useUnsignedCacheDomainGuard) {
-      // The stored key domain is exactly 1..upper.  A 32-bit unsigned
-      // comparison rejects both negative (high-bit-set) and out-of-window
-      // states; zero is the reserved empty slot and is rejected separately.
-      if (!hoistCacheBound)
-        storeSequence.push_back("  movz w16, #" + cacheUpperWords +
-                               ", lsl #16");
-      storeSequence.insert(storeSequence.end(),
-                           {"  cmp w6, " + cacheBound,
-                            "  b.hi " + noStore,
-                            "  cbz w6, " + noStore});
-    } else {
-      storeSequence.insert(storeSequence.end(),
-                           {"  cmp w6, #0", "  b.le " + noStore});
-      if (!hoistCacheBound)
-        storeSequence.push_back("  movz w16, #" + cacheUpperWords +
-                               ", lsl #16");
-      storeSequence.push_back("  cmp w6, " + cacheBound);
-      storeSequence.push_back("  b.hi " + noStore);
-    }
-    if (cacheAbsoluteFallthrough) {
-      const std::string summaryStore = store + ".summary";
-      storeSequence.insert(
-          storeSequence.end(),
-          {"  cbz w9, " + summaryStore,
-           "  add w17, w0, #1",
-           "  str w17, [x5, w6, uxtw #2]",
-           "  movz w18, #1",
-           "  strb w18, [x10, w6, uxtw]",
-           "  b " + noStore,
-           summaryStore + ":",
-           "  sub w17, w0, w7",
-           "  add w17, w17, #1",
-           "  str w17, [x5, w6, uxtw #2]",
-           "  strb wzr, [x10, w6, uxtw]"});
-    } else {
-      storeSequence.insert(storeSequence.end(),
-                           {"  sub w17, w0, w7",
-                            "  add w17, w17, #1"});
-      if (singleImmutableContext) {
-        storeSequence.push_back("  str w17, [x5, w6, uxtw #2]");
-      } else {
-        storeSequence.insert(
-            storeSequence.end(),
-            {"  uxtw x17, w17",
-             "  uxtw x18, " + context,
-             "  orr x17, x17, x18, lsl #32",
-             "  str x17, [x5, w6, uxtw #3]"});
-      }
-    }
-    storeSequence.insert(storeSequence.end(),
-                         {noStore + ":", "  b " + epilogue});
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
-                 storeSequence.begin(), storeSequence.end());
-    lines[headerIndex + 5] = "  b " + store;
-    std::vector<std::string> lookupSequence;
-    if (useUnsignedCacheDomainGuard) {
-      // The same unsigned upper-bound check rejects negative and
-      // out-of-window states.  Zero is allowed to probe the reserved empty
-      // slot and is handled by the existing post-load cbz.
-      if (!hoistCacheBound)
-        lookupSequence.push_back("  movz w16, #" + cacheUpperWords +
-                               ", lsl #16");
-      lookupSequence.push_back("  cmp " + state + ", " + cacheBound);
-      lookupSequence.push_back("  b.hi " + miss);
-    } else {
-      lookupSequence.insert(lookupSequence.end(),
-                            {"  cmp " + state + ", #0",
-                             "  b.le " + miss});
-      if (!hoistCacheBound)
-        lookupSequence.push_back("  movz w16, #" + cacheUpperWords +
-                                ", lsl #16");
-      lookupSequence.push_back("  cmp " + state + ", " + cacheBound);
-      lookupSequence.push_back("  b.hi " + miss);
-    }
-    if (singleImmutableContext) {
-      lookupSequence.push_back(
-          "  ldr w17, [x5, " + state + ", uxtw #2]");
-    } else {
-      lookupSequence.insert(
-          lookupSequence.end(),
-          {"  ldr x17, [x5, " + state + ", uxtw #3]",
-           "  lsr x18, x17, #32",
-           "  cmp w18, " + context,
-           "  b.ne " + miss});
-    }
-    if (cacheAbsoluteFallthrough) {
-      const std::string additiveHit = header + ".memo_additive_hit";
-      lookupSequence.insert(
-          lookupSequence.end(),
-          {"  cbz w17, " + miss,
-           "  ldrb w18, [x10, " + state + ", uxtw]",
-           "  cbz w18, " + additiveHit,
-           "  sub w0, w17, #1",
-           "  movz w9, #1",
-           "  b " + store,
-           additiveHit + ":",
-           "  sub w17, w17, #1",
-           "  add w0, " + depth + ", w17",
-           "  b " + store,
-           miss + ":"});
-    } else {
-      lookupSequence.insert(
-          lookupSequence.end(),
-          {"  cbz w17, " + miss,
-           "  sub w17, w17, #1",
-           "  add w0, " + depth + ", w17",
-           "  b " + store,
-           miss + ":"});
-    }
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
-                 lookupSequence.begin(), lookupSequence.end());
-    const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
-    std::vector<std::string> initSequence{
-        "  mov w6, " + state,
-        "  mov w7, " + depth,
-        "  adrp x5, " + cache,
-        "  add x5, x5, :lo12:" + cache};
-    if (cacheAbsoluteFallthrough) {
-      initSequence.insert(initSequence.end(),
-                          {"  movz w9, #0",
-                           "  adrp x10, " + absoluteCache,
-                           "  add x10, x10, :lo12:" + absoluteCache});
-    }
-    if (hoistCacheBound)
-      initSequence.push_back("  movz " + cacheBound + ", #" + cacheUpperWords +
-                             ", lsl #16");
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
-                 initSequence.begin(), initSequence.end());
-
-    const auto note = std::find(lines.begin(), lines.end(),
-                                ".section .note.GNU-stack,\"\",%progbits");
-    if (note == lines.end()) return collapsed.assembly;
-    std::vector<std::string> cacheStorage{
-        ".bss", ".balign 64", cache + ":",
-        "  .zero " + std::to_string(cacheBytes)};
-    if (cacheAbsoluteFallthrough) {
-      cacheStorage.insert(cacheStorage.end(),
-                          {".balign 64", absoluteCache + ":",
-                           "  .zero " +
-                               std::to_string(
-                                   static_cast<std::uint64_t>(cacheStates) +
-                                   1U)});
-    }
-    lines.insert(note, cacheStorage.begin(), cacheStorage.end());
-    break;  // Enforce a fixed per-module memory budget.
-  }
-
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-bool lineUsesRegister(const std::string& line, const std::string& reg) {
-  const auto position = line.find(reg);
-  if (position == std::string::npos) return false;
-  const auto isRegisterCharacter = [](char ch) {
-    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
-  };
-  const bool leftBoundary =
-      position == 0 || !isRegisterCharacter(line[position - 1]);
-  const std::size_t end = position + reg.size();
-  const bool rightBoundary =
-      end == line.size() || !isRegisterCharacter(line[end]);
-  return leftBoundary && rightBoundary;
-}
 
 bool isNarrow(const ValueType& type) { return type.isBool() || type.isInt32(); }
 
@@ -1134,12 +499,209 @@ std::string inverseCondition(const std::string& condition) {
   return "nv";
 }
 
+std::string tailMemoCacheName(std::int64_t site) {
+  return ".Lcompiler_tail_memo_cache_" + std::to_string(site);
+}
+
+std::string tailMemoAbsoluteName(std::int64_t site) {
+  return ".Lcompiler_tail_memo_absolute_" + std::to_string(site);
+}
+
+void emitTailMemoStorage(std::ostringstream& os, const MachineModule& module) {
+  for (const auto& function : module.functions) {
+    for (const auto& block : function.blocks) {
+      for (const auto& instruction : block.instructions) {
+        if (instruction.opcode != "aarch64.tail.memo.setup" ||
+            instruction.operands.size() != 6) {
+          continue;
+        }
+        const auto site = instruction.operands[3].intValue;
+        const bool compact = instruction.operands[4].intValue != 0;
+        const bool absolute = instruction.operands[5].intValue != 0;
+        const std::uint64_t states = compact ? (1ULL << 24) : (1ULL << 20);
+        const std::uint64_t entryBytes = compact ? 4U : 8U;
+        os << ".bss\n.balign 64\n" << tailMemoCacheName(site) << ":\n"
+           << "  .zero " << (states + 1U) * entryBytes << '\n';
+        if (absolute) {
+          os << ".balign 64\n" << tailMemoAbsoluteName(site) << ":\n"
+             << "  .zero " << states + 1U << '\n';
+        }
+        return;
+      }
+    }
+  }
+}
+
 void emitInstruction(std::ostringstream& os, const MachineModule&,
                      const MachineFunction& function, const MachineInstruction& instruction,
                      const std::string& returnLabel,
                      const std::unordered_map<std::string, std::string>& labels,
                      const std::string* fallthrough = nullptr) {
   const auto& opcode = instruction.opcode;
+  if ((opcode == "aarch64.stack.pair.load" ||
+       opcode == "aarch64.stack.pair.store") &&
+      instruction.operands.size() == 4) {
+    os << "  " << (opcode == "aarch64.stack.pair.load" ? "ldp " : "stp ")
+       << instruction.operands[0].text << ", " << instruction.operands[1].text
+       << ", [" << instruction.operands[2].text;
+    if (instruction.operands[3].intValue != 0)
+      os << ", #" << instruction.operands[3].intValue;
+    os << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.add.shifted" && instruction.hasResult &&
+      instruction.operands.size() == 2 &&
+      instruction.operands[1].kind == MachineOperandKind::ImmediateInt) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto destination = resultRegister(instruction.result, kImmScratch);
+    os << "  add " << integerRegister(destination, instruction.result.type)
+       << ", " << integerRegister(source, instruction.result.type) << ", "
+       << integerRegister(source, instruction.result.type) << ", lsl #"
+       << instruction.operands[1].intValue << '\n';
+    storeResult(os, function, instruction.result, destination);
+    return;
+  }
+  if (opcode == "aarch64.positive.half.collapse" &&
+      instruction.operands.size() == 4) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto header = labels.at(instruction.operands[2].text);
+    const auto site = instruction.operands[3].intValue;
+    const std::string fallback =
+        ".Lcompiler_positive_half_fallback_" + std::to_string(site);
+    os << "  cmp " << state << ", #0\n"
+       << "  b.le " << fallback << '\n'
+       << "  rbit w16, " << state << '\n'
+       << "  clz w16, w16\n"
+       << "  lsr " << state << ", " << state << ", w16\n"
+       << "  add " << depth << ", " << depth << ", w16\n"
+       << "  b " << header << '\n'
+       << fallback << ":\n"
+       << "  add " << state << ", " << state << ", " << state
+       << ", lsr #31\n"
+       << "  asr " << state << ", " << state << ", #1\n"
+       << "  add " << depth << ", " << depth << ", #1\n"
+       << "  b " << header << '\n';
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.setup" &&
+      instruction.operands.size() == 6) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto bound = integerRegister(instruction.operands[2].text,
+                                       instruction.operands[2].type);
+    const auto site = instruction.operands[3].intValue;
+    const bool compact = instruction.operands[4].intValue != 0;
+    const bool absolute = instruction.operands[5].intValue != 0;
+    const auto cache = tailMemoCacheName(site);
+    os << "  mov w6, " << state << '\n'
+       << "  mov w7, " << depth << '\n'
+       << "  adrp x5, " << cache << '\n'
+       << "  add x5, x5, :lo12:" << cache << '\n';
+    if (absolute) {
+      const auto absoluteCache = tailMemoAbsoluteName(site);
+      os << "  movz w9, #0\n"
+         << "  adrp x10, " << absoluteCache << '\n'
+         << "  add x10, x10, :lo12:" << absoluteCache << '\n';
+    }
+    os << "  movz " << bound << ", #" << (compact ? 256 : 16)
+       << ", lsl #16\n";
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.lookup" &&
+      instruction.operands.size() == 8) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto context = integerRegister(instruction.operands[2].text,
+                                         instruction.operands[2].type);
+    const auto bound = integerRegister(instruction.operands[3].text,
+                                       instruction.operands[3].type);
+    const auto store = labels.at(instruction.operands[4].text);
+    const auto site = instruction.operands[5].intValue;
+    const bool compact = instruction.operands[6].intValue != 0;
+    const bool absolute = instruction.operands[7].intValue != 0;
+    const std::string prefix =
+        ".Lcompiler_tail_memo_lookup_" + std::to_string(site);
+    const std::string miss = prefix + "_miss";
+    os << "  cmp " << state << ", " << bound << '\n'
+       << "  b.hi " << miss << '\n';
+    if (compact) {
+      os << "  ldr w17, [x5, " << state << ", uxtw #2]\n";
+    } else {
+      os << "  ldr x17, [x5, " << state << ", uxtw #3]\n"
+         << "  lsr x18, x17, #32\n"
+         << "  cmp w18, " << context << '\n'
+         << "  b.ne " << miss << '\n';
+    }
+    os << "  cbz w17, " << miss << '\n';
+    if (absolute) {
+      const std::string additive = prefix + "_additive";
+      os << "  ldrb w18, [x10, " << state << ", uxtw]\n"
+         << "  cbz w18, " << additive << '\n'
+         << "  sub w0, w17, #1\n"
+         << "  movz w9, #1\n"
+         << "  b " << store << '\n'
+         << additive << ":\n";
+    }
+    os << "  sub w17, w17, #1\n"
+       << "  add w0, " << depth << ", w17\n"
+       << "  b " << store << '\n'
+       << miss << ":\n";
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.return" &&
+      instruction.operands.size() == 3) {
+    emitIntegerOperand(os, function, instruction.operands[0], "x0");
+    if (instruction.operands[2].intValue != 0) os << "  movz w9, #1\n";
+    os << "  b " << labels.at(instruction.operands[1].text) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.store" &&
+      instruction.operands.size() == 5) {
+    const auto context = integerRegister(instruction.operands[0].text,
+                                         instruction.operands[0].type);
+    const auto bound = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto site = instruction.operands[2].intValue;
+    const bool compact = instruction.operands[3].intValue != 0;
+    const bool absolute = instruction.operands[4].intValue != 0;
+    const std::string noStore =
+        ".Lcompiler_tail_memo_no_store_" + std::to_string(site);
+    os << "  cmp w6, " << bound << '\n'
+       << "  b.hi " << noStore << '\n'
+       << "  cbz w6, " << noStore << '\n';
+    if (absolute) {
+      const std::string summary =
+          ".Lcompiler_tail_memo_summary_" + std::to_string(site);
+      os << "  cbz w9, " << summary << '\n'
+         << "  add w17, w0, #1\n"
+         << "  str w17, [x5, w6, uxtw #2]\n"
+         << "  movz w18, #1\n"
+         << "  strb w18, [x10, w6, uxtw]\n"
+         << "  b " << noStore << '\n'
+         << summary << ":\n";
+    }
+    os << "  sub w17, w0, w7\n"
+       << "  add w17, w17, #1\n";
+    if (compact) {
+      os << "  str w17, [x5, w6, uxtw #2]\n";
+      if (absolute) os << "  strb wzr, [x10, w6, uxtw]\n";
+    } else {
+      os << "  uxtw x17, w17\n"
+         << "  uxtw x18, " << context << '\n'
+         << "  orr x17, x17, x18, lsl #32\n"
+         << "  str x17, [x5, w6, uxtw #3]\n";
+    }
+    os << noStore << ":\n";
+    return;
+  }
   if (opcode == "stack.adjust") { emitStackAdjust(os, instruction.operands[0].intValue); return; }
   if (opcode == "stack.set_fp") { emitAddImmediate(os, "x29", "sp", instruction.operands[0].intValue); return; }
   if (opcode == "stack.save") {
@@ -2830,13 +2392,9 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   os << ".arch armv8-a\n";
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
+  emitTailMemoStorage(os, module);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  auto assembly = os.str();
-  const auto collapsed = collapsePositivePowerOfTwoSteps(assembly);
-  assembly = memoizePureAdditiveTailLoop(
-      collapsed, module.singleImmutableTailMemoContext);
-  assembly = synthesizeConstantMultiplies(assembly);
-  return pairAdjacentStackAccesses(assembly);
+  return os.str();
 }
 
 }  // namespace compiler::backend::asmcode
