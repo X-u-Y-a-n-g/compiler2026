@@ -1727,6 +1727,10 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   const auto prefixBodyName = block("prefix.body");
   const auto highHeaderName = block("high.header");
   const auto highBodyName = block("high.body");
+  const auto dependencyDispatchName = block("dependency.dispatch");
+  const auto fullDependencyBodyName = block("dependency.full.body");
+  const auto triangularDependencyBodyName =
+      block("dependency.triangular.body");
   const auto storeName = block("store");
   const auto rowLatchName = block("row.latch");
   const auto hasRow7 = value("has.row7");
@@ -1734,6 +1738,14 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   const auto fullColumns = value("full.columns");
   const auto usePanel = value("use");
   const auto threshold = value("threshold");
+  const auto allRowsBelowThreshold = value("all.rows.below.threshold");
+  const auto allRowsAtOrAboveThreshold =
+      value("all.rows.at.or.above.threshold");
+  const auto hasSpecializedDependencyShape =
+      value("has.specialized.dependency.shape");
+  const bool specializeDependencies =
+      std::getenv("COMPILER_DISABLE_ORDERED_PANEL_DEPENDENCY_SPECIALIZATION") ==
+      nullptr;
   std::array<std::string, 8> below;
   for (int row = 0; row < 8; ++row) {
     below[row] = value("below" + std::to_string(row));
@@ -1810,6 +1822,14 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
       "sdiv",
       {candidate.outerBound, std::to_string(pattern.thresholdDivisor)},
       threshold});
+  setup.addInstruction(Instruction{"icmp.slt", {rows[7], threshold},
+                                   allRowsBelowThreshold});
+  setup.addInstruction(Instruction{"icmp.sge", {rows[0], threshold},
+                                   allRowsAtOrAboveThreshold});
+  setup.addInstruction(Instruction{"or",
+                                   {allRowsBelowThreshold,
+                                    allRowsAtOrAboveThreshold},
+                                   hasSpecializedDependencyShape});
   for (int row = 0; row < 8; ++row) {
     setup.addInstruction(
         Instruction{"icmp.slt", {rows[row], threshold}, below[row]});
@@ -1823,7 +1843,12 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
                                      {pattern.destinationMatrix, rows[row]},
                                      destinationRows[row]});
   }
-  setup.addInstruction(Instruction{"br", {suffixHeaders[0]}});
+  if (specializeDependencies) {
+    setup.addInstruction(Instruction{
+        "br", {hasSpecializedDependencyShape, suffixHeaders[0], fallback}});
+  } else {
+    setup.addInstruction(Instruction{"br", {suffixHeaders[0]}});
+  }
 
   std::vector<BasicBlock> generated;
   for (int row = 0; row < 8; ++row) {
@@ -1939,7 +1964,7 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   highHeader.addInstruction(
       Instruction{"icmp.slt", {highK, cutoffs[0]}, highHasK});
   highHeader.addInstruction(Instruction{
-      "br", {highHasK, highBodyName, dependencyGuards[0][0]}});
+      "br", {highHasK, highBodyName, dependencyDispatchName}});
   generated.push_back(std::move(highHeader));
 
   BasicBlock highBody{highBodyName};
@@ -1966,44 +1991,104 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   highBody.addInstruction(Instruction{"br", {highHeaderName}});
   generated.push_back(std::move(highBody));
 
-  for (int destination = 0; destination < 8; ++destination) {
-    for (int source = 0; source < 8; ++source) {
-      const int linear = destination * 8 + source;
-      const std::string next =
-          linear == 63
-              ? storeName
-              : dependencyGuards[(linear + 1) / 8][(linear + 1) % 8];
-      BasicBlock dependencyGuard{
-          dependencyGuards[destination][source]};
-      dependencyGuard.addInstruction(
-          Instruction{"icmp.slt", {rows[source], cutoffs[destination]},
-                      dependencyIncluded[destination][source]});
-      dependencyGuard.addInstruction(Instruction{
-          "br", {dependencyIncluded[destination][source],
-                 dependencyBodies[destination][source], next}});
-      generated.push_back(std::move(dependencyGuard));
+  BasicBlock dependencyDispatch{dependencyDispatchName};
+  if (specializeDependencies) {
+    dependencyDispatch.addInstruction(
+        Instruction{"br", {allRowsBelowThreshold, fullDependencyBodyName,
+                            triangularDependencyBodyName}});
+  } else {
+    dependencyDispatch.addInstruction(
+        Instruction{"br", {dependencyGuards[0][0]}});
+  }
+  generated.push_back(std::move(dependencyDispatch));
 
-      BasicBlock dependencyBody{dependencyBodies[destination][source]};
-      dependencyBody.addInstruction(Instruction{
+  if (specializeDependencies) {
+    auto appendDependency = [&](BasicBlock &body, int destination, int source,
+                                const std::string &stem) {
+      const auto address = value(stem + ".address");
+      const auto coefficient = value(stem + ".coefficient");
+      body.addInstruction(Instruction{
           "getelementptr", {coefficientRows[destination], rows[source]},
-          dependencyAddresses[destination][source]});
-      dependencyBody.addInstruction(Instruction{
-          "load", {"int", dependencyAddresses[destination][source]},
-          dependencyCoefficients[destination][source]});
+          address});
+      body.addInstruction(
+          Instruction{"load", {"int", address}, coefficient});
       const bool useNewValue = source < destination;
-      const std::string version = useNewValue ? "new" : "old";
       std::vector<std::string> operands;
-      if (!useNewValue) {
+      if (!useNewValue)
         operands.push_back(destinations[source]);
-      }
-      operands.push_back(dependencyCoefficients[destination][source]);
-      dependencyBody.addInstruction(Instruction{
-          "aarch64.neon.ordered.panel8.i32x8.lazy." + version +
+      operands.push_back(coefficient);
+      body.addInstruction(Instruction{
+          "aarch64.neon.ordered.panel8.i32x8.lazy." +
+              std::string(useNewValue ? "new" : "old") +
               std::to_string(source) + ".to.row" +
               std::to_string(destination),
           std::move(operands)});
-      dependencyBody.addInstruction(Instruction{"br", {next}});
-      generated.push_back(std::move(dependencyBody));
+    };
+
+    BasicBlock fullDependencyBody{fullDependencyBodyName};
+    for (int destination = 0; destination < 8; ++destination) {
+      for (int source = 0; source < 8; ++source) {
+        appendDependency(fullDependencyBody, destination, source,
+                         "full.dep.r" + std::to_string(destination) + ".s" +
+                             std::to_string(source));
+      }
+    }
+    fullDependencyBody.addInstruction(Instruction{"br", {storeName}});
+    generated.push_back(std::move(fullDependencyBody));
+
+    BasicBlock triangularDependencyBody{triangularDependencyBodyName};
+    for (int destination = 0; destination < 8; ++destination) {
+      for (int source = 0; source < destination; ++source) {
+        appendDependency(
+            triangularDependencyBody, destination, source,
+            "triangular.dep.r" + std::to_string(destination) + ".s" +
+                std::to_string(source));
+      }
+    }
+    triangularDependencyBody.addInstruction(Instruction{"br", {storeName}});
+    generated.push_back(std::move(triangularDependencyBody));
+  }
+
+  if (!specializeDependencies) {
+    for (int destination = 0; destination < 8; ++destination) {
+      for (int source = 0; source < 8; ++source) {
+        const int linear = destination * 8 + source;
+        const std::string next =
+            linear == 63
+                ? storeName
+                : dependencyGuards[(linear + 1) / 8][(linear + 1) % 8];
+        BasicBlock dependencyGuard{
+            dependencyGuards[destination][source]};
+        dependencyGuard.addInstruction(
+            Instruction{"icmp.slt", {rows[source], cutoffs[destination]},
+                        dependencyIncluded[destination][source]});
+        dependencyGuard.addInstruction(Instruction{
+            "br", {dependencyIncluded[destination][source],
+                   dependencyBodies[destination][source], next}});
+        generated.push_back(std::move(dependencyGuard));
+
+        BasicBlock dependencyBody{dependencyBodies[destination][source]};
+        dependencyBody.addInstruction(Instruction{
+            "getelementptr", {coefficientRows[destination], rows[source]},
+            dependencyAddresses[destination][source]});
+        dependencyBody.addInstruction(Instruction{
+            "load", {"int", dependencyAddresses[destination][source]},
+            dependencyCoefficients[destination][source]});
+        const bool useNewValue = source < destination;
+        const std::string version = useNewValue ? "new" : "old";
+        std::vector<std::string> operands;
+        if (!useNewValue) {
+          operands.push_back(destinations[source]);
+        }
+        operands.push_back(dependencyCoefficients[destination][source]);
+        dependencyBody.addInstruction(Instruction{
+            "aarch64.neon.ordered.panel8.i32x8.lazy." + version +
+                std::to_string(source) + ".to.row" +
+                std::to_string(destination),
+            std::move(operands)});
+        dependencyBody.addInstruction(Instruction{"br", {next}});
+        generated.push_back(std::move(dependencyBody));
+      }
     }
   }
 
