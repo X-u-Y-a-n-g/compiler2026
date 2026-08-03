@@ -2242,3 +2242,44 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
   dominance/alias-effect 分析、loop vectorization/loop interchange 原理及 ARMv8-A
   NEON `LDR/LDP/MLA/STR/STP` 语义；未复制外部编译器实现。
 - 状态：D。合规与本地门禁已完成，尚未提交或推送，官方 Cortex-A53 未验证。
+
+## 2026-08-03 Lazy affine 最终读取的初始化值按需合成
+
+- 问题：既有 `LazyAffineCopyResolutionPass` 已能在运行时验证尺寸和每次 row
+  参数后跳过全部 affine transpose 调用，并逆向求出最终读取对应的原始索引；
+  但验证入口位于完整数组初始化之后，最终仍从已物化数组执行一次 load。因此
+  `transpose0/1/2` 仍分别承担大规模连续初始化循环。
+- 变换：把验证入口移动到一个已证明完整覆盖 `[0, count)` 的零基单位步长初始化
+  循环之前。验证成功时同时跳过初始化和 transpose 调用；在 LazyAffine 求出的
+  `resolvedIndex` 处，克隆原初始化迭代内由 IV、常量和循环不变量组成的纯整数
+  SSA 切片，并把同址条件覆盖路径合成为 `select`。`resolvedIndex` 不在初始化
+  范围时返回已证明统一的全局零初值。验证失败时先执行原初始化，再执行原调用
+  循环和原数组 load，完整保留 fallback。
+- 合规与证明条件：只读取 IR opcode/operand、CFG 边、支配、SSA use-def、循环
+  归纳/边界、指针根对象和内存效果；不检查样例、源码、函数、变量、全局或基本块
+  名字的文本。初始化迭代区域必须无环、无 call/load/其他 store，所有目标 store
+  必须写同一 `data[iv]`，每条迭代路径均产生最终值，且值切片只含无陷阱的
+  `add/sub/mul/and/or/xor/icmp/select`。最多 32 条路径是通用代码增长上限，不是
+  样例特征。非零起点、非单位步长、部分覆盖、地址逃逸、额外可观察效果、非统一
+  全局初值或无法克隆的表达式均保持旧路径。
+- 匿名回归：现有动态 `count` 用例对 `0/1/3/17/60` 与完全关闭 LazyAffine
+  的原路径逐项输出一致；新增匿名用例更换函数、对象、归纳变量和常量，使用
+  `iv * 11 - 7` 加偶数条件覆盖，并令消费长度大于初始化边界，验证范围外元素取
+  全局初值，输出与原路径一致。含额外可观察初始化效果的匿名版本不启用转发。
+  独立消融开关为
+  `COMPILER_DISABLE_LAZY_INITIALIZER_VALUE_FORWARDING=1`；统计输出增加
+  `initializer_forwarded`。
+- 汇编隔离与门禁：启用/关闭新转发分别编译全部 60 项，只有
+  `transpose0/1/2` 三项发生直接变化，其余 57 项逐字一致，无下游变化。Docker
+  `compiler-impl2026-dev` 中使用 `/workspace/build/compiler` 完成 performance：
+  `57 AC + 3 h-4`；三项 h-4 仍是父提交已有的末尾空行格式例外。共享中端 CFG
+  变更额外通过 AArch64 correctness `140/140 AC`。
+- 本地诊断：单轮 QEMU 消融中，关闭版 `transpose0/1/2` 为
+  `0.041805/0.049406/0.038355s`，候选为
+  `0.000682/0.000705/0.000878s`，合计 `0.129566→0.002265s`，下降约
+  `98.25%`。QEMU 仅作诊断，最终保留仍以官方 Cortex-A53 结果为准。
+- AI/资料范围：AI 辅助完成初始化路径枚举、纯 SSA 值切片克隆、范围外全局初值
+  语义、fallback CFG 重接、匿名消融和完整 ARM 门禁。技术依据为标准循环 DCE、
+  scalar replacement、SSA value forwarding、CFG/dominance 与 alias/effect 分析；
+  未复制外部编译器实现。
+- 状态：D。合规与本地门禁完成，等待提交、推送和官方 Cortex-A53 验证。
