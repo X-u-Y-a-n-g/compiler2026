@@ -1,0 +1,22 @@
+int observed[64];
+int retained[64];
+
+int main() {
+    int count = getint();
+    int index = 0;
+    while (index < count) {
+        observed[index] = index - 4;
+        retained[index] = index * 3 + 1;
+        index = index + 1;
+    }
+
+    int result = 0;
+    index = 0;
+    while (index < count) {
+        result = result + observed[index] + retained[count - index - 1];
+        index = index + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

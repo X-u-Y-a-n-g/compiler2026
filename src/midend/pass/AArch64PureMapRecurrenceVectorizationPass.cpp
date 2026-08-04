@@ -92,6 +92,424 @@ struct BoundedRemainderScan {
   IntegerInterval increment;
 };
 
+// A pure map of the following algebraic family can be evaluated in quotient
+// blocks instead of once per induction value:
+//
+//   value = max(x, C0 - x)
+//   value = max(value, C1 - value) ...  // proven redundant on x >= 0
+//   q     = wrap(A * value) / D
+//   map   = wrap(value + wrap(q * E)) % P
+//
+// Constants are deliberately kept symbolic here.  The matcher accepts an
+// arbitrary number of mirror/max stages and arbitrary safe i32 constants; the
+// optimization is selected from SSA semantics rather than symbol identity.
+struct QuotientBlockSummary {
+  std::int32_t mirror = 0;
+  std::int32_t multiplier = 0;
+  std::int32_t divisor = 0;
+  std::int32_t quotientMultiplier = 0;
+  std::int32_t mapModulus = 0;
+  std::int32_t stateModulus = 0;
+  std::int64_t mapCoefficient = 0;
+  std::int64_t incrementConstant = 0;
+};
+
+bool supportsFloorSumSuperblocks(const QuotientBlockSummary &summary) {
+  // The generated floor-sum helper and all aggregate expressions use signed
+  // i64 arithmetic.  Bound the largest possible quotient aggregate for every
+  // legal positive-i32 induction range before enabling the faster path.
+  constexpr __int128 maximumCount = std::numeric_limits<std::int32_t>::max();
+  const __int128 maximumQuotient =
+      static_cast<__int128>(std::numeric_limits<std::int32_t>::max()) /
+          summary.divisor +
+      1;
+  const __int128 scaledQuotientSum =
+      maximumCount * maximumQuotient *
+      std::llabs(static_cast<long long>(summary.quotientMultiplier));
+  const __int128 maximumScaledQuotient =
+      maximumQuotient *
+      std::llabs(static_cast<long long>(summary.quotientMultiplier));
+  return scaledQuotientSum <= std::numeric_limits<std::int64_t>::max() &&
+         maximumScaledQuotient <= std::numeric_limits<std::uint32_t>::max();
+}
+
+Function buildSignedFloorSumFunction(const std::string &name) {
+  Function function(
+      name, "long",
+      {{"%n", "long"}, {"%m", "long"}, {"%a", "long"}, {"%b", "long"}});
+
+  BasicBlock entry{"entry"};
+  entry.addInstruction(Instruction{"sdiv", {"%a", "%m"}, "%a.q0"});
+  entry.addInstruction(Instruction{"srem", {"%a", "%m"}, "%a.r0"});
+  entry.addInstruction(Instruction{"icmp.slt", {"%a.r0", "0"}, "%a.r.neg"});
+  entry.addInstruction(Instruction{"sub", {"%a.q0", "1"}, "%a.q.floor"});
+  entry.addInstruction(
+      Instruction{"select", {"%a.r.neg", "%a.q.floor", "%a.q0"}, "%a.q"});
+  entry.addInstruction(Instruction{"mul", {"%a.q", "%m"}, "%a.qm"});
+  entry.addInstruction(Instruction{"sub", {"%a", "%a.qm"}, "%a.norm"});
+  entry.addInstruction(Instruction{"sdiv", {"%b", "%m"}, "%b.q0"});
+  entry.addInstruction(Instruction{"srem", {"%b", "%m"}, "%b.r0"});
+  entry.addInstruction(Instruction{"icmp.slt", {"%b.r0", "0"}, "%b.r.neg"});
+  entry.addInstruction(Instruction{"sub", {"%b.q0", "1"}, "%b.q.floor"});
+  entry.addInstruction(
+      Instruction{"select", {"%b.r.neg", "%b.q.floor", "%b.q0"}, "%b.q"});
+  entry.addInstruction(Instruction{"mul", {"%b.q", "%m"}, "%b.qm"});
+  entry.addInstruction(Instruction{"sub", {"%b", "%b.qm"}, "%b.norm"});
+  entry.addInstruction(Instruction{"sub", {"%n", "1"}, "%n.minus.one"});
+  entry.addInstruction(Instruction{"mul", {"%n", "%n.minus.one"}, "%pairs2"});
+  entry.addInstruction(Instruction{"sdiv", {"%pairs2", "2"}, "%pairs"});
+  entry.addInstruction(Instruction{"mul", {"%a.q", "%pairs"}, "%a.base"});
+  entry.addInstruction(Instruction{"mul", {"%b.q", "%n"}, "%b.base"});
+  entry.addInstruction(
+      Instruction{"add", {"%a.base", "%b.base"}, "%answer.base"});
+  entry.addInstruction(Instruction{"br", {"loop"}});
+  function.addBlock(std::move(entry));
+
+  BasicBlock loop{"loop"};
+  loop.addInstruction(Instruction{
+      "phi", {"long", "%n", "entry", "%next.n", "recur"}, "%loop.n"});
+  loop.addInstruction(Instruction{
+      "phi", {"long", "%m", "entry", "%next.m", "recur"}, "%loop.m"});
+  loop.addInstruction(Instruction{
+      "phi", {"long", "%a.norm", "entry", "%next.a", "recur"}, "%loop.a"});
+  loop.addInstruction(Instruction{
+      "phi", {"long", "%b.norm", "entry", "%next.b", "recur"}, "%loop.b"});
+  loop.addInstruction(
+      Instruction{"phi",
+                  {"long", "%answer.base", "entry", "%answer.next", "recur"},
+                  "%loop.answer"});
+  loop.addInstruction(Instruction{"sdiv", {"%loop.a", "%loop.m"}, "%loop.a.q"});
+  loop.addInstruction(Instruction{"srem", {"%loop.a", "%loop.m"}, "%loop.a.r"});
+  loop.addInstruction(
+      Instruction{"sub", {"%loop.n", "1"}, "%loop.n.minus.one"});
+  loop.addInstruction(
+      Instruction{"mul", {"%loop.n", "%loop.n.minus.one"}, "%loop.pairs2"});
+  loop.addInstruction(
+      Instruction{"sdiv", {"%loop.pairs2", "2"}, "%loop.pairs"});
+  loop.addInstruction(
+      Instruction{"mul", {"%loop.a.q", "%loop.pairs"}, "%loop.a.contribution"});
+  loop.addInstruction(Instruction{
+      "add", {"%loop.answer", "%loop.a.contribution"}, "%answer.a"});
+  loop.addInstruction(Instruction{"sdiv", {"%loop.b", "%loop.m"}, "%loop.b.q"});
+  loop.addInstruction(Instruction{"srem", {"%loop.b", "%loop.m"}, "%loop.b.r"});
+  loop.addInstruction(
+      Instruction{"mul", {"%loop.n", "%loop.b.q"}, "%loop.b.contribution"});
+  loop.addInstruction(Instruction{
+      "add", {"%answer.a", "%loop.b.contribution"}, "%answer.normalized"});
+  loop.addInstruction(
+      Instruction{"mul", {"%loop.a.r", "%loop.n"}, "%y.product"});
+  loop.addInstruction(Instruction{"add", {"%y.product", "%loop.b.r"}, "%y"});
+  loop.addInstruction(Instruction{"icmp.slt", {"%y", "%loop.m"}, "%done"});
+  loop.addInstruction(Instruction{"br", {"%done", "exit", "recur"}});
+  function.addBlock(std::move(loop));
+
+  BasicBlock recur{"recur"};
+  recur.addInstruction(Instruction{"sdiv", {"%y", "%loop.m"}, "%next.n"});
+  recur.addInstruction(Instruction{"srem", {"%y", "%loop.m"}, "%next.b"});
+  recur.addInstruction(
+      Instruction{"add", {"%answer.normalized", "0"}, "%answer.next"});
+  recur.addInstruction(Instruction{"add", {"%loop.a.r", "0"}, "%next.m"});
+  recur.addInstruction(Instruction{"add", {"%loop.m", "0"}, "%next.a"});
+  recur.addInstruction(Instruction{"br", {"loop"}});
+  function.addBlock(std::move(recur));
+
+  BasicBlock exit{"exit"};
+  exit.addInstruction(Instruction{"ret", {"%answer.normalized"}});
+  function.addBlock(std::move(exit));
+  return function;
+}
+
+Function buildAffineSuperblockFunction(const std::string &name,
+                                       const std::string &floorSumName) {
+  Function function(name, "long",
+                    {{"%remaining", "long"},
+                     {"%initial.state", "long"},
+                     {"%x", "long"},
+                     {"%step", "long"},
+                     {"%mirror", "long"},
+                     {"%multiplier", "long"},
+                     {"%divisor", "long"},
+                     {"%quotient.multiplier", "long"},
+                     {"%map.modulus", "long"},
+                     {"%map.coefficient", "long"},
+                     {"%increment.constant", "long"},
+                     {"%state.modulus", "long"}});
+
+  const auto appendEvaluation = [](BasicBlock &block, const std::string &x,
+                                   const std::string &prefix) {
+    const auto n = [&](const std::string &stem) {
+      return "%" + prefix + "." + stem;
+    };
+    block.addInstruction(Instruction{"sub", {"%mirror", x}, n("mirror.value")});
+    block.addInstruction(
+        Instruction{"icmp.slt", {x, n("mirror.value")}, n("use.mirror")});
+    block.addInstruction(Instruction{
+        "select", {n("use.mirror"), n("mirror.value"), x}, n("mapped")});
+    block.addInstruction(
+        Instruction{"mul", {n("mapped"), "%multiplier"}, n("raw.full")});
+    block.addInstruction(
+        Instruction{"trunc", {n("raw.full"), "int"}, n("raw.i32")});
+    block.addInstruction(Instruction{"sext", {n("raw.i32"), "long"}, n("raw")});
+    block.addInstruction(
+        Instruction{"sub", {n("raw.full"), n("raw")}, n("raw.wrap.bytes")});
+    block.addInstruction(Instruction{
+        "sdiv", {n("raw.wrap.bytes"), "4294967296"}, n("raw.wrap")});
+    block.addInstruction(
+        Instruction{"icmp.sge", {n("raw"), "0"}, n("raw.nonnegative")});
+    block.addInstruction(
+        Instruction{"sdiv", {n("raw"), "%divisor"}, n("quotient")});
+    block.addInstruction(Instruction{
+        "mul", {n("quotient"), "%quotient.multiplier"}, n("scale.full")});
+    block.addInstruction(
+        Instruction{"trunc", {n("scale.full"), "int"}, n("scale.i32")});
+    block.addInstruction(
+        Instruction{"sext", {n("scale.i32"), "long"}, n("scale")});
+    block.addInstruction(Instruction{
+        "sub", {n("scale.full"), n("scale")}, n("scale.wrap.bytes")});
+    block.addInstruction(Instruction{
+        "sdiv", {n("scale.wrap.bytes"), "4294967296"}, n("scale.wrap")});
+    block.addInstruction(
+        Instruction{"add", {n("mapped"), n("scale")}, n("combined.full")});
+    block.addInstruction(
+        Instruction{"trunc", {n("combined.full"), "int"}, n("combined.i32")});
+    block.addInstruction(
+        Instruction{"sext", {n("combined.i32"), "long"}, n("combined")});
+    block.addInstruction(Instruction{
+        "sub", {n("combined.full"), n("combined")}, n("combined.wrap.bytes")});
+    block.addInstruction(Instruction{
+        "sdiv", {n("combined.wrap.bytes"), "4294967296"}, n("combined.wrap")});
+    block.addInstruction(Instruction{
+        "icmp.sge", {n("combined"), "0"}, n("combined.nonnegative")});
+    block.addInstruction(Instruction{
+        "sdiv", {n("combined"), "%map.modulus"}, n("remainder.quotient")});
+    block.addInstruction(Instruction{"mul",
+                                     {n("remainder.quotient"), "%map.modulus"},
+                                     n("remainder.multiple")});
+    block.addInstruction(Instruction{
+        "sub", {n("combined"), n("remainder.multiple")}, n("map.value")});
+    block.addInstruction(Instruction{
+        "mul", {n("map.value"), "%map.coefficient"}, n("increment.scaled")});
+    block.addInstruction(Instruction{
+        "add", {n("increment.scaled"), "%increment.constant"}, n("increment")});
+    block.addInstruction(Instruction{
+        "icmp.sge", {n("increment"), "0"}, n("increment.nonnegative")});
+  };
+
+  BasicBlock entry{"entry"};
+  appendEvaluation(entry, "%x", "start");
+  entry.addInstruction(Instruction{"sub", {"0", "%step"}, "%negative.step"});
+  entry.addInstruction(
+      Instruction{"select",
+                  {"%start.use.mirror", "%negative.step", "%step"},
+                  "%mapped.delta"});
+  entry.addInstruction(
+      Instruction{"mul", {"%mapped.delta", "%multiplier"}, "%raw.delta"});
+  entry.addInstruction(
+      Instruction{"sdiv", {"%raw.delta", "%divisor"}, "%delta.q0"});
+  entry.addInstruction(
+      Instruction{"srem", {"%raw.delta", "%divisor"}, "%delta.r"});
+  entry.addInstruction(
+      Instruction{"icmp.ne", {"%delta.r", "0"}, "%delta.r.nonzero"});
+  entry.addInstruction(
+      Instruction{"icmp.slt", {"%raw.delta", "0"}, "%delta.negative"});
+  entry.addInstruction(
+      Instruction{"icmp.sgt", {"%raw.delta", "0"}, "%delta.positive"});
+  entry.addInstruction(Instruction{
+      "and", {"%delta.r.nonzero", "%delta.negative"}, "%lower.adjust"});
+  entry.addInstruction(Instruction{
+      "and", {"%delta.r.nonzero", "%delta.positive"}, "%upper.adjust"});
+  entry.addInstruction(
+      Instruction{"sub", {"%delta.q0", "1"}, "%delta.q.minus"});
+  entry.addInstruction(Instruction{"add", {"%delta.q0", "1"}, "%delta.q.plus"});
+  entry.addInstruction(
+      Instruction{"select",
+                  {"%lower.adjust", "%delta.q.minus", "%delta.q0"},
+                  "%delta.q.lower"});
+  entry.addInstruction(
+      Instruction{"select",
+                  {"%upper.adjust", "%delta.q.plus", "%delta.q0"},
+                  "%delta.q.upper"});
+  entry.addInstruction(Instruction{
+      "mul", {"%delta.q.lower", "%quotient.multiplier"}, "%combined.delta.0"});
+  entry.addInstruction(Instruction{
+      "mul", {"%delta.q.upper", "%quotient.multiplier"}, "%combined.delta.1"});
+  entry.addInstruction(Instruction{
+      "icmp.slt", {"%combined.delta.0", "%combined.delta.1"}, "%delta.order"});
+  entry.addInstruction(
+      Instruction{"select",
+                  {"%delta.order", "%combined.delta.0", "%combined.delta.1"},
+                  "%scale.delta.minimum"});
+  entry.addInstruction(
+      Instruction{"select",
+                  {"%delta.order", "%combined.delta.1", "%combined.delta.0"},
+                  "%scale.delta.maximum"});
+  entry.addInstruction(Instruction{"add",
+                                   {"%mapped.delta", "%scale.delta.minimum"},
+                                   "%combined.delta.minimum"});
+  entry.addInstruction(Instruction{"add",
+                                   {"%mapped.delta", "%scale.delta.maximum"},
+                                   "%combined.delta.maximum"});
+  entry.addInstruction(Instruction{
+      "icmp.sge", {"%combined.delta.minimum", "0"}, "%monotone.up"});
+  entry.addInstruction(Instruction{
+      "icmp.sle", {"%combined.delta.maximum", "0"}, "%monotone.down"});
+  entry.addInstruction(
+      Instruction{"or", {"%monotone.up", "%monotone.down"}, "%monotone"});
+  entry.addInstruction(Instruction{"br", {"%monotone", "search", "fallback"}});
+  function.addBlock(std::move(entry));
+
+  BasicBlock search{"search"};
+  search.addInstruction(Instruction{
+      "phi",
+      {"long", "1", "entry", "%same.lo", "same", "%different.lo", "different"},
+      "%search.lo"});
+  search.addInstruction(Instruction{"phi",
+                                    {"long", "%remaining", "entry", "%same.hi",
+                                     "same", "%different.hi", "different"},
+                                    "%search.hi"});
+  search.addInstruction(
+      Instruction{"icmp.slt", {"%search.lo", "%search.hi"}, "%search.more"});
+  search.addInstruction(
+      Instruction{"br", {"%search.more", "probe", "summarize"}});
+  function.addBlock(std::move(search));
+
+  BasicBlock probe{"probe"};
+  probe.addInstruction(
+      Instruction{"add", {"%search.lo", "%search.hi"}, "%mid.sum"});
+  probe.addInstruction(Instruction{"add", {"%mid.sum", "1"}, "%mid.rounded"});
+  probe.addInstruction(Instruction{"sdiv", {"%mid.rounded", "2"}, "%mid"});
+  probe.addInstruction(Instruction{"sub", {"%mid", "1"}, "%probe.index"});
+  probe.addInstruction(
+      Instruction{"mul", {"%probe.index", "%step"}, "%probe.advance"});
+  probe.addInstruction(
+      Instruction{"add", {"%x", "%probe.advance"}, "%probe.x"});
+  appendEvaluation(probe, "%probe.x", "probe");
+  const std::array<std::pair<const char *, const char *>, 8> signature{{
+      {"%start.use.mirror", "%probe.use.mirror"},
+      {"%start.raw.wrap", "%probe.raw.wrap"},
+      {"%start.raw.nonnegative", "%probe.raw.nonnegative"},
+      {"%start.scale.wrap", "%probe.scale.wrap"},
+      {"%start.combined.wrap", "%probe.combined.wrap"},
+      {"%start.combined.nonnegative", "%probe.combined.nonnegative"},
+      {"%start.remainder.quotient", "%probe.remainder.quotient"},
+      {"%start.increment.nonnegative", "%probe.increment.nonnegative"},
+  }};
+  std::string allSame;
+  for (std::size_t index = 0; index < signature.size(); ++index) {
+    const auto equal = "%signature.equal." + std::to_string(index);
+    probe.addInstruction(Instruction{
+        "icmp.eq", {signature[index].first, signature[index].second}, equal});
+    if (index == 0) {
+      allSame = equal;
+    } else {
+      const auto combined = "%signature.all." + std::to_string(index);
+      probe.addInstruction(Instruction{"and", {allSame, equal}, combined});
+      allSame = combined;
+    }
+  }
+  probe.addInstruction(Instruction{"br", {allSame, "same", "different"}});
+  function.addBlock(std::move(probe));
+
+  BasicBlock same{"same"};
+  same.addInstruction(Instruction{"add", {"%mid", "0"}, "%same.lo"});
+  same.addInstruction(Instruction{"add", {"%search.hi", "0"}, "%same.hi"});
+  same.addInstruction(Instruction{"br", {"search"}});
+  function.addBlock(std::move(same));
+  BasicBlock different{"different"};
+  different.addInstruction(Instruction{"sub", {"%mid", "1"}, "%mid.minus.one"});
+  different.addInstruction(
+      Instruction{"add", {"%search.lo", "0"}, "%different.lo"});
+  different.addInstruction(
+      Instruction{"add", {"%mid.minus.one", "0"}, "%different.hi"});
+  different.addInstruction(Instruction{"br", {"search"}});
+  function.addBlock(std::move(different));
+
+  BasicBlock summarize{"summarize"};
+  summarize.addInstruction(
+      Instruction{"sub", {"%search.lo", "1"}, "%run.minus.one"});
+  summarize.addInstruction(
+      Instruction{"mul", {"%search.lo", "%run.minus.one"}, "%run.pairs2"});
+  summarize.addInstruction(
+      Instruction{"sdiv", {"%run.pairs2", "2"}, "%run.pairs"});
+  summarize.addInstruction(
+      Instruction{"mul", {"%search.lo", "%start.mapped"}, "%mapped.base.sum"});
+  summarize.addInstruction(
+      Instruction{"mul", {"%run.pairs", "%mapped.delta"}, "%mapped.delta.sum"});
+  summarize.addInstruction(Instruction{
+      "add", {"%mapped.base.sum", "%mapped.delta.sum"}, "%mapped.sum"});
+  summarize.addInstruction(
+      Instruction{"sub", {"0", "%raw.delta"}, "%negative.raw.delta"});
+  summarize.addInstruction(
+      Instruction{"sub", {"0", "%start.raw"}, "%negative.raw"});
+  summarize.addInstruction(Instruction{
+      "select",
+      {"%start.raw.nonnegative", "%raw.delta", "%negative.raw.delta"},
+      "%floor.a"});
+  summarize.addInstruction(
+      Instruction{"select",
+                  {"%start.raw.nonnegative", "%start.raw", "%negative.raw"},
+                  "%floor.b"});
+  summarize.addInstruction(Instruction{
+      "call",
+      {"@" + floorSumName, "%search.lo", "%divisor", "%floor.a", "%floor.b"},
+      "%floor.sum"});
+  summarize.addInstruction(
+      Instruction{"sub", {"0", "%floor.sum"}, "%negative.floor.sum"});
+  summarize.addInstruction(Instruction{
+      "select",
+      {"%start.raw.nonnegative", "%floor.sum", "%negative.floor.sum"},
+      "%quotient.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%quotient.sum", "%quotient.multiplier"}, "%scale.full.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%start.scale.wrap", "4294967296"}, "%scale.wrap.offset"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%scale.wrap.offset", "%search.lo"}, "%scale.wrap.sum"});
+  summarize.addInstruction(
+      Instruction{"sub", {"%scale.full.sum", "%scale.wrap.sum"}, "%scale.sum"});
+  summarize.addInstruction(
+      Instruction{"add", {"%mapped.sum", "%scale.sum"}, "%combined.full.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%start.combined.wrap", "4294967296"}, "%combined.wrap.offset"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%combined.wrap.offset", "%search.lo"}, "%combined.wrap.sum"});
+  summarize.addInstruction(Instruction{
+      "sub", {"%combined.full.sum", "%combined.wrap.sum"}, "%combined.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%start.remainder.quotient", "%map.modulus"}, "%map.wrap.unit"});
+  summarize.addInstruction(
+      Instruction{"mul", {"%map.wrap.unit", "%search.lo"}, "%map.wrap.sum"});
+  summarize.addInstruction(
+      Instruction{"sub", {"%combined.sum", "%map.wrap.sum"}, "%map.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%map.sum", "%map.coefficient"}, "%increment.map.sum"});
+  summarize.addInstruction(Instruction{
+      "mul", {"%increment.constant", "%search.lo"}, "%increment.constant.sum"});
+  summarize.addInstruction(
+      Instruction{"add",
+                  {"%increment.map.sum", "%increment.constant.sum"},
+                  "%increment.sum"});
+  summarize.addInstruction(
+      Instruction{"add", {"%initial.state", "%increment.sum"}, "%state.total"});
+  summarize.addInstruction(Instruction{
+      "srem", {"%state.total", "%state.modulus"}, "%state.remainder"});
+  summarize.addInstruction(
+      Instruction{"trunc", {"%state.remainder", "int"}, "%state.i32"});
+  summarize.addInstruction(
+      Instruction{"zext", {"%state.i32", "long"}, "%state.bits"});
+  summarize.addInstruction(
+      Instruction{"shl", {"%search.lo", "32"}, "%run.bits"});
+  summarize.addInstruction(
+      Instruction{"or", {"%run.bits", "%state.bits"}, "%packed"});
+  summarize.addInstruction(Instruction{"ret", {"%packed"}});
+  function.addBlock(std::move(summarize));
+
+  BasicBlock fallback{"fallback"};
+  fallback.addInstruction(Instruction{"ret", {"0"}});
+  function.addBlock(std::move(fallback));
+  return function;
+}
+
 DefinitionMap definitionsOf(const Function &function) {
   DefinitionMap definitions;
   for (const auto &block : function.blocks()) {
@@ -215,9 +633,9 @@ bool fitsI32(__int128 value) {
          value <= std::numeric_limits<std::int32_t>::max();
 }
 
-std::optional<IntegerInterval>
-exactBinaryInterval(int opcode, const IntegerInterval &lhs,
-                    const IntegerInterval &rhs) {
+std::optional<IntegerInterval> exactBinaryInterval(int opcode,
+                                                   const IntegerInterval &lhs,
+                                                   const IntegerInterval &rhs) {
   __int128 minimum = 0;
   __int128 maximum = 0;
   if (opcode == 0) {
@@ -250,13 +668,12 @@ exactBinaryInterval(int opcode, const IntegerInterval &lhs,
                          static_cast<std::int64_t>(maximum)};
 }
 
-std::optional<IntegerInterval>
-intervalForMapRoot(const Candidate &candidate) {
+std::optional<IntegerInterval> intervalForMapRoot(const Candidate &candidate) {
   std::array<std::optional<IntegerInterval>, kMaximumVectorSlots> intervals;
   intervals[0] = fullI32Interval();
   const auto operandInterval =
-      [&](bool immediate, std::int32_t encoded)
-      -> std::optional<IntegerInterval> {
+      [&](bool immediate,
+          std::int32_t encoded) -> std::optional<IntegerInterval> {
     if (immediate) {
       return IntegerInterval{encoded, encoded};
     }
@@ -271,15 +688,13 @@ intervalForMapRoot(const Candidate &candidate) {
         operation.destination >= kMaximumVectorSlots) {
       return std::nullopt;
     }
-    const auto lhs =
-        operandInterval(operation.lhsImmediate, operation.lhs);
+    const auto lhs = operandInterval(operation.lhsImmediate, operation.lhs);
     if (!lhs.has_value()) {
       return std::nullopt;
     }
     IntegerInterval result;
     if (operation.kind == VectorOperation::Kind::Binary) {
-      const auto rhs =
-          operandInterval(operation.rhsImmediate, operation.rhs);
+      const auto rhs = operandInterval(operation.rhsImmediate, operation.rhs);
       if (!rhs.has_value()) {
         return std::nullopt;
       }
@@ -317,10 +732,9 @@ struct AffineIncrement {
   std::int64_t constant = 0;
 };
 
-bool addAffine(const AffineIncrement &lhs, const AffineIncrement &rhs,
-               int sign, AffineIncrement &result) {
-  const __int128 state =
-      static_cast<__int128>(lhs.state) + sign * rhs.state;
+bool addAffine(const AffineIncrement &lhs, const AffineIncrement &rhs, int sign,
+               AffineIncrement &result) {
+  const __int128 state = static_cast<__int128>(lhs.state) + sign * rhs.state;
   const __int128 map = static_cast<__int128>(lhs.map) + sign * rhs.map;
   const __int128 constant =
       static_cast<__int128>(lhs.constant) + sign * rhs.constant;
@@ -332,8 +746,7 @@ bool addAffine(const AffineIncrement &lhs, const AffineIncrement &rhs,
       constant > std::numeric_limits<std::int64_t>::max()) {
     return false;
   }
-  result = {static_cast<std::int64_t>(state),
-            static_cast<std::int64_t>(map),
+  result = {static_cast<std::int64_t>(state), static_cast<std::int64_t>(map),
             static_cast<std::int64_t>(constant)};
   return true;
 }
@@ -369,8 +782,7 @@ boundedRemainderScanFor(const Candidate &candidate) {
   for (std::size_t index = 0;
        index + 1 < candidate.recurrenceInstructions.size(); ++index) {
     const auto *instruction = candidate.recurrenceInstructions[index];
-    if ((instruction->opcode() != "add" &&
-         instruction->opcode() != "sub") ||
+    if ((instruction->opcode() != "add" && instruction->opcode() != "sub") ||
         instruction->operands().size() != 2) {
       return std::nullopt;
     }
@@ -399,15 +811,12 @@ boundedRemainderScanFor(const Candidate &candidate) {
   if (!mapInterval.has_value()) {
     return std::nullopt;
   }
-  const IntegerInterval normalizedState{
-      -static_cast<std::int64_t>(modulus) + 1,
-      static_cast<std::int64_t>(modulus) - 1};
+  const IntegerInterval normalizedState{-static_cast<std::int64_t>(modulus) + 1,
+                                        static_cast<std::int64_t>(modulus) - 1};
   const auto affineRange =
-      [&](const AffineIncrement &expression)
-      -> std::optional<IntegerInterval> {
-    const auto contribution = [](
-                                  std::int64_t coefficient,
-                                  const IntegerInterval &interval) {
+      [&](const AffineIncrement &expression) -> std::optional<IntegerInterval> {
+    const auto contribution = [](std::int64_t coefficient,
+                                 const IntegerInterval &interval) {
       const __int128 first =
           static_cast<__int128>(coefficient) * interval.minimum;
       const __int128 second =
@@ -417,8 +826,7 @@ boundedRemainderScanFor(const Candidate &candidate) {
     };
     const auto stateContribution =
         contribution(expression.state, normalizedState);
-    const auto mapContribution =
-        contribution(expression.map, *mapInterval);
+    const auto mapContribution = contribution(expression.map, *mapInterval);
     const __int128 minimum =
         stateContribution.first + mapContribution.first + expression.constant;
     const __int128 maximum =
@@ -465,6 +873,106 @@ boundedRemainderScanFor(const Candidate &candidate) {
     return std::nullopt;
   }
   return BoundedRemainderScan{modulus, coefficient, constant, increment};
+}
+
+bool isSlotOperand(const VectorOperation &operation, bool lhs, int slot) {
+  return lhs ? (!operation.lhsImmediate && operation.lhs == slot)
+             : (!operation.rhsImmediate && operation.rhs == slot);
+}
+
+bool immediateOperand(const VectorOperation &operation, bool lhs,
+                      std::int32_t &value) {
+  if (lhs ? !operation.lhsImmediate : !operation.rhsImmediate)
+    return false;
+  value = lhs ? operation.lhs : operation.rhs;
+  return true;
+}
+
+std::optional<QuotientBlockSummary>
+quotientBlockSummaryFor(const Candidate &candidate,
+                        const BoundedRemainderScan &bounded) {
+  const auto &operations = candidate.vectorOperations;
+  std::size_t index = 0;
+  int current = 0;
+  std::vector<std::int32_t> mirrors;
+
+  // Consume max(v, C-v) stages.  The first stage supplies the only dynamic
+  // piecewise boundary; subsequent stages must be provably redundant over the
+  // non-negative fast-path domain.
+  while (index + 1 < operations.size()) {
+    const auto &subtract = operations[index];
+    const auto &maximum = operations[index + 1];
+    std::int32_t mirror = 0;
+    if (subtract.kind != VectorOperation::Kind::Binary ||
+        subtract.opcode != 1 || !immediateOperand(subtract, true, mirror) ||
+        !isSlotOperand(subtract, false, current) ||
+        maximum.kind != VectorOperation::Kind::Binary || maximum.opcode != 3 ||
+        !((isSlotOperand(maximum, true, current) &&
+           isSlotOperand(maximum, false, subtract.destination)) ||
+          (isSlotOperand(maximum, false, current) &&
+           isSlotOperand(maximum, true, subtract.destination)))) {
+      break;
+    }
+    mirrors.push_back(mirror);
+    current = maximum.destination;
+    index += 2;
+  }
+  if (mirrors.empty() || mirrors.front() < 0) {
+    return std::nullopt;
+  }
+  const std::int64_t minimumAfterFirst =
+      (static_cast<std::int64_t>(mirrors.front()) + 1) / 2;
+  for (std::size_t mirrorIndex = 1; mirrorIndex < mirrors.size();
+       ++mirrorIndex) {
+    if (mirrors[mirrorIndex] < 0 ||
+        static_cast<std::int64_t>(mirrors[mirrorIndex]) >
+            2 * minimumAfterFirst) {
+      return std::nullopt;
+    }
+  }
+
+  if (index + 5 != operations.size()) {
+    return std::nullopt;
+  }
+  const auto &multiply = operations[index++];
+  const auto &divide = operations[index++];
+  const auto &scaleQuotient = operations[index++];
+  const auto &combine = operations[index++];
+  const auto &remainder = operations[index++];
+  std::int32_t multiplier = 0;
+  if (multiply.kind != VectorOperation::Kind::Binary || multiply.opcode != 2 ||
+      !((isSlotOperand(multiply, true, current) &&
+         immediateOperand(multiply, false, multiplier)) ||
+        (isSlotOperand(multiply, false, current) &&
+         immediateOperand(multiply, true, multiplier))) ||
+      multiplier == 0 || divide.kind != VectorOperation::Kind::Divide ||
+      !isSlotOperand(divide, true, multiply.destination) ||
+      divide.divisor <= 1) {
+    return std::nullopt;
+  }
+  std::int32_t quotientMultiplier = 0;
+  if (scaleQuotient.kind != VectorOperation::Kind::Binary ||
+      scaleQuotient.opcode != 2 ||
+      !((isSlotOperand(scaleQuotient, true, divide.destination) &&
+         immediateOperand(scaleQuotient, false, quotientMultiplier)) ||
+        (isSlotOperand(scaleQuotient, false, divide.destination) &&
+         immediateOperand(scaleQuotient, true, quotientMultiplier))) ||
+      combine.kind != VectorOperation::Kind::Binary || combine.opcode != 0 ||
+      !((isSlotOperand(combine, true, current) &&
+         isSlotOperand(combine, false, scaleQuotient.destination)) ||
+        (isSlotOperand(combine, false, current) &&
+         isSlotOperand(combine, true, scaleQuotient.destination))) ||
+      remainder.kind != VectorOperation::Kind::Remainder ||
+      !isSlotOperand(remainder, true, combine.destination) ||
+      remainder.divisor <= 1 ||
+      remainder.destination != candidate.mapRootSlot ||
+      bounded.mapCoefficient == 0) {
+    return std::nullopt;
+  }
+  return QuotientBlockSummary{mirrors.front(),        multiplier,
+                              divide.divisor,         quotientMultiplier,
+                              remainder.divisor,      bounded.modulus,
+                              bounded.mapCoefficient, bounded.constant};
 }
 
 std::optional<int> selectMinMaxOpcode(const Instruction &select,
@@ -894,24 +1402,41 @@ Instruction appendPhiIncoming(const Instruction &phi, const std::string &value,
   return Instruction{"phi", std::move(operands), phi.result()};
 }
 
-bool transform(Function &function, const Candidate &candidate) {
+bool transform(Function &function, const Candidate &candidate,
+               const std::string &superblockHelper, bool &usedSuperblocks) {
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
   const auto boundedScan =
       std::getenv("COMPILER_DISABLE_BOUNDED_REMAINDER_PREFIX_SCAN") == nullptr
           ? boundedRemainderScanFor(candidate)
           : std::nullopt;
+  const auto quotientSummary =
+      boundedScan.has_value() &&
+              std::getenv("COMPILER_DISABLE_AFFINE_QUOTIENT_BLOCK_SUMMARY") ==
+                  nullptr
+          ? quotientBlockSummaryFor(candidate, *boundedScan)
+          : std::nullopt;
+  const bool superblockSummary =
+      quotientSummary.has_value() && !superblockHelper.empty() &&
+      std::getenv("COMPILER_DISABLE_AFFINE_FLOOR_SUM_SUPERBLOCKS") == nullptr &&
+      supportsFloorSumSuperblocks(*quotientSummary);
   auto *header = blockByName(function, candidate.header);
   if (header == nullptr || header->instructions().size() != 4) {
     return false;
   }
-  const auto scanGuardName =
-      freshName(blockNames, "pure.map.prefix32.guard");
-  const auto scanHeaderName =
-      freshName(blockNames, "pure.map.prefix32.header");
+  const auto scanGuardName = freshName(blockNames, "pure.map.prefix32.guard");
+  const auto quotientGuardName =
+      freshName(blockNames, "pure.map.quotient.guard");
+  const auto superblockBodyName =
+      freshName(blockNames, "pure.map.superblock.body");
+  const auto superblockCommitName =
+      freshName(blockNames, "pure.map.superblock.commit");
+  const auto quotientBodyName = freshName(blockNames, "pure.map.quotient.body");
+  const auto quotientCommitName =
+      freshName(blockNames, "pure.map.quotient.commit");
+  const auto scanHeaderName = freshName(blockNames, "pure.map.prefix32.header");
   const auto scanStepName = freshName(blockNames, "pure.map.prefix32.step");
-  const auto scanFinishName =
-      freshName(blockNames, "pure.map.prefix32.finish");
+  const auto scanFinishName = freshName(blockNames, "pure.map.prefix32.finish");
   const auto guardName = freshName(blockNames, "pure.map.vector.guard");
   const auto vectorName = freshName(blockNames, "pure.map.vector.body");
   const auto x1 = freshName(valueNames, "%pure.map.x1");
@@ -924,10 +1449,13 @@ bool transform(Function &function, const Candidate &candidate) {
   const auto c12 = freshName(valueNames, "%pure.map.c12");
   const auto all = freshName(valueNames, "%pure.map.all");
 
-  header->instructions().back() = Instruction{
-      "br",
-      {header->instructions()[2].result(),
-       boundedScan.has_value() ? scanGuardName : guardName, candidate.exit}};
+  header->instructions().back() =
+      Instruction{"br",
+                  {header->instructions()[2].result(),
+                   quotientSummary.has_value()
+                       ? quotientGuardName
+                       : (boundedScan.has_value() ? scanGuardName : guardName),
+                   candidate.exit}};
 
   BasicBlock guard{guardName};
   guard.addInstruction(
@@ -944,44 +1472,42 @@ bool transform(Function &function, const Candidate &candidate) {
   guard.addInstruction(Instruction{"and", {c12, c3}, all});
   guard.addInstruction(Instruction{"br", {all, vectorName, candidate.body}});
 
-  const auto appendVectorMap =
-      [&](BasicBlock &block, const std::array<std::string, 4> &inputs) {
+  const auto appendVectorMap = [&](BasicBlock &block,
+                                   const std::array<std::string, 4> &inputs) {
+    block.addInstruction(
+        Instruction{"aarch64.neon.pure.map.i32x4.init",
+                    {inputs[0], inputs[1], inputs[2], inputs[3]}});
+    for (const auto &operation : candidate.vectorOperations) {
+      if (operation.kind == VectorOperation::Kind::Binary) {
+        block.addInstruction(Instruction{"aarch64.neon.pure.map.binary.i32x4",
+                                         {std::to_string(operation.opcode),
+                                          std::to_string(operation.destination),
+                                          operation.lhsImmediate ? "1" : "0",
+                                          std::to_string(operation.lhs),
+                                          operation.rhsImmediate ? "1" : "0",
+                                          std::to_string(operation.rhs)}});
+      } else {
         block.addInstruction(Instruction{
-            "aarch64.neon.pure.map.i32x4.init",
-            {inputs[0], inputs[1], inputs[2], inputs[3]}});
-        for (const auto &operation : candidate.vectorOperations) {
-          if (operation.kind == VectorOperation::Kind::Binary) {
-            block.addInstruction(Instruction{
-                "aarch64.neon.pure.map.binary.i32x4",
-                {std::to_string(operation.opcode),
-                 std::to_string(operation.destination),
-                 operation.lhsImmediate ? "1" : "0",
-                 std::to_string(operation.lhs),
-                 operation.rhsImmediate ? "1" : "0",
-                 std::to_string(operation.rhs)}});
-          } else {
-            block.addInstruction(Instruction{
-                operation.kind == VectorOperation::Kind::Divide
-                    ? "aarch64.neon.pure.map.sdiv.i32x4"
-                    : "aarch64.neon.pure.map.srem.i32x4",
-                {std::to_string(operation.destination),
-                 std::to_string(operation.lhs),
-                 std::to_string(operation.divisor),
-                 std::to_string(operation.magic.multiplier),
-                 std::to_string(operation.magic.shift)}});
-          }
-        }
-        std::array<std::string, 4> lanes;
-        for (int lane = 0; lane < kVectorWidth; ++lane) {
-          lanes[static_cast<std::size_t>(lane)] =
-              freshName(valueNames, "%pure.map.lane");
-          block.addInstruction(Instruction{
-              "aarch64.neon.pure.map.extract.i32x4",
-              {std::to_string(candidate.mapRootSlot), std::to_string(lane)},
-              lanes[static_cast<std::size_t>(lane)]});
-        }
-        return lanes;
-      };
+            operation.kind == VectorOperation::Kind::Divide
+                ? "aarch64.neon.pure.map.sdiv.i32x4"
+                : "aarch64.neon.pure.map.srem.i32x4",
+            {std::to_string(operation.destination),
+             std::to_string(operation.lhs), std::to_string(operation.divisor),
+             std::to_string(operation.magic.multiplier),
+             std::to_string(operation.magic.shift)}});
+      }
+    }
+    std::array<std::string, 4> lanes;
+    for (int lane = 0; lane < kVectorWidth; ++lane) {
+      lanes[static_cast<std::size_t>(lane)] =
+          freshName(valueNames, "%pure.map.lane");
+      block.addInstruction(Instruction{
+          "aarch64.neon.pure.map.extract.i32x4",
+          {std::to_string(candidate.mapRootSlot), std::to_string(lane)},
+          lanes[static_cast<std::size_t>(lane)]});
+    }
+    return lanes;
+  };
 
   BasicBlock vectorBody{vectorName};
   const auto laneValues =
@@ -1009,6 +1535,342 @@ bool transform(Function &function, const Candidate &candidate) {
   vectorBody.addInstruction(Instruction{"add", {x3, candidate.step}, x4});
   vectorBody.addInstruction(Instruction{"br", {candidate.header}});
 
+  BasicBlock quotientGuard{quotientGuardName};
+  BasicBlock superblockBody{superblockBodyName};
+  BasicBlock superblockCommit{superblockCommitName};
+  BasicBlock quotientBody{quotientBodyName};
+  BasicBlock quotientCommit{quotientCommitName};
+  std::string superblockNextInduction;
+  std::string superblockNextState;
+  std::string quotientNextInduction;
+  std::string quotientNextState;
+  if (quotientSummary.has_value()) {
+    const auto qName = [&](const std::string &stem) {
+      return freshName(valueNames, "%pure.map.quotient." + stem);
+    };
+    const auto add = [&](BasicBlock &block, const std::string &opcode,
+                         std::vector<std::string> operands,
+                         const std::string &stem) {
+      const auto result = qName(stem);
+      block.addInstruction(Instruction{opcode, std::move(operands), result});
+      return result;
+    };
+    const auto wrapI32 = [&](BasicBlock &block, const std::string &value,
+                             const std::string &stem) {
+      const auto narrowed = add(block, "trunc", {value, "int"}, stem + ".i32");
+      return add(block, "sext", {narrowed, "long"}, stem + ".i64");
+    };
+    const auto minimum = [&](BasicBlock &block, const std::string &lhs,
+                             const std::string &rhs, const std::string &stem) {
+      const auto less = add(block, "icmp.slt", {lhs, rhs}, stem + ".less");
+      return add(block, "select", {less, lhs, rhs}, stem + ".value");
+    };
+    const auto quotientRun = [&](BasicBlock &block, const std::string &value,
+                                 const std::string &delta, std::int32_t divisor,
+                                 const std::string &stem) {
+      const auto divisorText = std::to_string(divisor);
+      const auto quotient =
+          add(block, "sdiv", {value, divisorText}, stem + ".quotient");
+      const auto nonnegative =
+          add(block, "icmp.sge", {quotient, "0"}, stem + ".nonnegative");
+      const auto qTimes =
+          add(block, "mul", {quotient, divisorText}, stem + ".q.times");
+      const auto qPlusOne =
+          add(block, "add", {quotient, "1"}, stem + ".q.plus.one");
+      const auto positiveHighProduct =
+          add(block, "mul", {qPlusOne, divisorText},
+              stem + ".positive.high.product");
+      const auto positiveHigh = add(block, "sub", {positiveHighProduct, "1"},
+                                    stem + ".positive.high");
+      const auto qMinusOne =
+          add(block, "sub", {quotient, "1"}, stem + ".q.minus.one");
+      const auto negativeLowProduct =
+          add(block, "mul", {qMinusOne, divisorText},
+              stem + ".negative.low.product");
+      const auto negativeLow =
+          add(block, "add", {negativeLowProduct, "1"}, stem + ".negative.low");
+      const auto high = add(
+          block, "select", {nonnegative, positiveHigh, qTimes}, stem + ".high");
+      const auto low = add(block, "select", {nonnegative, qTimes, negativeLow},
+                           stem + ".low");
+      const auto deltaPositive =
+          add(block, "icmp.sgt", {delta, "0"}, stem + ".delta.positive");
+      const auto negativeDelta =
+          add(block, "sub", {"0", delta}, stem + ".negative.delta");
+      const auto absoluteDelta =
+          add(block, "select", {deltaPositive, delta, negativeDelta},
+              stem + ".absolute.delta");
+      const auto upwardDistance =
+          add(block, "sub", {high, value}, stem + ".upward.distance");
+      const auto downwardDistance =
+          add(block, "sub", {value, low}, stem + ".downward.distance");
+      const auto distance = add(
+          block, "select", {deltaPositive, upwardDistance, downwardDistance},
+          stem + ".distance");
+      const auto completeSteps =
+          add(block, "sdiv", {distance, absoluteDelta}, stem + ".steps");
+      return std::pair{quotient,
+                       add(block, "add", {completeSteps, "1"}, stem + ".run")};
+    };
+    const auto wrapRun = [&](BasicBlock &block, const std::string &value,
+                             const std::string &delta,
+                             const std::string &stem) {
+      const auto deltaPositive =
+          add(block, "icmp.sgt", {delta, "0"}, stem + ".delta.positive");
+      const auto negativeDelta =
+          add(block, "sub", {"0", delta}, stem + ".negative.delta");
+      const auto absoluteDelta =
+          add(block, "select", {deltaPositive, delta, negativeDelta},
+              stem + ".absolute.delta");
+      const auto upward =
+          add(block, "sub", {"2147483647", value}, stem + ".upward");
+      const auto downward =
+          add(block, "sub", {value, "-2147483648"}, stem + ".downward");
+      const auto distance =
+          add(block, "select", {deltaPositive, upward, downward},
+              stem + ".distance");
+      const auto completeSteps =
+          add(block, "sdiv", {distance, absoluteDelta}, stem + ".steps");
+      return add(block, "add", {completeSteps, "1"}, stem + ".run");
+    };
+
+    const auto induction64 = add(quotientGuard, "sext",
+                                 {candidate.induction, "long"}, "induction64");
+    const auto step64 =
+        add(quotientGuard, "sext", {candidate.step, "long"}, "step64");
+    const auto bound64 =
+        add(quotientGuard, "sext",
+            {header->instructions()[2].operands()[1], "long"}, "bound64");
+    const auto nonnegativeInduction = add(
+        quotientGuard, "icmp.sge", {induction64, "0"}, "induction.nonnegative");
+    const auto positiveStep =
+        add(quotientGuard, "icmp.sgt", {step64, "0"}, "step.positive");
+    const auto difference =
+        add(quotientGuard, "sub", {bound64, induction64}, "difference");
+    const auto stepMinusOne =
+        add(quotientGuard, "sub", {step64, "1"}, "step.minus.one");
+    const auto roundedDifference = add(
+        quotientGuard, "add", {difference, stepMinusOne}, "difference.rounded");
+    const auto remaining =
+        add(quotientGuard, "sdiv", {roundedDifference, step64}, "remaining");
+    const auto fullAdvance =
+        add(quotientGuard, "mul", {remaining, step64}, "full.advance");
+    const auto finalInduction = add(
+        quotientGuard, "add", {induction64, fullAdvance}, "final.induction");
+    const auto finalFits = add(quotientGuard, "icmp.sle",
+                               {finalInduction, "2147483647"}, "final.fits");
+    const auto domainValid =
+        add(quotientGuard, "and", {nonnegativeInduction, positiveStep},
+            "domain.valid");
+    const auto summaryValid =
+        add(quotientGuard, "and", {domainValid, finalFits}, "summary.valid");
+    quotientGuard.addInstruction(
+        Instruction{"br",
+                    {summaryValid,
+                     superblockSummary ? superblockBodyName : quotientBodyName,
+                     boundedScan.has_value() ? scanGuardName : guardName}});
+
+    if (superblockSummary) {
+      const auto initialSuperblockState =
+          add(superblockBody, "sext", {candidate.state, "long"},
+              "superblock.initial.state");
+      const auto packed =
+          add(superblockBody, "call",
+              {"@" + superblockHelper, remaining, initialSuperblockState,
+               induction64, step64, std::to_string(quotientSummary->mirror),
+               std::to_string(quotientSummary->multiplier),
+               std::to_string(quotientSummary->divisor),
+               std::to_string(quotientSummary->quotientMultiplier),
+               std::to_string(quotientSummary->mapModulus),
+               std::to_string(quotientSummary->mapCoefficient),
+               std::to_string(quotientSummary->incrementConstant),
+               std::to_string(quotientSummary->stateModulus)},
+              "superblock.packed");
+      const auto superblockRun =
+          add(superblockBody, "lshr", {packed, "32"}, "superblock.run");
+      const auto superblockStateI32 =
+          add(superblockBody, "trunc", {packed, "int"}, "superblock.state.i32");
+      const auto hasSuperblock =
+          add(superblockBody, "icmp.sgt", {superblockRun, "0"},
+              "superblock.available");
+      superblockBody.addInstruction(Instruction{
+          "br", {hasSuperblock, superblockCommitName, quotientBodyName}});
+
+      superblockNextState = superblockStateI32;
+      const auto superblockAdvance =
+          add(superblockCommit, "mul", {superblockRun, step64},
+              "superblock.advance");
+      const auto superblockNext64 =
+          add(superblockCommit, "add", {induction64, superblockAdvance},
+              "superblock.induction.next64");
+      superblockNextInduction =
+          add(superblockCommit, "trunc", {superblockNext64, "int"},
+              "superblock.induction.next");
+      superblockCommit.addInstruction(Instruction{"br", {candidate.header}});
+      usedSuperblocks = true;
+    }
+
+    const auto mirrorValue = add(
+        quotientBody, "sub",
+        {std::to_string(quotientSummary->mirror), induction64}, "mirror.value");
+    const auto useMirror =
+        add(quotientBody, "icmp.slt", {induction64, mirrorValue}, "use.mirror");
+    const auto mappedBase =
+        add(quotientBody, "select", {useMirror, mirrorValue, induction64},
+            "mapped.base");
+    const auto twiceInduction =
+        add(quotientBody, "mul", {induction64, "2"}, "twice.induction");
+    const auto mirrorNumerator0 =
+        add(quotientBody, "sub", {std::to_string(quotientSummary->mirror), "1"},
+            "mirror.numerator.base");
+    const auto mirrorNumerator =
+        add(quotientBody, "sub", {mirrorNumerator0, twiceInduction},
+            "mirror.numerator");
+    const auto twiceStep =
+        add(quotientBody, "mul", {step64, "2"}, "twice.step");
+    const auto mirrorSteps =
+        add(quotientBody, "sdiv", {mirrorNumerator, twiceStep}, "mirror.steps");
+    const auto mirrorRun =
+        add(quotientBody, "add", {mirrorSteps, "1"}, "mirror.run");
+    const auto branchRun = add(quotientBody, "select",
+                               {useMirror, mirrorRun, remaining}, "branch.run");
+
+    const auto rawFull = add(
+        quotientBody, "mul",
+        {mappedBase, std::to_string(quotientSummary->multiplier)}, "raw.full");
+    const auto raw = wrapI32(quotientBody, rawFull, "raw");
+    const auto negativeStep =
+        add(quotientBody, "sub", {"0", step64}, "negative.step");
+    const auto mappedDelta =
+        add(quotientBody, "select", {useMirror, negativeStep, step64},
+            "mapped.delta");
+    const auto rawDelta =
+        add(quotientBody, "mul",
+            {mappedDelta, std::to_string(quotientSummary->multiplier)},
+            "raw.delta");
+    const auto rawQuotientAndRun = quotientRun(
+        quotientBody, raw, rawDelta, quotientSummary->divisor, "division");
+    const auto rawWrapRun = wrapRun(quotientBody, raw, rawDelta, "raw.wrap");
+
+    const auto quotientProduct =
+        add(quotientBody, "mul",
+            {rawQuotientAndRun.first,
+             std::to_string(quotientSummary->quotientMultiplier)},
+            "quotient.product");
+    const auto wrappedQuotientProduct =
+        wrapI32(quotientBody, quotientProduct, "quotient.product");
+    const auto combinedFull =
+        add(quotientBody, "add", {mappedBase, wrappedQuotientProduct},
+            "combined.full");
+    const auto combined = wrapI32(quotientBody, combinedFull, "combined");
+    const auto mapRemainderAndRun =
+        quotientRun(quotientBody, combined, mappedDelta,
+                    quotientSummary->mapModulus, "remainder");
+    const auto combinedWrapRun =
+        wrapRun(quotientBody, combined, mappedDelta, "combined.wrap");
+    const auto remainderMultiple = add(
+        quotientBody, "mul",
+        {mapRemainderAndRun.first, std::to_string(quotientSummary->mapModulus)},
+        "remainder.multiple");
+    const auto mapValue =
+        add(quotientBody, "sub", {combined, remainderMultiple}, "map.value");
+    auto increment = mapValue;
+    if (quotientSummary->mapCoefficient != 1) {
+      increment =
+          add(quotientBody, "mul",
+              {increment, std::to_string(quotientSummary->mapCoefficient)},
+              "increment.scaled");
+    }
+    if (quotientSummary->incrementConstant != 0) {
+      increment =
+          add(quotientBody, "add",
+              {increment, std::to_string(quotientSummary->incrementConstant)},
+              "increment.shifted");
+    }
+    const auto incrementDelta =
+        add(quotientBody, "mul",
+            {mappedDelta, std::to_string(quotientSummary->mapCoefficient)},
+            "increment.delta");
+    const auto incrementNonnegative = add(
+        quotientBody, "icmp.sge", {increment, "0"}, "increment.nonnegative");
+    const auto deltaNegative =
+        add(quotientBody, "icmp.slt", {incrementDelta, "0"}, "delta.negative");
+    const auto deltaPositive =
+        add(quotientBody, "icmp.sgt", {incrementDelta, "0"}, "delta.positive");
+    const auto positiveTowardZero =
+        add(quotientBody, "and", {incrementNonnegative, deltaNegative},
+            "positive.toward.zero");
+    const auto incrementNegative =
+        add(quotientBody, "icmp.slt", {increment, "0"}, "increment.negative");
+    const auto negativeTowardZero =
+        add(quotientBody, "and", {incrementNegative, deltaPositive},
+            "negative.toward.zero");
+    const auto negativeIncrementDelta = add(
+        quotientBody, "sub", {"0", incrementDelta}, "negative.increment.delta");
+    const auto positiveSignSteps =
+        add(quotientBody, "sdiv", {increment, negativeIncrementDelta},
+            "positive.sign.steps");
+    const auto positiveSignRun =
+        add(quotientBody, "add", {positiveSignSteps, "1"}, "positive.sign.run");
+    const auto negativeIncrement =
+        add(quotientBody, "sub", {"0", increment}, "negative.increment");
+    const auto negativeSignSteps =
+        add(quotientBody, "sdiv", {negativeIncrement, incrementDelta},
+            "negative.sign.steps");
+    const auto negativeSignRun =
+        add(quotientBody, "add", {negativeSignSteps, "1"}, "negative.sign.run");
+    const auto signRun0 = add(quotientBody, "select",
+                              {positiveTowardZero, positiveSignRun, remaining},
+                              "sign.run.positive");
+    const auto signRun =
+        add(quotientBody, "select",
+            {negativeTowardZero, negativeSignRun, signRun0}, "sign.run");
+
+    auto run = minimum(quotientBody, remaining, branchRun, "run.branch");
+    run = minimum(quotientBody, run, rawQuotientAndRun.second, "run.division");
+    run = minimum(quotientBody, run, rawWrapRun, "run.raw.wrap");
+    run =
+        minimum(quotientBody, run, mapRemainderAndRun.second, "run.remainder");
+    run = minimum(quotientBody, run, combinedWrapRun, "run.combined.wrap");
+    run = minimum(quotientBody, run, signRun, "run.sign");
+    run = minimum(quotientBody, run, "1048576", "run.budget");
+    const auto runPositive =
+        add(quotientBody, "icmp.sgt", {run, "0"}, "run.positive");
+    quotientBody.addInstruction(
+        Instruction{"br", {runPositive, quotientCommitName, candidate.body}});
+
+    const auto runMinusOne =
+        add(quotientCommit, "sub", {run, "1"}, "run.minus.one");
+    const auto pairProduct =
+        add(quotientCommit, "mul", {run, runMinusOne}, "pair.product");
+    const auto pairCount =
+        add(quotientCommit, "sdiv", {pairProduct, "2"}, "pair.count");
+    const auto baseSum =
+        add(quotientCommit, "mul", {run, increment}, "base.sum");
+    const auto deltaSum =
+        add(quotientCommit, "mul", {pairCount, incrementDelta}, "delta.sum");
+    const auto incrementSum =
+        add(quotientCommit, "add", {baseSum, deltaSum}, "increment.sum");
+    const auto state64 =
+        add(quotientCommit, "sext", {candidate.state, "long"}, "state64");
+    const auto stateTotal =
+        add(quotientCommit, "add", {state64, incrementSum}, "state.total");
+    const auto stateRemainder =
+        add(quotientCommit, "srem",
+            {stateTotal, std::to_string(quotientSummary->stateModulus)},
+            "state.remainder");
+    quotientNextState =
+        add(quotientCommit, "trunc", {stateRemainder, "int"}, "state.next");
+    const auto inductionAdvance =
+        add(quotientCommit, "mul", {run, step64}, "induction.advance");
+    const auto nextInduction64 =
+        add(quotientCommit, "add", {induction64, inductionAdvance},
+            "induction.next64");
+    quotientNextInduction = add(quotientCommit, "trunc",
+                                {nextInduction64, "int"}, "induction.next");
+    quotientCommit.addInstruction(Instruction{"br", {candidate.header}});
+  }
+
   BasicBlock scanGuard{scanGuardName};
   BasicBlock scanHeader{scanHeaderName};
   BasicBlock scanStep{scanStepName};
@@ -1025,8 +1887,7 @@ bool transform(Function &function, const Candidate &candidate) {
     const auto last64 = freshName(valueNames, "%pure.map.prefix32.last64");
     const auto stepPositive =
         freshName(valueNames, "%pure.map.prefix32.step.positive");
-    const auto lastFits =
-        freshName(valueNames, "%pure.map.prefix32.last.fits");
+    const auto lastFits = freshName(valueNames, "%pure.map.prefix32.last.fits");
     const auto lastBeforeBound =
         freshName(valueNames, "%pure.map.prefix32.last.before.bound");
     const auto validStepAndRange =
@@ -1039,20 +1900,19 @@ bool transform(Function &function, const Candidate &candidate) {
         Instruction{"sext", {candidate.step, "long"}, step64});
     scanGuard.addInstruction(Instruction{
         "sext", {header->instructions()[2].operands()[1], "long"}, bound64});
-    scanGuard.addInstruction(
-        Instruction{"mul", {step64, "31"}, stepSpan64});
+    scanGuard.addInstruction(Instruction{"mul", {step64, "31"}, stepSpan64});
     scanGuard.addInstruction(
         Instruction{"add", {induction64, stepSpan64}, last64});
     scanGuard.addInstruction(
         Instruction{"icmp.sgt", {step64, "0"}, stepPositive});
-    scanGuard.addInstruction(Instruction{
-        "icmp.sle", {last64, "2147483647"}, lastFits});
+    scanGuard.addInstruction(
+        Instruction{"icmp.sle", {last64, "2147483647"}, lastFits});
     scanGuard.addInstruction(
         Instruction{"icmp.slt", {last64, bound64}, lastBeforeBound});
-    scanGuard.addInstruction(Instruction{
-        "and", {stepPositive, lastFits}, validStepAndRange});
-    scanGuard.addInstruction(Instruction{
-        "and", {validStepAndRange, lastBeforeBound}, scanAllowed});
+    scanGuard.addInstruction(
+        Instruction{"and", {stepPositive, lastFits}, validStepAndRange});
+    scanGuard.addInstruction(
+        Instruction{"and", {validStepAndRange, lastBeforeBound}, scanAllowed});
     scanGuard.addInstruction(
         Instruction{"br", {scanAllowed, scanHeaderName, guardName}});
 
@@ -1073,21 +1933,16 @@ bool transform(Function &function, const Candidate &candidate) {
     const auto maximum = freshName(valueNames, "%pure.map.prefix32.maximum");
     const auto maximumNext =
         freshName(valueNames, "%pure.map.prefix32.maximum.next");
-    const auto hasGroup =
-        freshName(valueNames, "%pure.map.prefix32.has.group");
-    scanHeader.addInstruction(
-        Instruction{"phi",
-                    {"int", "0", scanGuardName, groupNext, scanStepName},
-                    group});
+    const auto hasGroup = freshName(valueNames, "%pure.map.prefix32.has.group");
+    scanHeader.addInstruction(Instruction{
+        "phi", {"int", "0", scanGuardName, groupNext, scanStepName}, group});
     scanHeader.addInstruction(
         Instruction{"phi",
                     {"int", candidate.induction, scanGuardName,
                      loopNextInduction, scanStepName},
                     currentInduction});
-    scanHeader.addInstruction(
-        Instruction{"phi",
-                    {"int", "0", scanGuardName, totalNext, scanStepName},
-                    total});
+    scanHeader.addInstruction(Instruction{
+        "phi", {"int", "0", scanGuardName, totalNext, scanStepName}, total});
     scanHeader.addInstruction(
         Instruction{"phi",
                     {"int", "0", scanGuardName, minimumNext, scanStepName},
@@ -1096,8 +1951,7 @@ bool transform(Function &function, const Candidate &candidate) {
         Instruction{"phi",
                     {"int", "0", scanGuardName, maximumNext, scanStepName},
                     maximum});
-    scanHeader.addInstruction(
-        Instruction{"icmp.slt", {group, "8"}, hasGroup});
+    scanHeader.addInstruction(Instruction{"icmp.slt", {group, "8"}, hasGroup});
     scanHeader.addInstruction(
         Instruction{"br", {hasGroup, scanStepName, scanFinishName}});
 
@@ -1107,7 +1961,8 @@ bool transform(Function &function, const Candidate &candidate) {
       inputs[static_cast<std::size_t>(lane)] =
           freshName(valueNames, "%pure.map.prefix32.induction");
       scanStep.addInstruction(Instruction{
-          "add", {inputs[static_cast<std::size_t>(lane - 1)], candidate.step},
+          "add",
+          {inputs[static_cast<std::size_t>(lane - 1)], candidate.step},
           inputs[static_cast<std::size_t>(lane)]});
     }
     const auto lanes = appendVectorMap(scanStep, inputs);
@@ -1117,19 +1972,20 @@ bool transform(Function &function, const Candidate &candidate) {
     for (int lane = 0; lane < kVectorWidth; ++lane) {
       std::string increment = lanes[static_cast<std::size_t>(lane)];
       if (boundedScan->mapCoefficient != 1) {
-        const auto scaled =
-            freshName(valueNames, "%pure.map.prefix32.scaled");
+        const auto scaled = freshName(valueNames, "%pure.map.prefix32.scaled");
         scanStep.addInstruction(Instruction{
-            "mul", {increment, std::to_string(boundedScan->mapCoefficient)},
+            "mul",
+            {increment, std::to_string(boundedScan->mapCoefficient)},
             scaled});
         increment = scaled;
       }
       if (boundedScan->constant != 0) {
         const auto shifted =
             freshName(valueNames, "%pure.map.prefix32.shifted");
-        scanStep.addInstruction(Instruction{
-            "add", {increment, std::to_string(boundedScan->constant)},
-            shifted});
+        scanStep.addInstruction(
+            Instruction{"add",
+                        {increment, std::to_string(boundedScan->constant)},
+                        shifted});
         increment = shifted;
       }
       const auto nextTotal =
@@ -1150,16 +2006,14 @@ bool transform(Function &function, const Candidate &candidate) {
               : freshName(valueNames, "%pure.map.prefix32.partial.maximum");
       scanStep.addInstruction(
           Instruction{"add", {runningTotal, increment}, nextTotal});
-      scanStep.addInstruction(Instruction{
-          "icmp.slt", {nextTotal, runningMinimum}, belowMinimum});
       scanStep.addInstruction(
-          Instruction{"select", {belowMinimum, nextTotal, runningMinimum},
-                      nextMinimum});
+          Instruction{"icmp.slt", {nextTotal, runningMinimum}, belowMinimum});
       scanStep.addInstruction(Instruction{
-          "icmp.sgt", {nextTotal, runningMaximum}, aboveMaximum});
+          "select", {belowMinimum, nextTotal, runningMinimum}, nextMinimum});
       scanStep.addInstruction(
-          Instruction{"select", {aboveMaximum, nextTotal, runningMaximum},
-                      nextMaximum});
+          Instruction{"icmp.sgt", {nextTotal, runningMaximum}, aboveMaximum});
+      scanStep.addInstruction(Instruction{
+          "select", {aboveMaximum, nextTotal, runningMaximum}, nextMaximum});
       runningTotal = nextTotal;
       runningMinimum = nextMinimum;
       runningMaximum = nextMaximum;
@@ -1192,20 +2046,22 @@ bool transform(Function &function, const Candidate &candidate) {
         Instruction{"add", {candidate.state, minimum}, stateWithMinimum});
     scanFinish.addInstruction(
         Instruction{"add", {candidate.state, maximum}, stateWithMaximum});
-    scanFinish.addInstruction(Instruction{
-        "icmp.sge",
-        {stateWithMaximum, std::to_string(boundedScan->modulus)},
-        crossesUpper});
-    scanFinish.addInstruction(Instruction{
-        "icmp.sle",
-        {stateWithMinimum, std::to_string(-boundedScan->modulus)},
-        crossesLower});
-    scanFinish.addInstruction(Instruction{
-        "sub", {stateWithTotal, std::to_string(boundedScan->modulus)},
-        upperAdjusted});
-    scanFinish.addInstruction(Instruction{
-        "add", {stateWithTotal, std::to_string(boundedScan->modulus)},
-        lowerAdjusted});
+    scanFinish.addInstruction(
+        Instruction{"icmp.sge",
+                    {stateWithMaximum, std::to_string(boundedScan->modulus)},
+                    crossesUpper});
+    scanFinish.addInstruction(
+        Instruction{"icmp.sle",
+                    {stateWithMinimum, std::to_string(-boundedScan->modulus)},
+                    crossesLower});
+    scanFinish.addInstruction(
+        Instruction{"sub",
+                    {stateWithTotal, std::to_string(boundedScan->modulus)},
+                    upperAdjusted});
+    scanFinish.addInstruction(
+        Instruction{"add",
+                    {stateWithTotal, std::to_string(boundedScan->modulus)},
+                    lowerAdjusted});
     scanFinish.addInstruction(Instruction{
         "select", {crossesLower, lowerAdjusted, stateWithTotal}, lowerOrBase});
     scanFinish.addInstruction(Instruction{
@@ -1218,14 +2074,29 @@ bool transform(Function &function, const Candidate &candidate) {
     if (phi.result() == candidate.induction) {
       auto updated = appendPhiIncoming(phi, x4, vectorName);
       if (boundedScan.has_value()) {
-        updated =
-            appendPhiIncoming(updated, scanNextInduction, scanFinishName);
+        updated = appendPhiIncoming(updated, scanNextInduction, scanFinishName);
+      }
+      if (quotientSummary.has_value()) {
+        updated = appendPhiIncoming(updated, quotientNextInduction,
+                                    quotientCommitName);
+        if (superblockSummary) {
+          updated = appendPhiIncoming(updated, superblockNextInduction,
+                                      superblockCommitName);
+        }
       }
       header->instructions()[index] = std::move(updated);
     } else if (phi.result() == candidate.state) {
       auto updated = appendPhiIncoming(phi, currentState, vectorName);
       if (boundedScan.has_value()) {
         updated = appendPhiIncoming(updated, scanNextState, scanFinishName);
+      }
+      if (quotientSummary.has_value()) {
+        updated =
+            appendPhiIncoming(updated, quotientNextState, quotientCommitName);
+        if (superblockSummary) {
+          updated = appendPhiIncoming(updated, superblockNextState,
+                                      superblockCommitName);
+        }
       }
       header->instructions()[index] = std::move(updated);
     } else {
@@ -1238,6 +2109,21 @@ bool transform(Function &function, const Candidate &candidate) {
       [&](const BasicBlock &block) { return block.name() == candidate.body; });
   if (position == function.blocks().end()) {
     return false;
+  }
+  if (quotientSummary.has_value()) {
+    position = function.blocks().insert(position, std::move(quotientGuard));
+    ++position;
+    if (superblockSummary) {
+      position = function.blocks().insert(position, std::move(superblockBody));
+      ++position;
+      position =
+          function.blocks().insert(position, std::move(superblockCommit));
+      ++position;
+    }
+    position = function.blocks().insert(position, std::move(quotientBody));
+    ++position;
+    position = function.blocks().insert(position, std::move(quotientCommit));
+    ++position;
   }
   if (boundedScan.has_value()) {
     position = function.blocks().insert(position, std::move(scanGuard));
@@ -1262,14 +2148,42 @@ void AArch64PureMapRecurrenceVectorizationPass::run(Module &module) {
       nullptr) {
     return;
   }
+  const auto freshHelperName = [&](const std::string &base) {
+    std::unordered_set<std::string> names;
+    for (const auto &function : module.functions()) {
+      names.insert(function.name());
+    }
+    std::string name = base;
+    for (std::size_t suffix = 0; names.find(name) != names.end(); ++suffix) {
+      name = base + std::to_string(suffix + 1);
+    }
+    return name;
+  };
+  const auto floorSumName = freshHelperName("__compiler_signed_floor_sum");
+  const auto superblockName =
+      freshHelperName("__compiler_affine_quotient_superblock");
+  bool transformed = false;
+  bool usedSuperblocks = false;
   for (auto &function : module.functions()) {
     for (std::size_t count = 0; count < kMaximumTransformsPerFunction;
          ++count) {
       const auto candidate = matchCandidate(function);
-      if (!candidate.has_value() || !transform(function, *candidate)) {
+      if (!candidate.has_value() ||
+          !transform(function, *candidate, superblockName, usedSuperblocks)) {
         break;
       }
+      transformed = true;
     }
+  }
+  if (usedSuperblocks) {
+    module.addFunction(buildSignedFloorSumFunction(floorSumName));
+    module.addFunction(
+        buildAffineSuperblockFunction(superblockName, floorSumName));
+  }
+  if (transformed) {
+    module.addPassNote(
+        "vectorized pure-map recurrences and summarized proven affine "
+        "quotient blocks with guarded floor-sum superblocks");
   }
 }
 

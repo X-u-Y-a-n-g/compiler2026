@@ -1,0 +1,48 @@
+int table[9][9];
+int enabled[9];
+
+void update_with_row_bypass(int matrix[][9]) {
+  int row;
+  int column;
+  int step;
+  int left;
+  int right;
+  row = 8;
+  while (row >= 0) {
+    column = row + 1;
+    while (column < 9) {
+      if (enabled[row] == 0) {
+        break;
+      }
+      step = row + 1;
+      while (step < column) {
+        left = matrix[row][step];
+        right = matrix[step + 1][column];
+        if (matrix[row][column] < left + right) {
+          matrix[row][column] = left * 3 - right;
+        }
+        step = step + 1;
+      }
+      column = column + 1;
+    }
+    row = row - 1;
+  }
+}
+
+int main() {
+  int row;
+  int column;
+  row = 0;
+  while (row < 9) {
+    enabled[row] = row != 5;
+    column = 0;
+    while (column < 9) {
+      table[row][column] = 1;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  update_with_row_bypass(table);
+  putarray(81, table);
+  return 0;
+}

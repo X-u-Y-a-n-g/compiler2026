@@ -1,0 +1,33 @@
+int data[11][11];
+
+void evolve_with_extra_write(int matrix[][11]) {
+  int row;
+  int column;
+  int step;
+  int left;
+  int right;
+  row = 10;
+  while (row >= 0) {
+    column = row + 1;
+    while (column < 11) {
+      matrix[row][row] = matrix[row][row] + column;
+      step = row + 1;
+      while (step < column) {
+        left = matrix[row][step];
+        right = matrix[step + 1][column];
+        if (matrix[row][column] < left + right) {
+          matrix[row][column] = left - right;
+        }
+        step = step + 1;
+      }
+      column = column + 1;
+    }
+    row = row - 1;
+  }
+}
+
+int main() {
+  evolve_with_extra_write(data);
+  putarray(121, data);
+  return 0;
+}

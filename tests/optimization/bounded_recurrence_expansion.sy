@@ -1,0 +1,96 @@
+int touched = 0;
+
+int expanded(int seed, int which) {
+  if (which < 0) {
+    return seed;
+  }
+  int limits[5];
+  limits[0] = 0;
+  limits[1] = 2;
+  limits[2] = 3;
+  limits[3] = 5;
+  limits[4] = 8;
+  int bound = limits[which];
+  int counter = 0;
+  while (counter < bound) {
+    seed = seed * 3 + seed % 5;
+    counter = counter + 1;
+  }
+  return seed;
+}
+
+int zero_trip_fallback(int seed, int which) {
+  int limits[2];
+  limits[0] = 0;
+  limits[1] = 3;
+  int bound = limits[which];
+  int counter = 0;
+  while (counter < bound) {
+    seed = seed * 2 + seed % 3;
+    counter = counter + 1;
+  }
+  return seed;
+}
+
+int observable_counter_fallback(int seed, int which) {
+  int limits[2];
+  limits[0] = 2;
+  limits[1] = 4;
+  int bound = limits[which];
+  int counter = 0;
+  while (counter < bound) {
+    seed = seed * 2 + seed % 3;
+    counter = counter + 1;
+  }
+  return seed + counter;
+}
+
+int side_effect_fallback(int seed, int which) {
+  int limits[2];
+  limits[0] = 2;
+  limits[1] = 4;
+  int bound = limits[which];
+  int counter = 0;
+  while (counter < bound) {
+    seed = seed * 2 + seed % 3;
+    touched = touched + 1;
+    counter = counter + 1;
+  }
+  return seed;
+}
+
+int trapping_divisor_fallback(int seed, int which) {
+  int limits[2];
+  limits[0] = 2;
+  limits[1] = 4;
+  int bound = limits[which];
+  int counter = 0;
+  while (counter < bound) {
+    seed = seed * 2 + seed % -1;
+    counter = counter + 1;
+  }
+  return seed;
+}
+
+int main() {
+  int seed = getint();
+  int i = 0;
+  while (i < 5) {
+    putint(expanded(seed, i));
+    putch(10);
+    i = i + 1;
+  }
+  putint(expanded(-2147483647, 3));
+  putch(10);
+  putint(zero_trip_fallback(seed, 0));
+  putch(10);
+  putint(observable_counter_fallback(seed, 1));
+  putch(10);
+  putint(side_effect_fallback(seed, 1));
+  putch(10);
+  putint(touched);
+  putch(10);
+  putint(trapping_divisor_fallback(7, 1));
+  putch(10);
+  return 0;
+}

@@ -1,0 +1,85 @@
+int alpha[992][992];
+int beta[992][992];
+int result[992][992];
+
+int main() {
+    alpha[0][0] = 1;
+    alpha[0][1] = -3;
+    alpha[0][2] = 4;
+    alpha[1][0] = -5;
+    alpha[1][1] = 6;
+    alpha[2][0] = 7;
+    alpha[2][2] = -8;
+
+    int i = 0;
+    int j = 0;
+    int k = 0;
+    int total = 0;
+
+    while (i < 992) {
+        j = 0;
+        while (j < 992) {
+            beta[i][j] = alpha[j][i];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 992) {
+        j = 0;
+        while (j < 992) {
+            k = 0;
+            int temporary = 0;
+            while (k < 992) {
+                if (alpha[i][k] * beta[k][j] % 2 == 0) {
+                    temporary = temporary + beta[i][k] * alpha[k][j];
+                }
+                k = k + 1;
+            }
+            result[i][j] = temporary;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 992) {
+        j = 0;
+        int minimum = 2147483647;
+        while (j < 992) {
+            if (result[i][j] < minimum) minimum = result[i][j];
+            j = j + 1;
+        }
+        j = 0;
+        while (j < 992) {
+            result[i][j] = minimum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 992) {
+        j = 0;
+        while (j < 992) {
+            result[i][j] = -result[j][i];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 992) {
+        j = 0;
+        while (j < 992) {
+            total = total + result[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    putint(total);
+    putch(10);
+    return 0;
+}

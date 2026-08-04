@@ -1,0 +1,50 @@
+int larger(int a, int b) {
+    if (a < b) return b;
+    return a;
+}
+
+int mapped(int x) {
+    int v0 = larger(x, 1000003 - x);
+    int v1 = larger(v0, 500001 - v0);
+    int v2 = larger(v1, 900000 - v1);
+    return (v2 + v2 * 7 / 97 * 103) % 65521;
+}
+
+int summarized(int begin, int end, int stride) {
+    int state = 0;
+    int cursor = begin;
+    while (cursor < end) {
+        state = (state + mapped(cursor) + 3) % 10000019;
+        cursor = cursor + stride;
+    }
+    return state;
+}
+
+// The second mirror is not redundant on the non-negative domain.  It must
+// retain the original/vector fallback rather than enter quotient blocks.
+int fallback_map(int x) {
+    int v0 = larger(x, 301 - x);
+    int v1 = larger(v0, 1001 - v0);
+    return (v1 + v1 * 5 / 31 * 37) % 997;
+}
+
+int fallback_loop(int begin, int end, int stride) {
+    int state = 0;
+    int cursor = begin;
+    while (cursor < end) {
+        state = (state + fallback_map(cursor) + 1) % 100003;
+        cursor = cursor + stride;
+    }
+    return state;
+}
+
+int main() {
+    int begin = getint();
+    int end = getint();
+    int stride = getint();
+    putint(summarized(begin, end, stride));
+    putch(10);
+    putint(fallback_loop(begin, end, stride));
+    putch(10);
+    return 0;
+}

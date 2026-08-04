@@ -1,0 +1,22 @@
+int shared_cancel(int a, int b, int c) {
+  int shared = a + b;
+  int adjusted = shared - c;
+  return adjusted - shared;
+}
+
+int nested_cancel(int a, int b, int c, int d) {
+  int left = a - b + c;
+  int right = d + a - b;
+  return left - right;
+}
+
+int main() {
+  int x = getint();
+  putint(shared_cancel(x, 2147483647, -19));
+  putch(10);
+  putint(shared_cancel(-2147483647, x, 2147483647));
+  putch(10);
+  putint(nested_cancel(x, -1, 2147483647, -2147483647));
+  putch(10);
+  return 0;
+}

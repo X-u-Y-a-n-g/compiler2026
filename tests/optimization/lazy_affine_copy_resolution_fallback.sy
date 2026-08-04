@@ -1,0 +1,63 @@
+int values[240];
+int shapes[16];
+
+int affine_copy(int count, int data[], int row_size) {
+    int column_size = count / row_size;
+    int row = 0;
+    int column = 0;
+    while (row < column_size) {
+        column = 0;
+        while (column < row_size) {
+            if (row < column) {
+                column = column + 1;
+                continue;
+            }
+            int current = data[row * row_size + column];
+            data[column * column_size + row] =
+                data[row * row_size + column];
+            data[row * row_size + column] = current;
+            column = column + 1;
+        }
+        row = row + 1;
+    }
+    return -1;
+}
+
+int main() {
+    int count = getint();
+    int length = 6;
+    shapes[0] = 2;
+    shapes[1] = 5;
+    shapes[2] = 61;
+    shapes[3] = 10;
+    shapes[4] = 4;
+    shapes[5] = 6;
+
+    int index = 0;
+    while (index < count) {
+        values[index] = index * 7 - 13;
+        if (index % 4 == 0) {
+            values[index] = 9;
+        }
+        index = index + 1;
+    }
+
+    index = 0;
+    while (index < length) {
+        affine_copy(count, values, shapes[index]);
+        index = index + 1;
+    }
+
+    int result = 0;
+    index = 0;
+    while (index < length) {
+        result = result + index * index * values[index];
+        index = index + 1;
+    }
+    if (result < 0) {
+        result = -result;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

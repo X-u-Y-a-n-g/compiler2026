@@ -1,0 +1,83 @@
+const int CAP = 12;
+const int KS = 3;
+
+int extent;
+int trips;
+int input[144];
+int output[144];
+int kernel[9];
+
+void stencil(int source[], int destination[], int weights[]) {
+  int repeat = 0;
+  while (repeat < trips) {
+    int row = 0;
+    while (row < extent) {
+      int column = 0;
+      while (column < extent) {
+        int total = 0;
+        int wr = 0;
+        while (wr < KS) {
+          int wc = 0;
+          int source_row = row + wr - 1;
+          while (wc < KS) {
+            int source_column = column + wc - 1;
+            if (source_row >= 0 && source_row < extent &&
+                source_column >= 0 && source_column < extent) {
+              total = total + source[source_row * extent + source_column] *
+                                  weights[wr * KS + wc];
+            }
+            wc = wc + 1;
+          }
+          wr = wr + 1;
+        }
+        destination[row * extent + column] = total;
+        column = column + 1;
+      }
+      row = row + 1;
+    }
+    repeat = repeat + 1;
+  }
+}
+
+int checksum(int data[]) {
+  int result = 0;
+  int index = 0;
+  while (index < extent * extent) {
+    result = result + data[index] * (index + 3);
+    index = index + 1;
+  }
+  return result;
+}
+
+int main() {
+  int n = 0;
+  while (n <= 10) {
+    extent = n;
+    trips = n % 3;
+    int index = 0;
+    while (index < CAP * CAP) {
+      input[index] = index * 17 - n * 13;
+      output[index] = 1234567;
+      index = index + 1;
+    }
+    index = 0;
+    while (index < KS * KS) {
+      kernel[index] = index * 5 - 19;
+      index = index + 1;
+    }
+    stencil(input, output, kernel);
+    putint(checksum(output));
+    putch(10);
+
+    index = 0;
+    while (index < CAP * CAP) {
+      input[index] = index * 23 + n * 7;
+      index = index + 1;
+    }
+    stencil(input, input, kernel);
+    putint(checksum(input));
+    putch(10);
+    n = n + 1;
+  }
+  return 0;
+}

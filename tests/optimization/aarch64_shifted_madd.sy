@@ -1,0 +1,37 @@
+int evaluate(int value, int accumulator, int mode) {
+    if (mode == 0) {
+        return value * 8 + accumulator;
+    }
+    if (mode == 1) {
+        return accumulator - value * 8;
+    }
+    if (mode == 2) {
+        return value * (0 - 8) + accumulator;
+    }
+    if (mode == 3) {
+        return accumulator - value * (0 - 8);
+    }
+    if (mode == 4) {
+        return value * ((0 - 2147483647) - 1) + accumulator;
+    }
+    if (mode == 5) {
+        return 32 * value + accumulator;
+    }
+    return value * 3 + accumulator;
+}
+
+int main() {
+    int sample = 0;
+    while (sample < 4) {
+        int value = getint();
+        int accumulator = getint();
+        int mode = 0;
+        while (mode < 7) {
+            putint(evaluate(value, accumulator, mode));
+            putch(10);
+            mode = mode + 1;
+        }
+        sample = sample + 1;
+    }
+    return 0;
+}

@@ -1,0 +1,22 @@
+int observed[64];
+int discarded[64];
+
+int main() {
+    int count = getint();
+    int index = 0;
+    while (index < count) {
+        observed[index] = index * 5 - 9;
+        discarded[index] = index * index + 3;
+        index = index + 1;
+    }
+
+    int result = 0;
+    index = 0;
+    while (index < count) {
+        result = result + observed[index];
+        index = index + 1;
+    }
+    putint(result);
+    putch(10);
+    return 0;
+}

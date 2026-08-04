@@ -19,6 +19,9 @@ class Module {
   [[nodiscard]] const std::vector<Function>& functions() const { return functions_; }
   [[nodiscard]] std::vector<Function>& functions() { return functions_; }
   [[nodiscard]] const std::vector<std::string>& passLog() const { return passLog_; }
+  [[nodiscard]] bool hasSingleImmutableTailMemoContext() const {
+    return singleImmutableTailMemoContext_;
+  }
 
   void addGlobal(GlobalVariable global) { globals_.push_back(std::move(global)); }
 
@@ -28,12 +31,16 @@ class Module {
   }
 
   void addPassNote(std::string note) { passLog_.push_back(std::move(note)); }
+  void markSingleImmutableTailMemoContext() {
+    singleImmutableTailMemoContext_ = true;
+  }
 
  private:
   std::string sourceName_;
   std::vector<GlobalVariable> globals_;
   std::vector<Function> functions_;
   std::vector<std::string> passLog_;
+  bool singleImmutableTailMemoContext_ = false;
 };
 
 }  // namespace compiler::ir::core

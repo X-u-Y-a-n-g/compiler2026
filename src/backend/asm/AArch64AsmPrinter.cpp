@@ -9,7 +9,6 @@
 #include <cstring>
 #include <limits>
 #include <optional>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -32,1630 +31,6 @@ constexpr const char* kAddrScratch = "x16";
 constexpr const char* kImmScratch = "x17";
 constexpr const char* kHiddenScratch = "x18";
 constexpr const char* kFloatScratch = "s16";
-
-struct ContiguousMaddLane {
-  std::size_t maddLine = 0;
-  std::string accumulator;
-};
-
-bool lineUsesRegister(const std::string& line, const std::string& reg);
-
-std::vector<std::string> splitLines(const std::string& assembly) {
-  std::vector<std::string> lines;
-  std::size_t begin = 0;
-  while (begin < assembly.size()) {
-    const auto end = assembly.find('\n', begin);
-    if (end == std::string::npos) {
-      lines.push_back(assembly.substr(begin));
-      break;
-    }
-    lines.push_back(assembly.substr(begin, end - begin));
-    begin = end + 1;
-  }
-  return lines;
-}
-
-std::string pairAdjacentStackAccesses(const std::string& assembly) {
-  if (std::getenv("COMPILER_DISABLE_AARCH64_STP_LDP") != nullptr) return assembly;
-  static const std::regex accessPattern{
-      R"(^  (str|ldr) (x[0-9]+), \[(sp|x29)(?:, #(-?[0-9]+))?\]$)"};
-  auto lines = splitLines(assembly);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
-    std::smatch first;
-    std::smatch second;
-    if (!std::regex_match(lines[i], first, accessPattern) ||
-        !std::regex_match(lines[i + 1], second, accessPattern) ||
-        first[1].str() != second[1].str() || first[3].str() != second[3].str() ||
-        first[2].str() == second[2].str())
-      continue;
-    const auto firstOffset = first[4].matched ? std::stoll(first[4].str()) : 0;
-    const auto secondOffset = second[4].matched ? std::stoll(second[4].str()) : 0;
-    std::string lowRegister;
-    std::string highRegister;
-    long long lowOffset = 0;
-    if (firstOffset + 8 == secondOffset) {
-      lowRegister = first[2].str();
-      highRegister = second[2].str();
-      lowOffset = firstOffset;
-    } else if (secondOffset + 8 == firstOffset) {
-      lowRegister = second[2].str();
-      highRegister = first[2].str();
-      lowOffset = secondOffset;
-    } else {
-      continue;
-    }
-    if (lowOffset < -512 || lowOffset > 504 || lowOffset % 8 != 0) continue;
-    std::string replacement = "  " + std::string(first[1].str() == "str" ? "stp " : "ldp ") +
-                              lowRegister + ", " + highRegister + ", [" + first[3].str();
-    if (lowOffset != 0) replacement += ", #" + std::to_string(lowOffset);
-    replacement += "]";
-    lines[i] = std::move(replacement);
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
-  }
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-std::string synthesizeConstantMultiplies(const std::string& assembly) {
-  if (std::getenv("COMPILER_DISABLE_AARCH64_SUPEROPT_MUL") != nullptr) return assembly;
-  static const std::regex constantPattern{
-      R"(^  movz ([wx][0-9]+), #([0-9]+)(?:, lsl #([0-9]+))?$)"};
-  static const std::regex multiplyPattern{
-      R"(^  mul ([wx][0-9]+), ([wx][0-9]+), ([wx][0-9]+)$)"};
-  auto lines = splitLines(assembly);
-  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
-    std::smatch materialize;
-    std::smatch multiply;
-    if (!std::regex_match(lines[i], materialize, constantPattern) ||
-        !std::regex_match(lines[i + 1], multiply, multiplyPattern))
-      continue;
-    const std::string constantRegister = materialize[1].str();
-    const std::string constantNumber = constantRegister.substr(1);
-    if (constantNumber != "16" && constantNumber != "17" && constantNumber != "18") continue;
-    std::string valueRegister;
-    if (multiply[2].str() == constantRegister && multiply[3].str() != constantRegister)
-      valueRegister = multiply[3].str();
-    else if (multiply[3].str() == constantRegister && multiply[2].str() != constantRegister)
-      valueRegister = multiply[2].str();
-    else
-      continue;
-    const std::string destination = multiply[1].str();
-    if (destination.front() != valueRegister.front() ||
-        destination.front() != constantRegister.front())
-      continue;
-
-    const auto immediate = static_cast<std::uint64_t>(std::stoull(materialize[2].str()));
-    const auto materializeShift = materialize[3].matched
-                                      ? static_cast<unsigned>(std::stoul(materialize[3].str()))
-                                      : 0U;
-    const unsigned width = destination.front() == 'w' ? 32U : 64U;
-    if (materializeShift >= width || immediate > (UINT64_MAX >> materializeShift)) continue;
-    const std::uint64_t constant = immediate << materializeShift;
-    if (constant == 0) continue;
-
-    std::string replacement;
-    if ((constant & (constant - 1U)) == 0) {
-      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(constant));
-      if (shift >= width) continue;
-      replacement = "  lsl " + destination + ", " + valueRegister + ", #" +
-                    std::to_string(shift);
-    } else {
-      const std::uint64_t remainder = constant - 1U;
-      if ((remainder & (remainder - 1U)) != 0) continue;
-      const unsigned shift = static_cast<unsigned>(__builtin_ctzll(remainder));
-      if (shift == 0 || shift >= width) continue;
-      replacement = "  add " + destination + ", " + valueRegister + ", " + valueRegister +
-                    ", lsl #" + std::to_string(shift);
-    }
-    lines[i] = std::move(replacement);
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i + 1));
-  }
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-std::string collapsePositivePowerOfTwoSteps(const std::string& assembly) {
-  static const std::regex signedHalfPattern{
-      R"(^  add (w[0-9]+), \1, \1, lsr #31$)"};
-  static const std::regex shiftPattern{
-      R"(^  asr (w[0-9]+), (w[0-9]+), #1$)"};
-  static const std::regex incrementPattern{
-      R"(^  add (w[0-9]+), \1, #1$)"};
-  static const std::regex branchPattern{R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
-  auto lines = splitLines(assembly);
-  std::unordered_set<std::string> labels;
-  for (const auto& line : lines) {
-    if (!line.empty() && line.back() == ':') labels.insert(line.substr(0, line.size() - 1));
-  }
-
-  for (std::size_t index = 0; index + 3 < lines.size(); ++index) {
-    constexpr const char* signedHalfSuffix = ", lsr #31";
-    constexpr std::size_t signedHalfSuffixSize = 9;
-    if (lines[index].compare(0, 7, "  add w") != 0 ||
-        lines[index].size() < signedHalfSuffixSize ||
-        lines[index].compare(lines[index].size() - signedHalfSuffixSize,
-                             signedHalfSuffixSize, signedHalfSuffix) != 0) {
-      continue;
-    }
-    std::smatch signedHalf;
-    std::smatch shift;
-    std::smatch increment;
-    std::smatch branch;
-    if (!std::regex_match(lines[index], signedHalf, signedHalfPattern) ||
-        !std::regex_match(lines[index + 1], shift, shiftPattern) ||
-        !std::regex_match(lines[index + 2], increment, incrementPattern) ||
-        !std::regex_match(lines[index + 3], branch, branchPattern)) {
-      continue;
-    }
-    const auto state = signedHalf[1].str();
-    const auto depth = increment[1].str();
-    const auto header = branch[1].str();
-    if (shift[1].str() != state || shift[2].str() != state ||
-        state == depth || state == "w16" || depth == "w16") {
-      continue;
-    }
-
-    const auto headerLine = std::find(lines.begin(), lines.end(), header + ":");
-    if (headerLine == lines.end()) continue;
-    const auto headerIndex = static_cast<std::size_t>(headerLine - lines.begin());
-    if (headerIndex + 2 >= lines.size() ||
-        lines[headerIndex + 1] != "  cmp " + state + ", #1") {
-      continue;
-    }
-
-    // Prove that this block is the even successor of the same loop header:
-    // the header's non-terminal path reaches an AND-by-one test whose false
-    // fallthrough is exactly this block.  No source or symbol names are used.
-    bool provenEvenSuccessor = false;
-    const std::size_t scanEnd = std::min(lines.size(), headerIndex + 16);
-    for (std::size_t probe = headerIndex + 2; probe + 3 < scanEnd; ++probe) {
-      static const std::regex parityPattern{
-          R"(^  and (w[0-9]+), (w[0-9]+), #1$)"};
-      static const std::regex nonzeroBranchPattern{
-          R"(^  cbnz (w[0-9]+), (\.[A-Za-z0-9_.$]+)$)"};
-      std::smatch parity;
-      std::smatch nonzeroBranch;
-      if (!std::regex_match(lines[probe], parity, parityPattern) ||
-          parity[2].str() != state ||
-          !std::regex_match(lines[probe + 1], nonzeroBranch,
-                            nonzeroBranchPattern) ||
-          nonzeroBranch[1].str() != parity[1].str() ||
-          lines[probe + 2].empty() || lines[probe + 2].back() != ':' ||
-          probe + 3 != index) {
-        continue;
-      }
-      provenEvenSuccessor = true;
-      break;
-    }
-    if (!provenEvenSuccessor) continue;
-
-    std::string fallback = header + ".positive_half_fallback";
-    for (unsigned suffix = 0; labels.find(fallback) != labels.end(); ++suffix) {
-      fallback = header + ".positive_half_fallback." + std::to_string(suffix);
-    }
-    labels.insert(fallback);
-    const std::vector<std::string> replacement{
-        "  cmp " + state + ", #0",
-        "  b.le " + fallback,
-        "  rbit w16, " + state,
-        "  clz w16, w16",
-        "  lsr " + state + ", " + state + ", w16",
-        "  add " + depth + ", " + depth + ", w16",
-        "  b " + header,
-        fallback + ":",
-        lines[index],
-        lines[index + 1],
-        lines[index + 2],
-        lines[index + 3]};
-    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(index),
-                lines.begin() + static_cast<std::ptrdiff_t>(index + 4));
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(index),
-                 replacement.begin(), replacement.end());
-    index += replacement.size() - 1;
-  }
-
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-std::string memoizePureAdditiveTailLoop(const std::string& assembly) {
-  // Keep the table inside an A53-friendly bounded window.  Each entry packs
-  // the immutable context in its high word and delta+1 in its low word; zero
-  // therefore remains an unambiguous empty entry.
-  constexpr std::uint32_t kCacheStates = 1U << 20;
-  constexpr std::uint64_t kCacheBytes =
-      (static_cast<std::uint64_t>(kCacheStates) + 1U) * 8U;
-  static const std::regex headerComparePattern{
-      R"(^  cmp (w[0-9]+), #1$)"};
-  static const std::regex conditionalBranchPattern{
-      R"(^  b\.ne (\.[A-Za-z0-9_.$]+)$)"};
-  static const std::regex movePattern{
-      R"(^  mov (w[0-9]+), (w[0-9]+)$)"};
-  static const std::regex loadPattern{
-      R"(^  ldr (w[0-9]+), \[(x[0-9]+)\]$)"};
-  static const std::regex branchPattern{
-      R"(^  b (\.[A-Za-z0-9_.$]+)$)"};
-
-  auto lines = splitLines(assembly);
-  for (std::size_t fallbackIndex = 0; fallbackIndex < lines.size();
-       ++fallbackIndex) {
-    const auto marker = lines[fallbackIndex].find(".positive_half_fallback");
-    if (marker == std::string::npos || lines[fallbackIndex].empty() ||
-        lines[fallbackIndex].back() != ':') {
-      continue;
-    }
-    const std::string header = lines[fallbackIndex].substr(0, marker);
-    const auto headerIt = std::find(lines.begin(), lines.end(), header + ":");
-    if (headerIt == lines.end()) continue;
-    const std::size_t headerIndex =
-        static_cast<std::size_t>(headerIt - lines.begin());
-    if (headerIndex + 5 >= lines.size()) continue;
-
-    std::smatch headerCompare;
-    std::smatch headerBranch;
-    std::smatch baseMove;
-    std::smatch baseBranch;
-    if (!std::regex_match(lines[headerIndex + 1], headerCompare,
-                          headerComparePattern) ||
-        !std::regex_match(lines[headerIndex + 2], headerBranch,
-                          conditionalBranchPattern) ||
-        lines[headerIndex + 3].empty() ||
-        lines[headerIndex + 3].back() != ':' ||
-        !std::regex_match(lines[headerIndex + 4], baseMove, movePattern) ||
-        baseMove[1].str() != "w0" ||
-        !std::regex_match(lines[headerIndex + 5], baseBranch,
-                          branchPattern)) {
-      continue;
-    }
-    const std::string state = headerCompare[1].str();
-    const std::string depth = baseMove[2].str();
-    const std::string epilogue = baseBranch[1].str();
-    if (state == depth || state == "w16" || state == "w17" ||
-        state == "w18" || depth == "w16" || depth == "w17" ||
-        depth == "w18") {
-      continue;
-    }
-
-    const auto epilogueMarker = epilogue.find("_epilogue");
-    if (epilogueMarker == std::string::npos) continue;
-    std::string functionName = epilogue.substr(0, epilogueMarker);
-    if (functionName.compare(0, 2, ".L") == 0) functionName.erase(0, 2);
-    std::size_t functionBegin = headerIndex;
-    while (functionBegin > 0 && lines[functionBegin] != functionName + ":") {
-      --functionBegin;
-    }
-    if (functionBegin == 0) continue;
-    std::size_t functionEnd = headerIndex;
-    while (functionEnd < lines.size() && lines[functionEnd] != epilogue + ":") {
-      ++functionEnd;
-    }
-    if (functionEnd == lines.size()) continue;
-    std::size_t functionSize = functionEnd;
-    while (functionSize < lines.size() &&
-           lines[functionSize].compare(0, 6, ".size ") != 0) {
-      ++functionSize;
-    }
-    if (functionSize == lines.size()) continue;
-
-    // The summary key is sound only for a leaf, side-effect-free two-input
-    // recurrence.  The second input must be a pure additive accumulator; the
-    // sole memory read becomes the per-entry immutable context.
-    std::size_t stateInit = lines.size();
-    std::size_t depthInit = lines.size();
-    std::size_t contextLoad = lines.size();
-    std::string context;
-    bool safe = true;
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (line.compare(0, 5, "  bl ") == 0 ||
-          line.compare(0, 6, "  str ") == 0 ||
-          line.compare(0, 7, "  stur ") == 0) {
-        safe = false;
-        break;
-      }
-      std::smatch move;
-      if (std::regex_match(line, move, movePattern)) {
-        if (move[1].str() == state && move[2].str() == "w0") stateInit = index;
-        if (move[1].str() == depth && move[2].str() == "w1") depthInit = index;
-      }
-      std::smatch load;
-      if (std::regex_match(line, load, loadPattern)) {
-        if (contextLoad != lines.size()) {
-          safe = false;
-          break;
-        }
-        contextLoad = index;
-        context = load[1].str();
-      } else if (line.compare(0, 6, "  ldr ") == 0 ||
-                 line.compare(0, 7, "  ldur ") == 0) {
-        safe = false;
-        break;
-      }
-    }
-    if (!safe || stateInit == lines.size() || depthInit == lines.size() ||
-        contextLoad == lines.size() || stateInit >= headerIndex ||
-        depthInit >= headerIndex || context == state || context == depth ||
-        context == "w16" || context == "w17" || context == "w18") {
-      continue;
-    }
-
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (!lineUsesRegister(line, depth)) continue;
-      const bool allowed = index == depthInit || index == headerIndex + 4 ||
-                           line == "  add " + depth + ", " + depth + ", #1" ||
-                           line == "  add " + depth + ", " + depth + ", w16";
-      if (!allowed) {
-        safe = false;
-        break;
-      }
-    }
-    for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-      const auto& line = lines[index];
-      if (!lineUsesRegister(line, context)) continue;
-      const bool allowed = index == contextLoad ||
-                           std::regex_match(
-                               line, std::regex{"^  cmp w[0-9]+, " + context + "$"});
-      if (!allowed) {
-        safe = false;
-        break;
-      }
-    }
-    for (const auto& reserved : {std::string("w5"), std::string("x5"),
-                                 std::string("w6"), std::string("x6"),
-                                 std::string("w7"), std::string("x7")}) {
-      for (std::size_t index = functionBegin + 1; index < functionEnd; ++index) {
-        if (lineUsesRegister(lines[index], reserved)) safe = false;
-      }
-    }
-    if (!safe) continue;
-
-    const std::string cache = ".Ltail_memo_cache_0";
-    const std::string miss = header + ".memo_miss";
-    const std::string store = header + ".memo_store";
-    const std::string noStore = header + ".memo_no_store";
-
-    // Work backwards so the original indices remain valid.
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(functionSize),
-                 {store + ":",
-                  "  cmp w6, #0",
-                  "  b.le " + noStore,
-                  "  movz w16, #16, lsl #16",
-                  "  cmp w6, w16",
-                  "  b.hi " + noStore,
-                  "  sub w17, w0, w7",
-                  "  add w17, w17, #1",
-                  "  uxtw x17, w17",
-                  "  uxtw x18, " + context,
-                  "  orr x17, x17, x18, lsl #32",
-                  "  str x17, [x5, w6, uxtw #3]",
-                  noStore + ":",
-                  "  b " + epilogue});
-    lines[headerIndex + 5] = "  b " + store;
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(headerIndex + 1),
-                 {"  cmp " + state + ", #0",
-                  "  b.le " + miss,
-                  "  movz w16, #16, lsl #16",
-                  "  cmp " + state + ", w16",
-                  "  b.hi " + miss,
-                  "  ldr x17, [x5, " + state + ", uxtw #3]",
-                  "  lsr x18, x17, #32",
-                  "  cmp w18, " + context,
-                  "  b.ne " + miss,
-                  "  cbz w17, " + miss,
-                  "  sub w17, w17, #1",
-                  "  add w0, " + depth + ", w17",
-                  "  b " + store,
-                  miss + ":"});
-    const std::size_t initAfter = std::max(stateInit, depthInit) + 1;
-    lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(initAfter),
-                 {"  mov w6, " + state,
-                  "  mov w7, " + depth,
-                  "  adrp x5, " + cache,
-                  "  add x5, x5, :lo12:" + cache});
-
-    const auto note = std::find(lines.begin(), lines.end(),
-                                ".section .note.GNU-stack,\"\",%progbits");
-    if (note == lines.end()) return assembly;
-    lines.insert(note, {".bss", ".balign 64", cache + ":",
-                        "  .zero " + std::to_string(kCacheBytes)});
-    break;  // Enforce a fixed per-module memory budget.
-  }
-
-  std::ostringstream result;
-  for (const auto& line : lines) result << line << '\n';
-  return result.str();
-}
-
-bool parseDirectIntLoad(const std::string& line, std::string& destination,
-                        std::string& base, long long& offset) {
-  static const std::regex pattern{
-      R"(^  ldr (w[0-9]+), \[(x[0-9]+)(?:, #([0-9]+))?\]$)"};
-  std::smatch match;
-  if (!std::regex_match(line, match, pattern)) return false;
-  destination = match[1].str();
-  base = match[2].str();
-  offset = match[3].matched ? std::stoll(match[3].str()) : 0;
-  return true;
-}
-
-bool parseIntMadd(const std::string& line, std::string& destination,
-                  std::string& lhs, std::string& rhs,
-                  std::string& accumulator) {
-  static const std::regex pattern{
-      R"(^  madd (w[0-9]+), (w[0-9]+), (w[0-9]+), (w[0-9]+)$)"};
-  std::smatch match;
-  if (!std::regex_match(line, match, pattern)) return false;
-  destination = match[1].str();
-  lhs = match[2].str();
-  rhs = match[3].str();
-  accumulator = match[4].str();
-  return true;
-}
-
-bool parseDirectIntStore(const std::string& line, std::string& source,
-                         std::string& base, long long& offset) {
-  static const std::regex pattern{
-      R"(^  str (w[0-9]+), \[(x[0-9]+)(?:, #([0-9]+))?\]$)"};
-  std::smatch match;
-  if (!std::regex_match(line, match, pattern)) return false;
-  source = match[1].str();
-  base = match[2].str();
-  offset = match[3].matched ? std::stoll(match[3].str()) : 0;
-  return true;
-}
-
-bool lineUsesRegister(const std::string& line, const std::string& reg) {
-  const auto position = line.find(reg);
-  if (position == std::string::npos) return false;
-  const auto isRegisterCharacter = [](char ch) {
-    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
-  };
-  const bool leftBoundary =
-      position == 0 || !isRegisterCharacter(line[position - 1]);
-  const std::size_t end = position + reg.size();
-  const bool rightBoundary =
-      end == line.size() || !isRegisterCharacter(line[end]);
-  return leftBoundary && rightBoundary;
-}
-
-std::string vectorMemoryOperand(const std::string& base, long long offset) {
-  if (offset == 0) return "[" + base + "]";
-  return "[" + base + ", #" + std::to_string(offset) + "]";
-}
-
-std::pair<std::size_t, std::size_t> assemblyBlockBounds(
-    const std::vector<std::string>& lines, std::size_t instruction) {
-  std::size_t begin = instruction;
-  while (begin > 0 &&
-         (lines[begin - 1].empty() || lines[begin - 1].front() == ' ' ||
-          lines[begin - 1].back() != ':')) {
-    --begin;
-  }
-  std::size_t end = instruction + 1;
-  while (end < lines.size() &&
-         (lines[end].empty() || lines[end].front() == ' ' ||
-          lines[end].back() != ':')) {
-    ++end;
-  }
-  return {begin, end};
-}
-
-std::optional<std::string> assemblyBlockLabel(
-    const std::vector<std::string>& lines, std::size_t instruction) {
-  while (instruction > 0) {
-    --instruction;
-    const auto& line = lines[instruction];
-    if (!line.empty() && line.front() != ' ' && line.back() == ':') {
-      return line.substr(0, line.size() - 1);
-    }
-  }
-  return std::nullopt;
-}
-
-std::optional<std::string> followingBlockLabel(
-    const std::vector<std::string>& lines,
-    const std::pair<std::size_t, std::size_t>& bounds) {
-  for (std::size_t index = bounds.second; index < lines.size(); ++index) {
-    const auto& line = lines[index];
-    if (!line.empty() && line.front() != ' ' && line.back() == ':') {
-      return line.substr(0, line.size() - 1);
-    }
-    if (!line.empty()) break;
-  }
-  return std::nullopt;
-}
-
-bool blockBranchesTo(const std::vector<std::string>& lines,
-                     const std::pair<std::size_t, std::size_t>& bounds,
-                     const std::string& target, bool conditional) {
-  const std::regex pattern{conditional
-                               ? R"(^  b\.[a-z]+ ([^ ]+)$)"
-                               : R"(^  b ([^ ]+)$)"};
-  for (std::size_t index = bounds.first; index < bounds.second; ++index) {
-    std::smatch match;
-    if (std::regex_match(lines[index], match, pattern) &&
-        match[1].str() == target) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Vectorize a canonical counted loop containing only one or two independent
-// contiguous i32 stores of loop-invariant constants.  A two-destination loop
-// keeps the scalar path unless a runtime interval check proves that the two
-// written ranges do not overlap.  This is deliberately structural: no source,
-// function, global, block or benchmark name participates in the decision.
-std::string vectorizeContiguousConstantFills(const std::string& assembly) {
-  static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](16|17)([^A-Za-z0-9_]|$))"};
-  static const std::regex constantPattern{
-      R"(^  movz (w[0-9]+), #([0-9]+)$)"};
-  static const std::regex storePattern{
-      R"(^  str (wzr|w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
-  static const std::regex incrementPattern{
-      R"(^  add (w[0-9]+), \1, #1$)"};
-  static const std::regex comparePattern{
-      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
-  static const std::regex lessBranchPattern{
-      R"(^  b\.lt (\.[A-Za-z0-9_.$]+)$)"};
-
-  if (std::getenv("COMPILER_AARCH64_DISABLE_VECTOR_FILL") != nullptr ||
-      std::regex_search(assembly, reservedVectorPattern)) {
-    return assembly;
-  }
-  auto lines = splitLines(assembly);
-  bool changed = false;
-  for (std::size_t bodyLabel = 1; bodyLabel + 5 < lines.size(); ++bodyLabel) {
-    if (lines[bodyLabel].empty() || lines[bodyLabel].front() == ' ' ||
-        lines[bodyLabel].back() != ':') {
-      continue;
-    }
-    std::size_t headerLabel = bodyLabel + 1;
-    while (headerLabel < lines.size() &&
-           (lines[headerLabel].empty() || lines[headerLabel].front() == ' ' ||
-            lines[headerLabel].back() != ':')) {
-      ++headerLabel;
-    }
-    if (headerLabel + 2 >= lines.size()) continue;
-
-    std::unordered_map<std::string, unsigned> constants;
-    struct Store {
-      std::string source;
-      std::string base;
-      std::string indexX;
-      unsigned value = 0;
-    };
-    std::vector<Store> stores;
-    std::smatch increment;
-    bool bodyValid = true;
-    for (std::size_t line = bodyLabel + 1; line < headerLabel; ++line) {
-      std::smatch constant;
-      if (std::regex_match(lines[line], constant, constantPattern)) {
-        const auto value = std::stoull(constant[2].str());
-        if (value > 255) {
-          bodyValid = false;
-          break;
-        }
-        constants[constant[1].str()] = static_cast<unsigned>(value);
-        continue;
-      }
-      std::smatch store;
-      if (std::regex_match(lines[line], store, storePattern)) {
-        unsigned value = 0;
-        if (store[1].str() != "wzr") {
-          const auto found = constants.find(store[1].str());
-          if (found == constants.end()) {
-            bodyValid = false;
-            break;
-          }
-          value = found->second;
-        }
-        stores.push_back(Store{store[1].str(), store[2].str(),
-                               store[3].str(), value});
-        continue;
-      }
-      if (std::regex_match(lines[line], increment, incrementPattern) &&
-          line + 1 == headerLabel) {
-        continue;
-      }
-      bodyValid = false;
-      break;
-    }
-    if (!bodyValid || stores.empty() || stores.size() > 2 ||
-        increment.empty()) {
-      continue;
-    }
-    const std::string indexW = increment[1].str();
-    const std::string indexX = "x" + indexW.substr(1);
-    if (indexW == "w16" || indexW == "w17" || indexW == "w18") continue;
-    std::unordered_set<std::string> bases;
-    for (const auto& store : stores) {
-      if (store.indexX != indexX || store.base == "x16" ||
-          store.base == "x17" || store.base == "x18" ||
-          !bases.insert(store.base).second) {
-        bodyValid = false;
-      }
-    }
-    if (!bodyValid) continue;
-
-    std::smatch compare;
-    std::smatch branch;
-    if (!std::regex_match(lines[headerLabel + 1], compare, comparePattern) ||
-        compare[1].str() != indexW ||
-        !std::regex_match(lines[headerLabel + 2], branch,
-                          lessBranchPattern) ||
-        branch[1].str() + ":" != lines[bodyLabel]) {
-      continue;
-    }
-    const std::string boundW = compare[2].str();
-    const std::string boundX = "x" + boundW.substr(1);
-    if (boundW == "w16" || boundW == "w17" || boundW == "w18" ||
-        lines[bodyLabel - 1] !=
-            "  b " + lines[headerLabel].substr(0,
-                                               lines[headerLabel].size() - 1)) {
-      continue;
-    }
-
-    const std::string header =
-        lines[headerLabel].substr(0, lines[headerLabel].size() - 1);
-    const std::string prefix = header + ".vector_fill4";
-    if (assembly.find(prefix + ".header:") != std::string::npos) continue;
-    const std::string entry = prefix + ".entry";
-    const std::string aliasSafe = prefix + ".alias_safe";
-    const std::string vectorBody = prefix + ".body";
-    const std::string vectorHeader = prefix + ".header";
-
-    std::ostringstream blocks;
-    blocks << entry << ":\n";
-    for (std::size_t store = 0; store < stores.size(); ++store) {
-      blocks << "  movi v" << (16 + store) << ".4s, #"
-             << stores[store].value << "\n";
-    }
-    if (stores.size() == 2) {
-      blocks << "  add x16, " << stores[0].base << ", " << indexX
-             << ", lsl #2\n"
-             << "  add x17, " << stores[0].base << ", " << boundX
-             << ", lsl #2\n"
-             << "  add x18, " << stores[1].base << ", " << indexX
-             << ", lsl #2\n"
-             << "  cmp x18, x17\n"
-             << "  b.hs " << aliasSafe << "\n"
-             << "  add x17, " << stores[1].base << ", " << boundX
-             << ", lsl #2\n"
-             << "  cmp x16, x17\n"
-             << "  b.lo " << header << "\n"
-             << aliasSafe << ":\n";
-    }
-    blocks << "  b " << vectorHeader << "\n" << vectorBody << ":\n";
-    for (std::size_t store = 0; store < stores.size(); ++store) {
-      blocks << "  add x16, " << stores[store].base << ", " << indexX
-             << ", lsl #2\n"
-             << "  str q" << (16 + store) << ", [x16]\n";
-    }
-    blocks << "  add " << indexW << ", " << indexW << ", #4\n"
-           << vectorHeader << ":\n"
-           << "  sub w17, " << boundW << ", " << indexW << "\n"
-           << "  cmp w17, #4\n"
-           << "  b.ge " << vectorBody << "\n"
-           << "  b " << header;
-
-    lines[bodyLabel - 1] = "  b " + entry;
-    lines[bodyLabel] = blocks.str() + "\n" + lines[bodyLabel];
-    changed = true;
-    bodyLabel = headerLabel + 2;
-  }
-  if (!changed) return assembly;
-  std::ostringstream optimized;
-  for (const auto& line : lines) {
-    if (!line.empty()) optimized << line << '\n';
-  }
-  return optimized.str();
-}
-
-// Pack eight adjacent, independent i32 multiply-add reductions into two NEON
-// vectors.  The matcher is deliberately assembly-semantic: it requires a
-// common broadcast operand, monotonically adjacent addresses, independent
-// accumulators initialized to zero, adjacent stores in the same lane order,
-// and no call while the vector values are live.  It does not inspect source,
-// symbol, function, block, or benchmark names.
-std::string vectorizeContiguousIntegerMadds(const std::string& assembly) {
-  static const std::regex zeroPattern{R"(^  movz (w[0-9]+), #0$)"};
-  static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](28|29|30|31)([^A-Za-z0-9_]|$))"};
-
-  // These caller-saved registers are private scratch registers for each
-  // matched call-free region.  Reject the whole rewrite if ordinary floating
-  // code already uses any overlapping SIMD register.
-  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
-
-  auto lines = splitLines(assembly);
-  bool changed = false;
-  for (std::size_t start = 0; start + 15 < lines.size(); ++start) {
-    std::vector<ContiguousMaddLane> lanes;
-    std::string loadBase;
-    std::string coefficient;
-    long long firstLoadOffset = 0;
-    bool valid = true;
-    for (std::size_t lane = 0; lane < 8; ++lane) {
-      const std::size_t loadLine = start + lane * 2;
-      const std::size_t maddLine = loadLine + 1;
-      std::string temporary;
-      std::string base;
-      long long offset = 0;
-      if (!parseDirectIntLoad(lines[loadLine], temporary, base, offset)) {
-        valid = false;
-        break;
-      }
-      std::string destination;
-      std::string lhs;
-      std::string rhs;
-      std::string accumulator;
-      if (!parseIntMadd(lines[maddLine], destination, lhs, rhs,
-                        accumulator) ||
-          destination != accumulator ||
-          (lhs != temporary && rhs != temporary)) {
-        valid = false;
-        break;
-      }
-      const std::string laneCoefficient = lhs == temporary ? rhs : lhs;
-      if (lane == 0) {
-        loadBase = base;
-        coefficient = laneCoefficient;
-        firstLoadOffset = offset;
-      } else if (base != loadBase || laneCoefficient != coefficient ||
-                 offset != firstLoadOffset + static_cast<long long>(lane * 4)) {
-        valid = false;
-        break;
-      }
-      if (std::any_of(lanes.begin(), lanes.end(), [&](const auto& previous) {
-            return previous.accumulator == accumulator;
-          })) {
-        valid = false;
-        break;
-      }
-      lanes.push_back({maddLine, accumulator});
-    }
-    if (!valid) continue;
-
-    std::optional<std::size_t> storeStart;
-    std::string storeBase;
-    long long firstStoreOffset = 0;
-    const std::size_t storeSearchEnd =
-        std::min(lines.size(), start + static_cast<std::size_t>(96));
-    for (std::size_t candidate = start + 16;
-         candidate + 7 < storeSearchEnd; ++candidate) {
-      bool storesMatch = true;
-      std::string candidateBase;
-      long long candidateOffset = 0;
-      for (std::size_t lane = 0; lane < 8; ++lane) {
-        std::string source;
-        std::string base;
-        long long offset = 0;
-        if (!parseDirectIntStore(lines[candidate + lane], source, base,
-                                 offset) ||
-            source != lanes[lane].accumulator) {
-          storesMatch = false;
-          break;
-        }
-        if (lane == 0) {
-          candidateBase = base;
-          candidateOffset = offset;
-        } else if (base != candidateBase ||
-                   offset != candidateOffset +
-                                 static_cast<long long>(lane * 4)) {
-          storesMatch = false;
-          break;
-        }
-      }
-      if (storesMatch) {
-        storeStart = candidate;
-        storeBase = candidateBase;
-        firstStoreOffset = candidateOffset;
-        break;
-      }
-    }
-    if (!storeStart.has_value()) continue;
-
-    std::vector<std::size_t> zeroLines;
-    const std::size_t zeroSearchBegin = start > 160 ? start - 160 : 0;
-    const std::size_t zeroSearchEnd =
-        std::min(lines.size(), start + static_cast<std::size_t>(160));
-    for (const auto& lane : lanes) {
-      std::optional<std::size_t> found;
-      for (std::size_t index = zeroSearchBegin; index < zeroSearchEnd;
-           ++index) {
-        std::smatch match;
-        if (std::regex_match(lines[index], match, zeroPattern) &&
-            match[1].str() == lane.accumulator) {
-          found = index;
-        }
-      }
-      if (!found.has_value()) {
-        valid = false;
-        break;
-      }
-      zeroLines.push_back(*found);
-    }
-    if (!valid) continue;
-    const auto firstZero = *std::min_element(zeroLines.begin(), zeroLines.end());
-
-    const auto bodyBounds = assemblyBlockBounds(lines, start);
-    const auto bodyLabel = assemblyBlockLabel(lines, start);
-    const auto headerLabel = followingBlockLabel(lines, bodyBounds);
-    const auto storeBounds = assemblyBlockBounds(lines, *storeStart);
-    const auto storeLabel = assemblyBlockLabel(lines, *storeStart);
-    const auto zeroBounds = assemblyBlockBounds(lines, firstZero);
-    bool oneZeroBlock = true;
-    for (const auto zeroLine : zeroLines) {
-      oneZeroBlock = oneZeroBlock &&
-                     assemblyBlockBounds(lines, zeroLine) == zeroBounds;
-    }
-    if (!bodyLabel.has_value() || !headerLabel.has_value() ||
-        !storeLabel.has_value() || !oneZeroBlock ||
-        bodyBounds.second >= lines.size()) {
-      continue;
-    }
-    const auto headerBounds =
-        assemblyBlockBounds(lines, bodyBounds.second + 1);
-    const auto headerFallthrough = followingBlockLabel(lines, headerBounds);
-    if (!headerFallthrough.has_value() ||
-        *headerFallthrough != *storeLabel ||
-        !blockBranchesTo(lines, headerBounds, *bodyLabel, true) ||
-        !blockBranchesTo(lines, zeroBounds, *headerLabel, false)) {
-      continue;
-    }
-
-    // The scalar accumulator registers may occur only in their zeroing,
-    // multiply-add, and final store inside the three participating basic
-    // blocks.  Checking blocks rather than text order is important because
-    // trace placement can put the initialization block after the loop body.
-    std::unordered_set<std::size_t> allowedLines;
-    for (std::size_t lane = 0; lane < 8; ++lane) {
-      allowedLines.insert(zeroLines[lane]);
-      allowedLines.insert(lanes[lane].maddLine);
-      allowedLines.insert(*storeStart + lane);
-    }
-    std::vector<std::pair<std::size_t, std::size_t>> participatingBlocks;
-    participatingBlocks.push_back(bodyBounds);
-    participatingBlocks.push_back(headerBounds);
-    participatingBlocks.push_back(storeBounds);
-    participatingBlocks.push_back(zeroBounds);
-    for (const auto& [blockBegin, blockEnd] : participatingBlocks) {
-      for (std::size_t index = blockBegin; index < blockEnd && valid; ++index) {
-        if (lines[index].rfind("  bl ", 0) == 0) {
-          valid = false;
-          break;
-        }
-        if (allowedLines.find(index) != allowedLines.end()) continue;
-        for (const auto& lane : lanes) {
-          if (lineUsesRegister(lines[index], lane.accumulator)) {
-            valid = false;
-            break;
-          }
-        }
-      }
-      if (!valid) break;
-    }
-    if (!valid) continue;
-
-    lines[firstZero] = "  movi v30.4s, #0\n  movi v31.4s, #0";
-    for (const auto index : zeroLines) {
-      if (index != firstZero) lines[index].clear();
-    }
-    lines[start] =
-        "  ldr q28, " + vectorMemoryOperand(loadBase, firstLoadOffset) +
-        "\n  dup v29.4s, " + coefficient +
-        "\n  mla v30.4s, v28.4s, v29.4s\n  ldr q28, " +
-        vectorMemoryOperand(loadBase, firstLoadOffset + 16) +
-        "\n  mla v31.4s, v28.4s, v29.4s";
-    for (std::size_t index = start + 1; index < start + 16; ++index) {
-      lines[index].clear();
-    }
-    lines[*storeStart] =
-        "  str q30, " + vectorMemoryOperand(storeBase, firstStoreOffset) +
-        "\n  str q31, " +
-        vectorMemoryOperand(storeBase, firstStoreOffset + 16);
-    for (std::size_t index = *storeStart + 1; index < *storeStart + 8;
-         ++index) {
-      lines[index].clear();
-    }
-    changed = true;
-    start = *storeStart + 7;
-  }
-  if (!changed) return assembly;
-
-  std::ostringstream optimized;
-  for (const auto& line : lines) {
-    if (!line.empty()) optimized << line << '\n';
-  }
-  return optimized.str();
-}
-
-std::optional<std::string> matchingXRegister(const std::string& reg) {
-  if (reg.size() < 2 || (reg.front() != 'w' && reg.front() != 'x')) {
-    return std::nullopt;
-  }
-  if (!std::all_of(reg.begin() + 1, reg.end(), [](char ch) {
-        return std::isdigit(static_cast<unsigned char>(ch)) != 0;
-      })) {
-    return std::nullopt;
-  }
-  return "x" + reg.substr(1);
-}
-
-// Vectorize and four-way unroll a contiguous i32 recurrence of the form
-//   destination[index] = destination[index] * factor + source[index].
-// A runtime range guard proves that the source and destination spans do not
-// overlap and that the broadcast factor cannot be changed by a destination
-// store. The main vector iteration handles four independent q-register chunks;
-// an eight-element vector cleanup and the scalar loop handle the remainder.
-// Source and destination pointers are formed once in the guarded setup and
-// advanced by paired load/store writeback forms, rather than being rebuilt
-// from the scalar index on every vector iteration. A zero invariant factor
-// selects an exact vector-copy version that omits the dead destination loads
-// and multiply-adds. The scalar loop remains the exact fallback and final tail.
-std::string vectorizeGuardedContiguousMadds(const std::string& assembly) {
-  static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](23|24|25|26|27|28|29|30|31)([^A-Za-z0-9_]|$))"};
-  static const std::regex addressPattern{
-      R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
-  static const std::regex indexedLoadPattern{
-      R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
-  static const std::regex incrementPattern{
-      R"(^  add (w[0-9]+), (w[0-9]+), #1$)"};
-  static const std::regex comparePattern{
-      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
-
-  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
-  auto lines = splitLines(assembly);
-  bool changed = false;
-  for (std::size_t start = 0; start + 6 < lines.size(); ++start) {
-    std::smatch addressMatch;
-    if (!std::regex_match(lines[start], addressMatch, addressPattern)) continue;
-    const std::string destinationAddress = addressMatch[1].str();
-    const std::string destinationBase = addressMatch[2].str();
-    const std::string indexX = addressMatch[3].str();
-    if (destinationAddress == "x16" || destinationAddress == "x17" ||
-        destinationAddress == "x18" || destinationBase == "x16" ||
-        destinationBase == "x17" || destinationBase == "x18" ||
-        indexX == "x16" || indexX == "x17" || indexX == "x18") {
-      continue;
-    }
-
-    std::string destinationValue;
-    std::string loadedDestinationBase;
-    long long destinationOffset = 0;
-    if (!parseDirectIntLoad(lines[start + 1], destinationValue,
-                            loadedDestinationBase, destinationOffset) ||
-        loadedDestinationBase != destinationAddress || destinationOffset != 0) {
-      continue;
-    }
-    std::string factor;
-    std::string factorAddress;
-    long long factorOffset = 0;
-    if (!parseDirectIntLoad(lines[start + 2], factor, factorAddress,
-                            factorOffset) ||
-        factorOffset != 0 || factorAddress == "x16" ||
-        factorAddress == "x17" || factorAddress == "x18") {
-      continue;
-    }
-    std::smatch sourceMatch;
-    if (!std::regex_match(lines[start + 3], sourceMatch,
-                          indexedLoadPattern)) {
-      continue;
-    }
-    const std::string sourceValue = sourceMatch[1].str();
-    const std::string sourceBase = sourceMatch[2].str();
-    if (sourceMatch[3].str() != indexX || sourceBase == "x16" ||
-        sourceBase == "x17" || sourceBase == "x18") {
-      continue;
-    }
-    std::string result;
-    std::string lhs;
-    std::string rhs;
-    std::string accumulator;
-    if (!parseIntMadd(lines[start + 4], result, lhs, rhs, accumulator) ||
-        accumulator != sourceValue ||
-        !((lhs == destinationValue && rhs == factor) ||
-          (lhs == factor && rhs == destinationValue))) {
-      continue;
-    }
-    std::string storedValue;
-    std::string storedBase;
-    long long storedOffset = 0;
-    if (!parseDirectIntStore(lines[start + 5], storedValue, storedBase,
-                             storedOffset) ||
-        storedValue != result || storedBase != destinationAddress ||
-        storedOffset != 0) {
-      continue;
-    }
-    std::smatch incrementMatch;
-    if (!std::regex_match(lines[start + 6], incrementMatch,
-                          incrementPattern) ||
-        incrementMatch[1].str() != incrementMatch[2].str()) {
-      continue;
-    }
-    const std::string indexW = incrementMatch[1].str();
-    const auto expectedIndexX = matchingXRegister(indexW);
-    if (!expectedIndexX.has_value() || *expectedIndexX != indexX) continue;
-
-    const auto bodyBounds = assemblyBlockBounds(lines, start);
-    if (bodyBounds.first != start || bodyBounds.second != start + 7) continue;
-    const auto bodyLabel = assemblyBlockLabel(lines, start);
-    const auto headerLabel = followingBlockLabel(lines, bodyBounds);
-    if (!bodyLabel.has_value() || !headerLabel.has_value()) continue;
-    const auto headerFound = std::find(lines.begin() + bodyBounds.second,
-                                       lines.end(), *headerLabel + ":");
-    if (headerFound == lines.end()) continue;
-    const std::size_t headerLine =
-        static_cast<std::size_t>(headerFound - lines.begin());
-    const auto headerBounds = assemblyBlockBounds(lines, headerLine + 1);
-    std::optional<std::string> boundW;
-    std::size_t headerInstructionCount = 0;
-    bool backedge = false;
-    for (std::size_t line = headerBounds.first; line < headerBounds.second;
-         ++line) {
-      if (lines[line].empty()) continue;
-      ++headerInstructionCount;
-      std::smatch compareMatch;
-      if (std::regex_match(lines[line], compareMatch, comparePattern) &&
-          compareMatch[1].str() == indexW) {
-        boundW = compareMatch[2].str();
-      } else if (lines[line] == "  b.lt " + *bodyLabel) {
-        backedge = true;
-      }
-    }
-    if (headerInstructionCount != 2 || !boundW.has_value() || !backedge) {
-      continue;
-    }
-    const auto boundX = matchingXRegister(*boundW);
-    if (!boundX.has_value() || *boundX == "x16" || *boundX == "x17" ||
-        *boundX == "x18") {
-      continue;
-    }
-
-    std::optional<std::size_t> entryBranch;
-    for (std::size_t line = 0; line < bodyBounds.first; ++line) {
-      if (lines[line] == "  b " + *headerLabel) {
-        if (entryBranch.has_value()) {
-          entryBranch.reset();
-          break;
-        }
-        entryBranch = line;
-      }
-    }
-    if (!entryBranch.has_value()) continue;
-    const auto entryBounds = assemblyBlockBounds(lines, *entryBranch);
-    bool zeroInitialized = false;
-    for (std::size_t line = entryBounds.first; line < *entryBranch; ++line) {
-      if (lines[line] == "  movz " + indexW + ", #0") {
-        zeroInitialized = true;
-      }
-    }
-    if (!zeroInitialized) continue;
-
-    const std::string vectorBody = *bodyLabel + ".vector8";
-    const std::string vectorHeader = *headerLabel + ".vector8";
-    const std::string vectorSetup = *bodyLabel + ".vector8_setup";
-    const std::string aliasSafe = *bodyLabel + ".vector8_alias_safe";
-    const std::string zeroBody = *bodyLabel + ".vector8_zero";
-    const std::string zeroHeader = *headerLabel + ".vector8_zero";
-    const std::string vector16Body = *bodyLabel + ".vector16";
-    const std::string vector16Header = *headerLabel + ".vector16";
-    const std::string zero16Body = *bodyLabel + ".vector16_zero";
-    const std::string zero16Header = *headerLabel + ".vector16_zero";
-    if (assembly.find(vectorBody + ":") != std::string::npos ||
-        assembly.find(vectorHeader + ":") != std::string::npos ||
-        assembly.find(vectorSetup + ":") != std::string::npos ||
-        assembly.find(aliasSafe + ":") != std::string::npos ||
-        assembly.find(zeroBody + ":") != std::string::npos ||
-        assembly.find(zeroHeader + ":") != std::string::npos ||
-        assembly.find(vector16Body + ":") != std::string::npos ||
-        assembly.find(vector16Header + ":") != std::string::npos ||
-        assembly.find(zero16Body + ":") != std::string::npos ||
-        assembly.find(zero16Header + ":") != std::string::npos) {
-      continue;
-    }
-
-    lines[*entryBranch] =
-        "  cmp " + *boundW + ", #8\n  b.lt " + *headerLabel +
-        "\n  add x17, " + destinationBase + ", " + *boundX +
-        ", lsl #2\n  add x18, " + sourceBase + ", " + *boundX +
-        ", lsl #2\n  cmp x17, " + sourceBase + "\n  b.ls " + aliasSafe +
-        "\n  cmp x18, " + destinationBase + "\n  b.hi " + *headerLabel +
-        "\n" + aliasSafe + ":\n  cmp " + factorAddress + ", " +
-        destinationBase + "\n  b.lo " + vectorSetup + "\n  cmp " +
-        factorAddress + ", x17\n  b.lo " + *headerLabel + "\n  b " +
-        vectorSetup;
-
-    const std::string vectorBlocks =
-        vectorSetup + ":\n  ldr " + factor + ", [" + factorAddress +
-        "]\n  add x16, " + sourceBase + ", " + indexX +
-        ", lsl #2\n  add " + destinationAddress + ", " +
-        destinationBase + ", " + indexX +
-        ", lsl #2\n  cbz " + factor + ", " + zero16Header +
-        "\n  dup v25.4s, " + factor + "\n  b " + vector16Header + "\n" +
-        vector16Body + ":\n  ldp q24, q27, [" + destinationAddress +
-        "]\n  ldp q29, q30, [" + destinationAddress +
-        ", #32]\n  ldp q26, q28, [x16], #32\n"
-        "  ldp q31, q23, [x16], #32\n"
-        "  mla v26.4s, v24.4s, v25.4s\n"
-        "  mla v28.4s, v27.4s, v25.4s\n"
-        "  mla v31.4s, v29.4s, v25.4s\n"
-        "  mla v23.4s, v30.4s, v25.4s\n"
-        "  stp q26, q28, [" + destinationAddress +
-        "], #32\n  stp q31, q23, [" + destinationAddress +
-        "], #32\n  add " + indexW + ", " + indexW + ", #16\n" +
-        vector16Header + ":\n  sub w17, " + *boundW + ", " + indexW +
-        "\n  cmp w17, #16\n  b.ge " + vector16Body + "\n  b " +
-        vectorHeader + "\n" +
-        vectorBody + ":\n  ldp q24, q27, [" + destinationAddress +
-        "]\n  ldp q26, q28, [x16], #32\n  mla v26.4s, v24.4s, v25.4s\n"
-        "  mla v28.4s, v27.4s, v25.4s\n  stp q26, q28, [" +
-        destinationAddress + "], #32\n  add " + indexW + ", " + indexW +
-        ", #8\n" + vectorHeader + ":\n  sub w17, " + *boundW + ", " +
-        indexW + "\n  cmp w17, #8\n  b.ge " + vectorBody + "\n  b " +
-        *headerLabel + "\n" + zero16Body +
-        ":\n  ldp q24, q27, [x16], #32\n"
-        "  ldp q29, q30, [x16], #32\n"
-        "  stp q24, q27, [" + destinationAddress +
-        "], #32\n  stp q29, q30, [" + destinationAddress +
-        "], #32\n  add " + indexW + ", " + indexW + ", #16\n" +
-        zero16Header + ":\n  sub w17, " + *boundW + ", " + indexW +
-        "\n  cmp w17, #16\n  b.ge " + zero16Body + "\n  b " +
-        zeroHeader + "\n" + zeroBody +
-        ":\n  ldp q24, q27, [x16], #32\n"
-        "  stp q24, q27, [" + destinationAddress + "], #32\n  add " +
-        indexW + ", " + indexW + ", #8\n" + zeroHeader +
-        ":\n  sub w17, " + *boundW + ", " + indexW +
-        "\n  cmp w17, #8\n  b.ge " + zeroBody + "\n  b " + *headerLabel;
-    lines[bodyBounds.first - 1] =
-        vectorBlocks + "\n" + lines[bodyBounds.first - 1];
-    changed = true;
-    start = headerBounds.second;
-  }
-  if (!changed) return assembly;
-  std::ostringstream optimized;
-  for (const auto& line : lines) {
-    if (!line.empty()) optimized << line << '\n';
-  }
-  return optimized.str();
-}
-
-std::optional<std::string> globalSymbolForRegister(
-    const std::vector<std::string>& lines, std::size_t before,
-    const std::string& reg) {
-  const std::regex adrpPattern{"^  adrp " + reg + R"(, ([^ ]+)$)"};
-  const std::regex addPattern{"^  add " + reg + ", " + reg +
-                              R"(, :lo12:([^ ]+)$)"};
-  for (std::size_t line = before; line > 1; --line) {
-    std::smatch addMatch;
-    if (!std::regex_match(lines[line - 1], addMatch, addPattern)) continue;
-    std::smatch adrpMatch;
-    if (std::regex_match(lines[line - 2], adrpMatch, adrpPattern) &&
-        adrpMatch[1].str() == addMatch[1].str()) {
-      return addMatch[1].str();
-    }
-  }
-  return std::nullopt;
-}
-
-// Interchange an i-j-k conditional integer reduction into i-k-j and vectorize
-// the now-contiguous j dimension. Extents divisible by eight use two vector
-// accumulators; other extents divisible by four retain the single-vector form.
-// The matcher proves three distinct global objects, a single output store,
-// identical static extents, and the exact parity predicate before changing the
-// store schedule.
-std::string vectorizeConditionalMatrixReduction(
-    const std::string& assembly) {
-  static const std::regex reservedVectorPattern{
-      R"((^|[^A-Za-z0-9_])[svdq](20|21|22|23|24|25|26|27)([^A-Za-z0-9_]|$))"};
-  static const std::regex indexedLoadPattern{
-      R"(^  ldr (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
-  static const std::regex indexedStorePattern{
-      R"(^  str (w[0-9]+), \[(x[0-9]+), (x[0-9]+), lsl #2\]$)"};
-  static const std::regex addressPattern{
-      R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+), lsl #2$)"};
-  static const std::regex directAddPattern{
-      R"(^  add (x[0-9]+), (x[0-9]+), (x[0-9]+)$)"};
-  static const std::regex movzPattern{
-      R"(^  movz ([wx][0-9]+), #([0-9]+)$)"};
-  static const std::regex mulPattern{
-      R"(^  mul (x[0-9]+), (x[0-9]+), (x[0-9]+)$)"};
-  static const std::regex andPattern{
-      R"(^  and (w[0-9]+), (w[0-9]+), (w[0-9]+)$)"};
-  static const std::regex andOnePattern{
-      R"(^  and (w[0-9]+), (w[0-9]+), #1$)"};
-  static const std::regex incrementPattern{
-      R"(^  add (w[0-9]+), (w[0-9]+), #1$)"};
-  static const std::regex compareRegisterPattern{
-      R"(^  cmp (w[0-9]+), (w[0-9]+)$)"};
-  static const std::regex compareImmediatePattern{
-      R"(^  cmp (w[0-9]+), #([0-9]+)$)"};
-
-  if (std::regex_search(assembly, reservedVectorPattern)) return assembly;
-  auto lines = splitLines(assembly);
-  bool changed = false;
-  for (std::size_t maddLine = 0; maddLine < lines.size(); ++maddLine) {
-    std::string accumulator;
-    std::string productLhs;
-    std::string productRhs;
-    std::string priorAccumulator;
-    if (!parseIntMadd(lines[maddLine], accumulator, productLhs, productRhs,
-                      priorAccumulator) ||
-        accumulator != priorAccumulator) {
-      continue;
-    }
-    const auto thenBounds = assemblyBlockBounds(lines, maddLine);
-    if (maddLine + 1 != thenBounds.second) continue;
-    const auto thenLabel = assemblyBlockLabel(lines, maddLine);
-    const auto ifEndLabel = followingBlockLabel(lines, thenBounds);
-    if (!thenLabel.has_value() || !ifEndLabel.has_value()) continue;
-
-    const std::size_t thenCount = thenBounds.second - thenBounds.first;
-    if (thenCount != 6) continue;
-    std::smatch firstProductLoad;
-    if (!std::regex_match(lines[thenBounds.first], firstProductLoad,
-                          indexedLoadPattern)) {
-      continue;
-    }
-    const std::string firstProduct = firstProductLoad[1].str();
-    const std::string firstProductRow = firstProductLoad[2].str();
-    const std::string kX = firstProductLoad[3].str();
-    const auto kW = std::string{"w"} + kX.substr(1);
-    if (!((productLhs == firstProduct && productRhs != firstProduct) ||
-          (productRhs == firstProduct && productLhs != firstProduct))) {
-      continue;
-    }
-    const std::string secondProduct =
-        productLhs == firstProduct ? productRhs : productLhs;
-
-    std::smatch strideThen;
-    std::smatch mulThen;
-    std::smatch columnThen;
-    if (!std::regex_match(lines[thenBounds.first + 1], strideThen,
-                          movzPattern) ||
-        strideThen[1].str() != "x18" ||
-        !std::regex_match(lines[thenBounds.first + 2], mulThen, mulPattern) ||
-        mulThen[1].str() != "x18" || mulThen[2].str() != kX ||
-        mulThen[3].str() != "x18" ||
-        !std::regex_match(lines[thenBounds.first + 3], columnThen,
-                          directAddPattern) ||
-        columnThen[3].str() != "x18") {
-      continue;
-    }
-    const std::string firstColumnBase = columnThen[2].str();
-    std::string loadedSecondProduct;
-    std::string secondProductAddress;
-    long long secondProductOffset = 0;
-    if (!parseDirectIntLoad(lines[thenBounds.first + 4],
-                            loadedSecondProduct, secondProductAddress,
-                            secondProductOffset) ||
-        loadedSecondProduct != secondProduct ||
-        secondProductAddress != columnThen[1].str() ||
-        secondProductOffset != 0) {
-      continue;
-    }
-
-    const auto ifEndFound =
-        std::find(lines.begin() + thenBounds.second, lines.end(),
-                  *ifEndLabel + ":");
-    if (ifEndFound == lines.end()) continue;
-    const std::size_t ifEndLine =
-        static_cast<std::size_t>(ifEndFound - lines.begin());
-    const auto ifEndBounds = assemblyBlockBounds(lines, ifEndLine + 1);
-    if (ifEndBounds.second != ifEndBounds.first + 1) continue;
-    std::smatch kIncrement;
-    if (!std::regex_match(lines[ifEndBounds.first], kIncrement,
-                          incrementPattern) ||
-        kIncrement[1].str() != kW || kIncrement[2].str() != kW) {
-      continue;
-    }
-    const auto innerHeaderLabel = followingBlockLabel(lines, ifEndBounds);
-    if (!innerHeaderLabel.has_value()) continue;
-    const auto innerHeaderFound =
-        std::find(lines.begin() + ifEndBounds.second, lines.end(),
-                  *innerHeaderLabel + ":");
-    if (innerHeaderFound == lines.end()) continue;
-    const std::size_t innerHeaderLine =
-        static_cast<std::size_t>(innerHeaderFound - lines.begin());
-    const auto innerHeaderBounds =
-        assemblyBlockBounds(lines, innerHeaderLine + 1);
-    if (innerHeaderBounds.second != innerHeaderBounds.first + 2) continue;
-    std::smatch innerCompare;
-    if (!std::regex_match(lines[innerHeaderBounds.first], innerCompare,
-                          compareRegisterPattern) ||
-        innerCompare[1].str() != kW ||
-        lines[innerHeaderBounds.first + 1].rfind("  b.lt ", 0) != 0) {
-      continue;
-    }
-    const std::string boundW = innerCompare[2].str();
-    const std::string innerBodyLabel =
-        lines[innerHeaderBounds.first + 1].substr(7);
-    const auto innerBodyFound =
-        std::find(lines.begin(), lines.end(), innerBodyLabel + ":");
-    if (innerBodyFound == lines.end()) continue;
-    const std::size_t innerBodyLine =
-        static_cast<std::size_t>(innerBodyFound - lines.begin());
-    const auto innerBodyBounds =
-        assemblyBlockBounds(lines, innerBodyLine + 1);
-    if (innerBodyBounds.second != innerBodyBounds.first + 8 ||
-        followingBlockLabel(lines, innerBodyBounds) != thenLabel) {
-      continue;
-    }
-
-    std::smatch predicateFirstLoad;
-    std::smatch stridePredicate;
-    std::smatch mulPredicate;
-    std::smatch predicateAddress;
-    if (!std::regex_match(lines[innerBodyBounds.first], predicateFirstLoad,
-                          indexedLoadPattern) ||
-        predicateFirstLoad[3].str() != kX ||
-        !std::regex_match(lines[innerBodyBounds.first + 1], stridePredicate,
-                          movzPattern) ||
-        stridePredicate[1].str() != "x18" ||
-        stridePredicate[2].str() != strideThen[2].str() ||
-        !std::regex_match(lines[innerBodyBounds.first + 2], mulPredicate,
-                          mulPattern) ||
-        mulPredicate[1].str() != "x18" ||
-        mulPredicate[2].str() != kX ||
-        mulPredicate[3].str() != "x18" ||
-        !std::regex_match(lines[innerBodyBounds.first + 3],
-                          predicateAddress, directAddPattern) ||
-        predicateAddress[3].str() != "x18") {
-      continue;
-    }
-    const std::string predicateScalar = predicateFirstLoad[1].str();
-    const std::string predicateRow = predicateFirstLoad[2].str();
-    const std::string secondColumnBase = predicateAddress[2].str();
-    std::string predicateColumnValue;
-    std::string predicateLoadAddress;
-    long long predicateOffset = 0;
-    if (!parseDirectIntLoad(lines[innerBodyBounds.first + 4],
-        predicateColumnValue, predicateLoadAddress,
-                            predicateOffset) ||
-        predicateLoadAddress != predicateAddress[1].str() ||
-        predicateOffset != 0) {
-      continue;
-    }
-    std::smatch predicateAnd;
-    std::smatch predicateLowBit;
-    if (!std::regex_match(lines[innerBodyBounds.first + 5], predicateAnd,
-                          andPattern) ||
-        predicateAnd[2].str() != predicateScalar ||
-        predicateAnd[3].str() != predicateColumnValue ||
-        !std::regex_match(lines[innerBodyBounds.first + 6], predicateLowBit,
-                          andOnePattern) ||
-        predicateLowBit[1].str() != predicateAnd[1].str() ||
-        predicateLowBit[2].str() != predicateAnd[1].str() ||
-        lines[innerBodyBounds.first + 7] !=
-            "  cbnz " + predicateAnd[1].str() + ", " + *ifEndLabel) {
-      continue;
-    }
-
-    const auto innerEndLabel = followingBlockLabel(lines, innerHeaderBounds);
-    if (!innerEndLabel.has_value()) continue;
-    const auto innerEndFound =
-        std::find(lines.begin() + innerHeaderBounds.second, lines.end(),
-                  *innerEndLabel + ":");
-    if (innerEndFound == lines.end()) continue;
-    const std::size_t innerEndLine =
-        static_cast<std::size_t>(innerEndFound - lines.begin());
-    const auto innerEndBounds =
-        assemblyBlockBounds(lines, innerEndLine + 1);
-    if (innerEndBounds.second != innerEndBounds.first + 2) continue;
-    std::smatch resultStore;
-    std::smatch jIncrement;
-    if (!std::regex_match(lines[innerEndBounds.first], resultStore,
-                          indexedStorePattern) ||
-        resultStore[1].str() != accumulator ||
-        !std::regex_match(lines[innerEndBounds.first + 1], jIncrement,
-                          incrementPattern) ||
-        jIncrement[1].str() != jIncrement[2].str() ||
-        resultStore[3].str() !=
-            "x" + jIncrement[1].str().substr(1)) {
-      continue;
-    }
-    const std::string outputRow = resultStore[2].str();
-    const std::string jW = jIncrement[1].str();
-    const std::string jX = "x" + jW.substr(1);
-
-    const auto middleHeaderLabel = followingBlockLabel(lines, innerEndBounds);
-    if (!middleHeaderLabel.has_value()) continue;
-    const auto middleHeaderFound =
-        std::find(lines.begin() + innerEndBounds.second, lines.end(),
-                  *middleHeaderLabel + ":");
-    if (middleHeaderFound == lines.end()) continue;
-    const std::size_t middleHeaderLine =
-        static_cast<std::size_t>(middleHeaderFound - lines.begin());
-    const auto middleHeaderBounds =
-        assemblyBlockBounds(lines, middleHeaderLine + 1);
-    if (middleHeaderBounds.second != middleHeaderBounds.first + 2) continue;
-    std::smatch middleCompare;
-    if (!std::regex_match(lines[middleHeaderBounds.first], middleCompare,
-                          compareImmediatePattern) ||
-        middleCompare[1].str() != jW ||
-        lines[middleHeaderBounds.first + 1].rfind("  b.lt ", 0) != 0) {
-      continue;
-    }
-    const std::string middleBodyLabel =
-        lines[middleHeaderBounds.first + 1].substr(7);
-    long long extent = std::stoll(middleCompare[2].str());
-    long long stride = std::stoll(strideThen[2].str());
-    if (extent < 4 || extent % 4 != 0 || stride != extent * 4) continue;
-
-    const auto middleBodyFound =
-        std::find(lines.begin(), lines.end(), middleBodyLabel + ":");
-    if (middleBodyFound == lines.end()) continue;
-    const std::size_t middleBodyLine =
-        static_cast<std::size_t>(middleBodyFound - lines.begin());
-    const auto middleBodyBounds =
-        assemblyBlockBounds(lines, middleBodyLine + 1);
-    if (middleBodyBounds.second != middleBodyBounds.first + 6 ||
-        lines[middleBodyBounds.first] != "  movz " + accumulator + ", #0") {
-      continue;
-    }
-    std::smatch firstColumn;
-    std::smatch secondColumn;
-    std::smatch boundInitialization;
-    if (!std::regex_match(lines[middleBodyBounds.first + 1], firstColumn,
-                          addressPattern) ||
-        firstColumn[1].str() != firstColumnBase ||
-        firstColumn[3].str() != jX ||
-        !std::regex_match(lines[middleBodyBounds.first + 2], secondColumn,
-                          addressPattern) ||
-        secondColumn[1].str() != secondColumnBase ||
-        secondColumn[3].str() != jX ||
-        !std::regex_match(lines[middleBodyBounds.first + 3],
-                          boundInitialization, movzPattern) ||
-        boundInitialization[1].str() != boundW ||
-        std::stoll(boundInitialization[2].str()) != extent ||
-        lines[middleBodyBounds.first + 4] != "  movz " + kW + ", #0" ||
-        lines[middleBodyBounds.first + 5] !=
-            "  b " + *innerHeaderLabel) {
-      continue;
-    }
-    const std::string firstBase = firstColumn[2].str();
-    const std::string secondBase = secondColumn[2].str();
-    if (firstBase == secondBase || firstColumnBase == secondColumnBase ||
-        predicateRow == firstProductRow || outputRow == predicateRow ||
-        outputRow == firstProductRow) {
-      continue;
-    }
-
-    const auto firstSymbol =
-        globalSymbolForRegister(lines, middleBodyLine, firstBase);
-    const auto secondSymbol =
-        globalSymbolForRegister(lines, middleBodyLine, secondBase);
-    if (!firstSymbol.has_value() || !secondSymbol.has_value() ||
-        *firstSymbol == *secondSymbol) {
-      continue;
-    }
-    const auto middleEndLabel = followingBlockLabel(lines, middleHeaderBounds);
-    if (!middleEndLabel.has_value()) continue;
-
-    std::optional<std::size_t> entryBranch;
-    for (std::size_t line = 0; line < middleBodyLine; ++line) {
-      if (lines[line] == "  b " + *middleHeaderLabel) {
-        if (entryBranch.has_value()) {
-          entryBranch.reset();
-          break;
-        }
-        entryBranch = line;
-      }
-    }
-    if (!entryBranch.has_value() || *entryBranch == 0 ||
-        lines[*entryBranch - 1] != "  movz " + jW + ", #0") {
-      continue;
-    }
-    const auto entryBounds = assemblyBlockBounds(lines, *entryBranch);
-    std::optional<std::string> outputSymbol;
-    for (std::size_t line = entryBounds.first + 2;
-         line < *entryBranch; ++line) {
-      std::smatch outputAddress;
-      if (!std::regex_match(lines[line], outputAddress, directAddPattern) ||
-          outputAddress[1].str() != outputRow) {
-        continue;
-      }
-      outputSymbol =
-          globalSymbolForRegister(lines, line, outputAddress[2].str());
-    }
-    if (!outputSymbol.has_value() || *outputSymbol == *firstSymbol ||
-        *outputSymbol == *secondSymbol) {
-      continue;
-    }
-
-    const bool useEightColumns = extent >= 8 && extent % 8 == 0;
-    const long long vectorWidth = useEightColumns ? 8 : 4;
-    const std::string prefix = middleBodyLabel +
-                               (useEightColumns ? ".interchanged8"
-                                                : ".interchanged4");
-    if (assembly.find(prefix + ".init:") != std::string::npos) continue;
-    const std::string init = prefix + ".init";
-    const std::string clearBody = prefix + ".clear_body";
-    const std::string clearHeader = prefix + ".clear_header";
-    const std::string kBodyLabel = prefix + ".k_body";
-    const std::string kHeaderLabel = prefix + ".k_header";
-    const std::string jBodyLabel = prefix + ".j_body";
-    const std::string jHeaderLabel = prefix + ".j_header";
-
-    const std::string clearStore =
-        useEightColumns ? "  stp q24, q24, [x16]\n"
-                        : "  str q24, [x16]\n";
-    const std::string vectorUpdate =
-        useEightColumns
-            ? "  add x16, " + secondColumnBase + ", " + jX +
-                  ", lsl #2\n  ldp q22, q25, [x16]\n"
-                  "  and v22.16b, v22.16b, v20.16b\n"
-                  "  and v25.16b, v25.16b, v20.16b\n"
-                  "  shl v22.4s, v22.4s, #31\n"
-                  "  shl v25.4s, v25.4s, #31\n"
-                  "  cmeq v22.4s, v22.4s, #0\n"
-                  "  cmeq v25.4s, v25.4s, #0\n"
-                  "  add x16, " + firstColumnBase + ", " + jX +
-                  ", lsl #2\n  ldp q23, q26, [x16]\n"
-                  "  and v23.16b, v23.16b, v22.16b\n"
-                  "  and v26.16b, v26.16b, v25.16b\n"
-                  "  add x16, " + outputRow + ", " + jX +
-                  ", lsl #2\n  ldp q24, q27, [x16]\n"
-                  "  mla v24.4s, v23.4s, v21.4s\n"
-                  "  mla v27.4s, v26.4s, v21.4s\n"
-                  "  stp q24, q27, [x16]\n"
-            : "  add x16, " + secondColumnBase + ", " + jX +
-                  ", lsl #2\n  ldr q22, [x16]\n"
-                  "  and v22.16b, v22.16b, v20.16b\n"
-                  "  shl v22.4s, v22.4s, #31\n"
-                  "  cmeq v22.4s, v22.4s, #0\n"
-                  "  add x16, " + firstColumnBase + ", " + jX +
-                  ", lsl #2\n  ldr q23, [x16]\n"
-                  "  and v23.16b, v23.16b, v22.16b\n"
-                  "  add x16, " + outputRow + ", " + jX +
-                  ", lsl #2\n  ldr q24, [x16]\n"
-                  "  mla v24.4s, v23.4s, v21.4s\n"
-                  "  str q24, [x16]\n";
-
-    lines[*entryBranch] = "  b " + init;
-    const std::string blocks =
-        init + ":\n  movi v24.4s, #0\n  movz " + jW + ", #0\n  b " +
-        clearHeader + "\n" + clearBody + ":\n  add x16, " + outputRow +
-        ", " + jX + ", lsl #2\n" + clearStore + "  add " + jW + ", " +
-        jW + ", #" + std::to_string(vectorWidth) + "\n" + clearHeader +
-        ":\n  cmp " + jW + ", #" +
-        std::to_string(extent) + "\n  b.lt " + clearBody + "\n  movz " + kW +
-        ", #0\n  b " + kHeaderLabel + "\n" + kBodyLabel + ":\n  ldr " +
-        predicateScalar + ", [" +
-        predicateRow + ", " + kX +
-        ", lsl #2]\n  dup v20.4s, " + predicateScalar + "\n  ldr " +
-        firstProduct + ", [" + firstProductRow + ", " + kX +
-        ", lsl #2]\n  dup v21.4s, " + firstProduct + "\n  movz x18, #" +
-        std::to_string(stride) +
-        "\n  mul x18, " + kX + ", x18\n  add " + firstColumnBase + ", " +
-        firstBase + ", x18\n  add " + secondColumnBase + ", " + secondBase +
-        ", x18\n  movz " + jW +
-        ", #0\n  b " + jHeaderLabel +
-        "\n" + jBodyLabel + ":\n" + vectorUpdate + "  add " + jW + ", " +
-        jW + ", #" + std::to_string(vectorWidth) + "\n" +
-        jHeaderLabel + ":\n  cmp " + jW + ", #" + std::to_string(extent) +
-        "\n  b.lt " + jBodyLabel + "\n  add " + kW + ", " + kW +
-        ", #1\n" + kHeaderLabel + ":\n  cmp " + kW + ", #" +
-        std::to_string(extent) + "\n  b.lt " + kBodyLabel + "\n  b " +
-        *middleEndLabel;
-    lines[middleBodyLine] = blocks + "\n" + lines[middleBodyLine];
-    changed = true;
-    maddLine = middleHeaderBounds.second;
-  }
-  if (!changed) return assembly;
-  std::ostringstream optimized;
-  for (const auto& line : lines) {
-    if (!line.empty()) optimized << line << '\n';
-  }
-  return optimized.str();
-}
 
 bool isNarrow(const ValueType& type) { return type.isBool() || type.isInt32(); }
 
@@ -2124,12 +499,209 @@ std::string inverseCondition(const std::string& condition) {
   return "nv";
 }
 
+std::string tailMemoCacheName(std::int64_t site) {
+  return ".Lcompiler_tail_memo_cache_" + std::to_string(site);
+}
+
+std::string tailMemoAbsoluteName(std::int64_t site) {
+  return ".Lcompiler_tail_memo_absolute_" + std::to_string(site);
+}
+
+void emitTailMemoStorage(std::ostringstream& os, const MachineModule& module) {
+  for (const auto& function : module.functions) {
+    for (const auto& block : function.blocks) {
+      for (const auto& instruction : block.instructions) {
+        if (instruction.opcode != "aarch64.tail.memo.setup" ||
+            instruction.operands.size() != 6) {
+          continue;
+        }
+        const auto site = instruction.operands[3].intValue;
+        const bool compact = instruction.operands[4].intValue != 0;
+        const bool absolute = instruction.operands[5].intValue != 0;
+        const std::uint64_t states = compact ? (1ULL << 24) : (1ULL << 20);
+        const std::uint64_t entryBytes = compact ? 4U : 8U;
+        os << ".bss\n.balign 64\n" << tailMemoCacheName(site) << ":\n"
+           << "  .zero " << (states + 1U) * entryBytes << '\n';
+        if (absolute) {
+          os << ".balign 64\n" << tailMemoAbsoluteName(site) << ":\n"
+             << "  .zero " << states + 1U << '\n';
+        }
+        return;
+      }
+    }
+  }
+}
+
 void emitInstruction(std::ostringstream& os, const MachineModule&,
                      const MachineFunction& function, const MachineInstruction& instruction,
                      const std::string& returnLabel,
                      const std::unordered_map<std::string, std::string>& labels,
                      const std::string* fallthrough = nullptr) {
   const auto& opcode = instruction.opcode;
+  if ((opcode == "aarch64.stack.pair.load" ||
+       opcode == "aarch64.stack.pair.store") &&
+      instruction.operands.size() == 4) {
+    os << "  " << (opcode == "aarch64.stack.pair.load" ? "ldp " : "stp ")
+       << instruction.operands[0].text << ", " << instruction.operands[1].text
+       << ", [" << instruction.operands[2].text;
+    if (instruction.operands[3].intValue != 0)
+      os << ", #" << instruction.operands[3].intValue;
+    os << "]\n";
+    return;
+  }
+  if (opcode == "aarch64.add.shifted" && instruction.hasResult &&
+      instruction.operands.size() == 2 &&
+      instruction.operands[1].kind == MachineOperandKind::ImmediateInt) {
+    const auto source =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto destination = resultRegister(instruction.result, kImmScratch);
+    os << "  add " << integerRegister(destination, instruction.result.type)
+       << ", " << integerRegister(source, instruction.result.type) << ", "
+       << integerRegister(source, instruction.result.type) << ", lsl #"
+       << instruction.operands[1].intValue << '\n';
+    storeResult(os, function, instruction.result, destination);
+    return;
+  }
+  if (opcode == "aarch64.positive.half.collapse" &&
+      instruction.operands.size() == 4) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto header = labels.at(instruction.operands[2].text);
+    const auto site = instruction.operands[3].intValue;
+    const std::string fallback =
+        ".Lcompiler_positive_half_fallback_" + std::to_string(site);
+    os << "  cmp " << state << ", #0\n"
+       << "  b.le " << fallback << '\n'
+       << "  rbit w16, " << state << '\n'
+       << "  clz w16, w16\n"
+       << "  lsr " << state << ", " << state << ", w16\n"
+       << "  add " << depth << ", " << depth << ", w16\n"
+       << "  b " << header << '\n'
+       << fallback << ":\n"
+       << "  add " << state << ", " << state << ", " << state
+       << ", lsr #31\n"
+       << "  asr " << state << ", " << state << ", #1\n"
+       << "  add " << depth << ", " << depth << ", #1\n"
+       << "  b " << header << '\n';
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.setup" &&
+      instruction.operands.size() == 6) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto bound = integerRegister(instruction.operands[2].text,
+                                       instruction.operands[2].type);
+    const auto site = instruction.operands[3].intValue;
+    const bool compact = instruction.operands[4].intValue != 0;
+    const bool absolute = instruction.operands[5].intValue != 0;
+    const auto cache = tailMemoCacheName(site);
+    os << "  mov w6, " << state << '\n'
+       << "  mov w7, " << depth << '\n'
+       << "  adrp x5, " << cache << '\n'
+       << "  add x5, x5, :lo12:" << cache << '\n';
+    if (absolute) {
+      const auto absoluteCache = tailMemoAbsoluteName(site);
+      os << "  movz w9, #0\n"
+         << "  adrp x10, " << absoluteCache << '\n'
+         << "  add x10, x10, :lo12:" << absoluteCache << '\n';
+    }
+    os << "  movz " << bound << ", #" << (compact ? 256 : 16)
+       << ", lsl #16\n";
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.lookup" &&
+      instruction.operands.size() == 8) {
+    const auto state = integerRegister(instruction.operands[0].text,
+                                       instruction.operands[0].type);
+    const auto depth = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto context = integerRegister(instruction.operands[2].text,
+                                         instruction.operands[2].type);
+    const auto bound = integerRegister(instruction.operands[3].text,
+                                       instruction.operands[3].type);
+    const auto store = labels.at(instruction.operands[4].text);
+    const auto site = instruction.operands[5].intValue;
+    const bool compact = instruction.operands[6].intValue != 0;
+    const bool absolute = instruction.operands[7].intValue != 0;
+    const std::string prefix =
+        ".Lcompiler_tail_memo_lookup_" + std::to_string(site);
+    const std::string miss = prefix + "_miss";
+    os << "  cmp " << state << ", " << bound << '\n'
+       << "  b.hi " << miss << '\n';
+    if (compact) {
+      os << "  ldr w17, [x5, " << state << ", uxtw #2]\n";
+    } else {
+      os << "  ldr x17, [x5, " << state << ", uxtw #3]\n"
+         << "  lsr x18, x17, #32\n"
+         << "  cmp w18, " << context << '\n'
+         << "  b.ne " << miss << '\n';
+    }
+    os << "  cbz w17, " << miss << '\n';
+    if (absolute) {
+      const std::string additive = prefix + "_additive";
+      os << "  ldrb w18, [x10, " << state << ", uxtw]\n"
+         << "  cbz w18, " << additive << '\n'
+         << "  sub w0, w17, #1\n"
+         << "  movz w9, #1\n"
+         << "  b " << store << '\n'
+         << additive << ":\n";
+    }
+    os << "  sub w17, w17, #1\n"
+       << "  add w0, " << depth << ", w17\n"
+       << "  b " << store << '\n'
+       << miss << ":\n";
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.return" &&
+      instruction.operands.size() == 3) {
+    emitIntegerOperand(os, function, instruction.operands[0], "x0");
+    if (instruction.operands[2].intValue != 0) os << "  movz w9, #1\n";
+    os << "  b " << labels.at(instruction.operands[1].text) << '\n';
+    return;
+  }
+  if (opcode == "aarch64.tail.memo.store" &&
+      instruction.operands.size() == 5) {
+    const auto context = integerRegister(instruction.operands[0].text,
+                                         instruction.operands[0].type);
+    const auto bound = integerRegister(instruction.operands[1].text,
+                                       instruction.operands[1].type);
+    const auto site = instruction.operands[2].intValue;
+    const bool compact = instruction.operands[3].intValue != 0;
+    const bool absolute = instruction.operands[4].intValue != 0;
+    const std::string noStore =
+        ".Lcompiler_tail_memo_no_store_" + std::to_string(site);
+    os << "  cmp w6, " << bound << '\n'
+       << "  b.hi " << noStore << '\n'
+       << "  cbz w6, " << noStore << '\n';
+    if (absolute) {
+      const std::string summary =
+          ".Lcompiler_tail_memo_summary_" + std::to_string(site);
+      os << "  cbz w9, " << summary << '\n'
+         << "  add w17, w0, #1\n"
+         << "  str w17, [x5, w6, uxtw #2]\n"
+         << "  movz w18, #1\n"
+         << "  strb w18, [x10, w6, uxtw]\n"
+         << "  b " << noStore << '\n'
+         << summary << ":\n";
+    }
+    os << "  sub w17, w0, w7\n"
+       << "  add w17, w17, #1\n";
+    if (compact) {
+      os << "  str w17, [x5, w6, uxtw #2]\n";
+      if (absolute) os << "  strb wzr, [x10, w6, uxtw]\n";
+    } else {
+      os << "  uxtw x17, w17\n"
+         << "  uxtw x18, " << context << '\n'
+         << "  orr x17, x17, x18, lsl #32\n"
+         << "  str x17, [x5, w6, uxtw #3]\n";
+    }
+    os << noStore << ":\n";
+    return;
+  }
   if (opcode == "stack.adjust") { emitStackAdjust(os, instruction.operands[0].intValue); return; }
   if (opcode == "stack.set_fp") { emitAddImmediate(os, "x29", "sp", instruction.operands[0].intValue); return; }
   if (opcode == "stack.save") {
@@ -2183,6 +755,489 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
       if (pairOffset != 0) os << ", #" << pairOffset;
       os << "]\n";
     }
+    return;
+  }
+  if (opcode == "aarch64.neon.vector.fill" &&
+      instruction.operands.size() >= 8) {
+    const auto& index = instruction.operands[0];
+    const auto& bound = instruction.operands[1];
+    const auto scalarHeader = labels.at(instruction.operands[2].text);
+    const auto site = instruction.operands[3].intValue;
+    const auto vectorChunk = instruction.operands[4].intValue;
+    const auto storeCount = instruction.operands[5].intValue;
+    if ((storeCount != 1 && storeCount != 2) ||
+        instruction.operands.size() !=
+            static_cast<std::size_t>(6 + storeCount * 2) ||
+        (vectorChunk != 4 && vectorChunk != 16)) {
+      throw std::runtime_error("invalid aarch64.neon.vector.fill pseudo");
+    }
+
+    const std::string indexW = integerRegister(index.text, index.type);
+    const std::string indexX =
+        indexW.size() >= 2 && indexW.front() == 'w'
+            ? "x" + indexW.substr(1)
+            : index.text;
+    std::string boundW;
+    std::string boundX;
+    if (bound.kind == MachineOperandKind::ImmediateInt) {
+      boundW = "w18";
+      boundX = "x18";
+    } else {
+      boundW = integerRegister(bound.text, bound.type);
+      boundX = boundW.size() >= 2 && boundW.front() == 'w'
+                   ? "x" + boundW.substr(1)
+                   : bound.text;
+    }
+
+    const std::string prefix =
+        ".Lcompiler_neon_fill_" + std::to_string(site);
+    const std::string aliasSafe = prefix + "_alias_safe";
+    const std::string vectorBody = prefix + "_body";
+    const std::string vectorHeader = prefix + "_header";
+    const std::string tailBody = prefix + "_tail_body";
+    const std::string tailHeader = prefix + "_tail_header";
+
+    for (long long store = 0; store < storeCount; ++store) {
+      const auto value = instruction.operands[7 + store * 2].intValue;
+      if (value >= 0 && value <= 255) {
+        os << "  movi v" << (16 + store) << ".4s, #" << value << '\n';
+      } else {
+        emitImmediate(os, "w18", value, ValueType::int32Type());
+        os << "  dup v" << (16 + store) << ".4s, w18\n";
+      }
+    }
+    if (bound.kind == MachineOperandKind::ImmediateInt) {
+      emitImmediate(os, "x18", bound.intValue, ValueType::int64Type());
+    }
+    if (storeCount == 2) {
+      const auto& firstBase = instruction.operands[6].text;
+      const auto& secondBase = instruction.operands[8].text;
+      // [first + index, first + bound) and
+      // [second + index, second + bound) must be disjoint.  Keep the scalar
+      // loop for every overlapping or wraparound-conservative case.
+      os << "  add x17, " << firstBase << ", " << boundX << ", lsl #2\n"
+         << "  add x16, " << secondBase << ", " << indexX << ", lsl #2\n"
+         << "  cmp x16, x17\n"
+         << "  b.hs " << aliasSafe << '\n'
+         << "  add x17, " << secondBase << ", " << boundX << ", lsl #2\n"
+         << "  add x16, " << firstBase << ", " << indexX << ", lsl #2\n"
+         << "  cmp x16, x17\n"
+         << "  b.lo " << scalarHeader << '\n'
+         << aliasSafe << ":\n";
+    }
+    os << "  b " << vectorHeader << '\n' << vectorBody << ":\n";
+    for (long long store = 0; store < storeCount; ++store) {
+      const auto& base = instruction.operands[6 + store * 2].text;
+      os << "  add x16, " << base << ", " << indexX << ", lsl #2\n";
+      if (vectorChunk == 16) {
+        os << "  stp q" << (16 + store) << ", q" << (16 + store)
+           << ", [x16]\n"
+           << "  stp q" << (16 + store) << ", q" << (16 + store)
+           << ", [x16, #32]\n";
+      } else {
+        os << "  str q" << (16 + store) << ", [x16]\n";
+      }
+    }
+    os << "  add " << indexW << ", " << indexW << ", #" << vectorChunk
+       << '\n'
+       << vectorHeader << ":\n"
+       << "  sub w17, " << boundW << ", " << indexW << '\n'
+       << "  cmp w17, #" << vectorChunk << '\n'
+       << "  b.ge " << vectorBody << '\n';
+    if (vectorChunk == 16) {
+      os << "  b " << tailHeader << '\n' << tailBody << ":\n";
+      for (long long store = 0; store < storeCount; ++store) {
+        const auto& base = instruction.operands[6 + store * 2].text;
+        os << "  add x16, " << base << ", " << indexX << ", lsl #2\n"
+           << "  str q" << (16 + store) << ", [x16]\n";
+      }
+      os << "  add " << indexW << ", " << indexW << ", #4\n"
+         << tailHeader << ":\n"
+         << "  sub w17, " << boundW << ", " << indexW << '\n'
+         << "  cmp w17, #4\n"
+         << "  b.ge " << tailBody << '\n';
+    }
+    os << "  b " << scalarHeader << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.stencil.i32x4" &&
+      instruction.operands.size() == 11) {
+    const auto& in = instruction.operands[0];
+    const auto& out = instruction.operands[1];
+    const auto& kernel = instruction.operands[2];
+    const auto& bound = instruction.operands[3];
+    const auto& trip = instruction.operands[4];
+    const auto& repeat = instruction.operands[5];
+    if (in.kind != MachineOperandKind::PhysicalRegister ||
+        out.kind != MachineOperandKind::PhysicalRegister ||
+        kernel.kind != MachineOperandKind::PhysicalRegister ||
+        bound.kind != MachineOperandKind::PhysicalRegister ||
+        trip.kind != MachineOperandKind::PhysicalRegister ||
+        repeat.kind != MachineOperandKind::PhysicalRegister ||
+        instruction.operands[6].kind != MachineOperandKind::Label ||
+        instruction.operands[7].kind != MachineOperandKind::Label) {
+      throw std::runtime_error("invalid aarch64.neon.stencil.i32x4 pseudo");
+    }
+    const long long extent = instruction.operands[8].intValue;
+    const long long pad = instruction.operands[9].intValue;
+    const long long site = instruction.operands[10].intValue;
+    if (extent <= 0 || extent > 255 || pad < 0 || pad >= extent)
+      throw std::runtime_error("invalid aarch64 stencil shape");
+    const long long trailing = extent - pad - 1;
+    const auto xreg = [](std::string reg) {
+      if (!reg.empty() && reg[0] == 'w') reg[0] = 'x';
+      return reg;
+    };
+    std::unordered_set<std::string> used{xreg(in.text), xreg(out.text),
+                                         xreg(kernel.text), xreg(bound.text),
+                                         xreg(trip.text), xreg(repeat.text)};
+    std::vector<std::string> regs;
+    for (int n = 3; n <= 18 && regs.size() != 12; ++n) {
+      const auto candidate = "x" + std::to_string(n);
+      if (used.find(candidate) == used.end()) regs.push_back(candidate);
+    }
+    const std::string fallback = labels.at(instruction.operands[6].text);
+    const std::string exit = labels.at(instruction.operands[7].text);
+    if (regs.size() != 12) { os << "  b " << fallback << '\n'; return; }
+    const auto wreg = [](std::string reg) { reg[0] = 'w'; return reg; };
+    const auto& rX = regs[0]; const auto rW = wreg(rX);
+    const auto& cX = regs[1]; const auto cW = wreg(cX);
+    const auto& krX = regs[2]; const auto krW = wreg(krX);
+    const auto& kcX = regs[3]; const auto kcW = wreg(kcX);
+    const auto& sumX = regs[4]; const auto sumW = wreg(sumX);
+    const auto& rrX = regs[5]; const auto rrW = wreg(rrX);
+    const auto& ccX = regs[6]; const auto ccW = wreg(ccX);
+    const auto& indexX = regs[7]; const auto indexW = wreg(indexX);
+    const auto& inputPointer = regs[8];
+    const auto& kernelPointer = regs[9];
+    const auto inputValueW = wreg(regs[10]);
+    const auto& tempX = regs[11]; const auto tempW = wreg(tempX);
+    const std::string boundW = integerRegister(bound.text, bound.type);
+    const std::string tripW = integerRegister(trip.text, trip.type);
+    const std::string p = ".Lcompiler_stencil_" + std::to_string(site);
+    const std::string aliasK = p + "_alias_k", fast = p + "_fast";
+    const std::string rowH = p + "_row_h", dispatch = p + "_dispatch";
+    const std::string vector = p + "_vector", vKr = p + "_vkr";
+    const std::string vKc = p + "_vkc", vKrNext = p + "_vkr_next";
+    const std::string vStore = p + "_vstore", scalar = p + "_scalar";
+    const std::string sKr = p + "_skr", sKc = p + "_skc";
+    const std::string sKcNext = p + "_skc_next", sKrNext = p + "_skr_next";
+    const std::string sStore = p + "_sstore", rowNext = p + "_row_next";
+
+    os << "  cmp " << tripW << ", #0\n  b.le " << exit
+       << "\n  cmp " << tripW << ", #1\n  b.ne " << fallback
+       << "\n  cmp " << boundW << ", #0\n  b.le " << exit << '\n';
+    emitImmediate(os, tempW, 46340, ValueType::int32Type());
+    os << "  cmp " << boundW << ", " << tempW << "\n  b.gt " << fallback
+       << "\n  uxtw " << indexX << ", " << boundW
+       << "\n  mul " << indexX << ", " << indexX << ", " << indexX
+       << "\n  lsl " << indexX << ", " << indexX << ", #2\n"
+       << "  add " << inputPointer << ", " << in.text << ", " << indexX
+       << "\n  cmp " << inputPointer << ", " << in.text << "\n  b.lo "
+       << fallback << "\n  add " << tempX << ", " << out.text << ", "
+       << indexX << "\n  cmp " << tempX << ", " << out.text << "\n  b.lo "
+       << fallback << '\n';
+    emitAddImmediate(os, kernelPointer, kernel.text, extent * extent * 4);
+    os << "  cmp " << kernelPointer << ", " << kernel.text << "\n  b.lo "
+       << fallback << "\n  cmp " << out.text << ", " << inputPointer
+       << "\n  b.hs " << aliasK << "\n  cmp " << in.text << ", " << tempX
+       << "\n  b.lo " << fallback << '\n' << aliasK << ":\n  cmp "
+       << out.text << ", " << kernelPointer << "\n  b.hs " << fast
+       << "\n  cmp " << kernel.text << ", " << tempX << "\n  b.lo "
+       << fallback << '\n' << fast << ":\n  mov " << rW << ", wzr\n"
+       << rowH << ":\n  cmp " << rW << ", " << boundW << "\n  b.ge "
+       << exit << "\n  mov " << cW << ", wzr\n" << dispatch
+       << ":\n  cmp " << cW << ", " << boundW << "\n  b.ge " << rowNext
+       << '\n';
+    if (pad) os << "  cmp " << rW << ", #" << pad << "\n  b.lt " << scalar << '\n';
+    if (trailing) {
+      emitAddImmediate(os, tempW, boundW, -trailing);
+      os << "  cmp " << rW << ", " << tempW << "\n  b.ge " << scalar << '\n';
+    } else os << "  mov " << tempW << ", " << boundW << '\n';
+    if (pad) os << "  cmp " << cW << ", #" << pad << "\n  b.lt " << scalar << '\n';
+    os << "  add " << ccW << ", " << cW << ", #4\n  cmp " << ccW
+       << ", " << tempW << "\n  b.gt " << scalar << "\n  b " << vector
+       << '\n' << vector << ":\n  movi v0.4s, #0\n  mov " << krW
+       << ", wzr\n  mov " << kernelPointer << ", " << kernel.text << '\n'
+       << vKr << ":\n  cmp " << krW << ", #" << extent << "\n  b.ge "
+       << vStore << "\n  add " << rrW << ", " << rW << ", " << krW << '\n';
+    if (pad) os << "  sub " << rrW << ", " << rrW << ", #" << pad << '\n';
+    os << "  madd " << indexW << ", " << rrW << ", " << boundW << ", "
+       << cW << '\n';
+    if (pad) os << "  sub " << indexW << ", " << indexW << ", #" << pad << '\n';
+    os << "  add " << inputPointer << ", " << in.text << ", " << indexW
+       << ", sxtw #2\n  mov " << kcW << ", wzr\n" << vKc
+       << ":\n  cmp " << kcW << ", #" << extent << "\n  b.ge " << vKrNext
+       << "\n  ldr q1, [" << inputPointer << "], #4\n  ldr " << tempW
+       << ", [" << kernelPointer << "], #4\n  dup v2.4s, " << tempW
+       << "\n  mla v0.4s, v1.4s, v2.4s\n  add " << kcW << ", " << kcW
+       << ", #1\n  b " << vKc << '\n' << vKrNext << ":\n  add " << krW
+       << ", " << krW << ", #1\n  b " << vKr << '\n' << vStore
+       << ":\n  madd " << indexW << ", " << rW << ", " << boundW << ", "
+       << cW << "\n  add " << inputPointer << ", " << out.text << ", "
+       << indexW << ", sxtw #2\n  str q0, [" << inputPointer << "]\n  add "
+       << cW << ", " << cW << ", #4\n  b " << dispatch << '\n'
+       << scalar << ":\n  mov " << sumW << ", wzr\n  mov " << krW
+       << ", wzr\n  mov " << kernelPointer << ", " << kernel.text << '\n'
+       << sKr << ":\n  cmp " << krW << ", #" << extent << "\n  b.ge "
+       << sStore << "\n  add " << rrW << ", " << rW << ", " << krW << '\n';
+    if (pad) os << "  sub " << rrW << ", " << rrW << ", #" << pad << '\n';
+    os << "  cmp " << rrW << ", #0\n  b.lt " << sKrNext << "\n  cmp "
+       << rrW << ", " << boundW << "\n  b.ge " << sKrNext << "\n  mov "
+       << kcW << ", wzr\n" << sKc << ":\n  cmp " << kcW << ", #" << extent
+       << "\n  b.ge " << sKrNext << "\n  add " << ccW << ", " << cW
+       << ", " << kcW << '\n';
+    if (pad) os << "  sub " << ccW << ", " << ccW << ", #" << pad << '\n';
+    os << "  cmp " << ccW << ", #0\n  b.lt " << sKcNext << "\n  cmp "
+       << ccW << ", " << boundW << "\n  b.ge " << sKcNext << "\n  madd "
+       << indexW << ", " << rrW << ", " << boundW << ", " << ccW
+       << "\n  ldr " << inputValueW << ", [" << in.text << ", " << indexW
+       << ", sxtw #2]\n  ldr " << tempW << ", [" << kernelPointer << ", "
+       << kcW << ", sxtw #2]\n  madd " << sumW << ", " << inputValueW
+       << ", " << tempW << ", " << sumW << '\n' << sKcNext
+       << ":\n  add " << kcW << ", " << kcW << ", #1\n  b " << sKc << '\n'
+       << sKrNext << ":\n";
+    emitAddImmediate(os, kernelPointer, kernelPointer, extent * 4);
+    os << "  add " << krW << ", " << krW << ", #1\n  b " << sKr << '\n'
+       << sStore << ":\n  madd " << indexW << ", " << rW << ", " << boundW
+       << ", " << cW << "\n  str " << sumW << ", [" << out.text << ", "
+       << indexW << ", sxtw #2]\n  add " << cW << ", " << cW
+       << ", #1\n  b " << dispatch << '\n' << rowNext << ":\n  add "
+       << rW << ", " << rW << ", #1\n  b " << rowH << '\n';
+    return;
+  }
+  if (opcode == "aarch64.neon.conditional.matrix.reduction" &&
+      instruction.operands.size() == 15) {
+    const auto& jOperand = instruction.operands[0];
+    const auto& kOperand = instruction.operands[1];
+    const std::string jW = integerRegister(jOperand.text, jOperand.type);
+    const std::string kW = integerRegister(kOperand.text, kOperand.type);
+    const std::string jX =
+        jW.front() == 'w' ? "x" + jW.substr(1) : jOperand.text;
+    const std::string kX =
+        kW.front() == 'w' ? "x" + kW.substr(1) : kOperand.text;
+    const std::string predicateScalar =
+        integerRegister(instruction.operands[2].text,
+                        instruction.operands[2].type);
+    const std::string productScalar =
+        integerRegister(instruction.operands[3].text,
+                        instruction.operands[3].type);
+    const std::string predicateRow = instruction.operands[4].text;
+    const std::string productRow = instruction.operands[5].text;
+    const std::string firstColumn = instruction.operands[6].text;
+    const std::string secondColumn = instruction.operands[7].text;
+    const std::string firstBase = instruction.operands[8].text;
+    const std::string secondBase = instruction.operands[9].text;
+    const std::string outputRow = instruction.operands[10].text;
+    const long long extent = instruction.operands[11].intValue;
+    const long long stride = instruction.operands[12].intValue;
+    const std::string middleEnd = labels.at(instruction.operands[13].text);
+    const long long site = instruction.operands[14].intValue;
+    if (extent < 4 || extent % 4 != 0 || stride != extent * 4) {
+      throw std::runtime_error(
+          "invalid aarch64.neon.conditional.matrix.reduction pseudo");
+    }
+
+    const bool use8 = extent >= 8 && extent % 8 == 0;
+    const bool use16 =
+        use8 && extent >= 16 &&
+        std::getenv("COMPILER_DISABLE_CONDITIONAL_MATRIX_SIXTEEN_COLUMNS") ==
+            nullptr;
+    const bool use32 =
+        use16 && extent >= 32 &&
+        std::getenv(
+            "COMPILER_DISABLE_CONDITIONAL_MATRIX_THIRTY_TWO_COLUMNS") ==
+            nullptr;
+    const bool use64 =
+        use32 && extent >= 64 &&
+        std::getenv("COMPILER_DISABLE_CONDITIONAL_MATRIX_SIXTY_FOUR_COLUMNS") ==
+            nullptr;
+    const long long vectorWidth = use64 ? 64 : use32 ? 32 : use16 ? 16
+                                                            : use8 ? 8 : 4;
+    const long long vectorLimit = extent - extent % vectorWidth;
+    const bool parityFastPath =
+        std::getenv("COMPILER_DISABLE_PARITY_INVARIANT_VECTOR_FAST_PATH") ==
+        nullptr;
+    const std::string prefix =
+        ".Lcompiler_conditional_matrix_" + std::to_string(site);
+    const std::string clearBody = prefix + "_clear_body";
+    const std::string clearHeader = prefix + "_clear_header";
+    const std::string kBody = prefix + "_k_body";
+    const std::string kHeader = prefix + "_k_header";
+    const std::string maskedPrepare = prefix + "_masked_prepare";
+    const std::string maskedJBody = prefix + "_masked_j_body";
+    const std::string maskedJHeader = prefix + "_masked_j_header";
+    const std::string fastJBody = prefix + "_fast_j_body";
+    const std::string fastJHeader = prefix + "_fast_j_header";
+    const std::string kAdvance = prefix + "_k_advance";
+
+    const auto emitCompareConstant = [&](const std::string& reg,
+                                         long long value) {
+      if (!emitCompareImmediate(os, reg, value)) {
+        emitImmediate(os, "w17", value, ValueType::int32Type());
+        os << "  cmp " << reg << ", w17\n";
+      }
+    };
+    const auto emitClear = [&](long long width) {
+      os << "  add x16, " << outputRow << ", " << jX << ", lsl #2\n";
+      if (width == 4) {
+        os << "  str q24, [x16]\n";
+        return;
+      }
+      for (long long offset = 0; offset < width * 4; offset += 32) {
+        os << "  stp q24, q24, [x16";
+        if (offset != 0) os << ", #" << offset;
+        os << "]\n";
+      }
+    };
+    const auto emitMaskedUpdate = [&](long long width) {
+      if (width == 4) {
+        os << "  add x17, " << secondColumn << ", " << jX
+           << ", lsl #2\n"
+           << "  ldr q22, [x17]\n";
+        if (!parityFastPath) {
+          os << "  and v22.16b, v22.16b, v20.16b\n";
+        }
+        os << "  shl v22.4s, v22.4s, #31\n"
+           << "  cmeq v22.4s, v22.4s, #0\n"
+           << "  add x18, " << firstColumn << ", " << jX
+           << ", lsl #2\n"
+           << "  ldr q23, [x18]\n"
+           << "  and v23.16b, v23.16b, v22.16b\n"
+           << "  add x16, " << outputRow << ", " << jX
+           << ", lsl #2\n"
+           << "  ldr q24, [x16]\n"
+           << "  mla v24.4s, v23.4s, v21.4s\n"
+           << "  str q24, [x16]\n";
+        return;
+      }
+      os << "  add x17, " << secondColumn << ", " << jX << ", lsl #2\n"
+         << "  add x18, " << firstColumn << ", " << jX << ", lsl #2\n"
+         << "  add x16, " << outputRow << ", " << jX << ", lsl #2\n";
+      for (long long offset = 0; offset < width * 4; offset += 32) {
+        const auto emitAddress = [&](const char* base) {
+          os << '[' << base;
+          if (offset != 0) os << ", #" << offset;
+          os << ']';
+        };
+        os << "  ldp q22, q25, ";
+        emitAddress("x17");
+        os << '\n';
+        if (!parityFastPath) {
+          os << "  and v22.16b, v22.16b, v20.16b\n"
+             << "  and v25.16b, v25.16b, v20.16b\n";
+        }
+        os << "  shl v22.4s, v22.4s, #31\n"
+           << "  shl v25.4s, v25.4s, #31\n"
+           << "  cmeq v22.4s, v22.4s, #0\n"
+           << "  cmeq v25.4s, v25.4s, #0\n"
+           << "  ldp q23, q26, ";
+        emitAddress("x18");
+        os << "\n  and v23.16b, v23.16b, v22.16b\n"
+           << "  and v26.16b, v26.16b, v25.16b\n"
+           << "  ldp q24, q27, ";
+        emitAddress("x16");
+        os << "\n  mla v24.4s, v23.4s, v21.4s\n"
+           << "  mla v27.4s, v26.4s, v21.4s\n"
+           << "  stp q24, q27, ";
+        emitAddress("x16");
+        os << '\n';
+      }
+    };
+    const auto emitFastUpdate = [&](long long width) {
+      if (width == 4) {
+        os << "  add x17, " << firstColumn << ", " << jX << ", lsl #2\n"
+           << "  add x16, " << outputRow << ", " << jX << ", lsl #2\n"
+           << "  ldr q23, [x17]\n"
+           << "  ldr q24, [x16]\n"
+           << "  mla v24.4s, v23.4s, v21.4s\n"
+           << "  str q24, [x16]\n";
+        return;
+      }
+      os << "  add x17, " << firstColumn << ", " << jX << ", lsl #2\n"
+         << "  add x16, " << outputRow << ", " << jX << ", lsl #2\n";
+      for (long long offset = 0; offset < width * 4; offset += 32) {
+        const auto suffix = offset == 0 ? std::string{}
+                                        : ", #" + std::to_string(offset);
+        os << "  ldp q23, q26, [x17" << suffix << "]\n"
+           << "  ldp q24, q27, [x16" << suffix << "]\n"
+           << "  mla v24.4s, v23.4s, v21.4s\n"
+           << "  mla v27.4s, v26.4s, v21.4s\n"
+           << "  stp q24, q27, [x16" << suffix << "]\n";
+      }
+    };
+    const auto emitTail = [&](bool fast) {
+      long long remaining = extent - vectorLimit;
+      for (const long long width : {32LL, 16LL, 8LL, 4LL}) {
+        if (remaining < width) continue;
+        if (fast)
+          emitFastUpdate(width);
+        else
+          emitMaskedUpdate(width);
+        remaining -= width;
+        if (remaining != 0) {
+          os << "  add " << jW << ", " << jW << ", #" << width << '\n';
+        }
+      }
+    };
+    const auto emitClearTail = [&]() {
+      long long remaining = extent - vectorLimit;
+      for (const long long width : {32LL, 16LL, 8LL, 4LL}) {
+        if (remaining < width) continue;
+        emitClear(width);
+        remaining -= width;
+        os << "  add " << jW << ", " << jW << ", #" << width << '\n';
+      }
+    };
+
+    os << "  movi v24.4s, #0\n";
+    emitImmediate(os, jW, 0, ValueType::int32Type());
+    os << "  b " << clearHeader << '\n' << clearBody << ":\n";
+    emitClear(vectorWidth);
+    os << "  add " << jW << ", " << jW << ", #" << vectorWidth << '\n'
+       << clearHeader << ":\n";
+    emitCompareConstant(jW, vectorLimit);
+    os << "  b.lt " << clearBody << '\n';
+    emitClearTail();
+    emitImmediate(os, kW, 0, ValueType::int32Type());
+    os << "  b " << kHeader << '\n' << kBody << ":\n"
+       << "  ldr " << predicateScalar << ", [" << predicateRow << ", "
+       << kX << ", lsl #2]\n";
+    if (parityFastPath)
+      os << "  tst " << predicateScalar << ", #1\n";
+    else
+      os << "  dup v20.4s, " << predicateScalar << '\n';
+    os << "  ldr " << productScalar << ", [" << productRow << ", " << kX
+       << ", lsl #2]\n"
+       << "  dup v21.4s, " << productScalar << '\n';
+    emitImmediate(os, "x18", stride, ValueType::int64Type());
+    os << "  mul x18, " << kX << ", x18\n"
+       << "  add " << firstColumn << ", " << firstBase << ", x18\n"
+       << "  add " << secondColumn << ", " << secondBase << ", x18\n";
+    if (parityFastPath) {
+      os << "  b.ne " << maskedPrepare << '\n';
+      emitImmediate(os, jW, 0, ValueType::int32Type());
+      os << "  b " << fastJHeader << '\n' << fastJBody << ":\n";
+      emitFastUpdate(vectorWidth);
+      os << "  add " << jW << ", " << jW << ", #" << vectorWidth << '\n'
+         << fastJHeader << ":\n";
+      emitCompareConstant(jW, vectorLimit);
+      os << "  b.lt " << fastJBody << '\n';
+      emitTail(true);
+      os << "  b " << kAdvance << '\n' << maskedPrepare << ":\n";
+    }
+    emitImmediate(os, jW, 0, ValueType::int32Type());
+    os << "  b " << maskedJHeader << '\n' << maskedJBody << ":\n";
+    emitMaskedUpdate(vectorWidth);
+    os << "  add " << jW << ", " << jW << ", #" << vectorWidth << '\n'
+       << maskedJHeader << ":\n";
+    emitCompareConstant(jW, vectorLimit);
+    os << "  b.lt " << maskedJBody << '\n';
+    emitTail(false);
+    if (parityFastPath) os << kAdvance << ":\n";
+    os << "  add " << kW << ", " << kW << ", #1\n" << kHeader << ":\n";
+    emitCompareConstant(kW, extent);
+    os << "  b.lt " << kBody << "\n  b " << middleEnd << '\n';
     return;
   }
   if (opcode == "spill.reload" || opcode == "frame.load") {
@@ -2543,11 +1598,19 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     return;
   }
   if (opcode == "aarch64.neon.mls.acc.i32x32" &&
-      instruction.operands.size() == 2) {
+      (instruction.operands.size() == 2 || instruction.operands.size() == 3)) {
     const auto address =
         integerOperand(os, function, instruction.operands[0], kAddrScratch);
     const auto coefficient =
         integerOperand(os, function, instruction.operands[1], kImmScratch);
+    if (instruction.operands.size() == 3 &&
+        instruction.operands[2].kind == MachineOperandKind::ImmediateInt &&
+        std::getenv("COMPILER_DISABLE_AARCH64_ROW_UPDATE_PREFETCH") == nullptr) {
+      const auto stride = instruction.operands[2].intValue;
+      os << "  prfm pldl1keep, [" << address << ", #" << stride << "]\n";
+      os << "  prfm pldl1keep, [" << address << ", #" << stride + 64
+         << "]\n";
+    }
     os << "  dup v29.4s, "
        << integerRegister(coefficient, ValueType::int32Type()) << '\n';
     os << "  ldp q28, q30, [" << address << "]\n";
@@ -2713,41 +1776,49 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  stp q14, q15, [" << row1 << ", #32]\n";
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
-    for (int row = 0; row < 4; ++row) {
-      const auto initial =
-          integerOperand(os, function, instruction.operands[4 + row],
-                         kImmScratch);
-      for (int vector = row * 4; vector < row * 4 + 4; ++vector) {
-        os << "  dup v" << vector << ".4s, "
-           << integerRegister(initial, ValueType::int32Type()) << '\n';
-      }
+  const std::string panelBeginPrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.begin.row";
+  if (opcode.rfind(panelBeginPrefix, 0) == 0 &&
+      opcode.size() == panelBeginPrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto initial =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    for (int vector = row * 2; vector < row * 2 + 2; ++vector) {
+      os << "  dup v" << vector << ".4s, "
+         << integerRegister(initial, ValueType::int32Type()) << '\n';
     }
     return;
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
+  if (opcode == "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load") {
     const auto source =
         integerOperand(os, function, instruction.operands[0], kAddrScratch);
     os << "  ldp q21, q22, [" << source << "]\n";
-    os << "  ldp q23, q24, [" << source << ", #32]\n";
-    for (int row = 0; row < 4; ++row) {
-      const auto coefficient =
-          integerOperand(os, function, instruction.operands[1 + row],
-                         kImmScratch);
-      os << "  dup v20.4s, "
-         << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      for (int vector = 0; vector < 4; ++vector) {
-        os << "  mla v" << row * 4 + vector << ".4s, v"
-           << 21 + vector << ".4s, v20.4s\n";
-      }
+    return;
+  }
+  const std::string panelSharedRowPrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row";
+  if (opcode.rfind(panelSharedRowPrefix, 0) == 0 &&
+      opcode.size() == panelSharedRowPrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto coefficient =
+        integerOperand(os, function, instruction.operands[0], kImmScratch);
+    os << "  dup v20.4s, "
+       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    for (int vector = 0; vector < 2; ++vector) {
+      os << "  mla v" << row * 2 + vector << ".4s, v"
+         << 21 + vector << ".4s, v20.4s\n";
     }
     return;
   }
-  for (int destination = 0; destination < 4; ++destination) {
-    for (int source = 0; source < 4; ++source) {
+  for (int destination = 0; destination < 8; ++destination) {
+    for (int source = 0; source < 8; ++source) {
       const std::string version = source < destination ? "new" : "old";
       const std::string expected =
-          "aarch64.neon.ordered.panel4.i32x16.lazy." + version +
+          "aarch64.neon.ordered.panel8.i32x8.lazy." + version +
           std::to_string(source) + ".to.row" +
           std::to_string(destination);
       const bool useNewValue = source < destination;
@@ -2756,14 +1827,13 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
           instruction.operands.size() != expectedOperands) {
         continue;
       }
-      int sourceFirst = source * 4;
+      int sourceFirst = source * 2;
       std::size_t coefficientIndex = 0;
       if (!useNewValue) {
         const auto sourceAddress =
             integerOperand(os, function, instruction.operands[0],
                            kAddrScratch);
         os << "  ldp q21, q22, [" << sourceAddress << "]\n";
-        os << "  ldp q23, q24, [" << sourceAddress << ", #32]\n";
         sourceFirst = 21;
         coefficientIndex = 1;
       }
@@ -2772,24 +1842,25 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
                          instruction.operands[coefficientIndex], kImmScratch);
       os << "  dup v20.4s, "
          << integerRegister(coefficient, ValueType::int32Type()) << '\n';
-      const int destinationFirst = destination * 4;
-      for (int vector = 0; vector < 4; ++vector) {
+      const int destinationFirst = destination * 2;
+      for (int vector = 0; vector < 2; ++vector) {
         os << "  mla v" << destinationFirst + vector << ".4s, v"
            << sourceFirst + vector << ".4s, v20.4s\n";
       }
       return;
     }
   }
-  if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
-    for (int row = 0; row < 4; ++row) {
-      const auto address =
-          integerOperand(os, function, instruction.operands[row],
-                         kAddrScratch);
-      os << "  stp q" << row * 4 << ", q" << row * 4 + 1 << ", ["
-         << address << "]\n";
-      os << "  stp q" << row * 4 + 2 << ", q" << row * 4 + 3 << ", ["
-         << address << ", #32]\n";
-    }
+  const std::string panelStorePrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.store.row";
+  if (opcode.rfind(panelStorePrefix, 0) == 0 &&
+      opcode.size() == panelStorePrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 1) {
+    const int row = opcode.back() - '0';
+    const auto address =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    os << "  stp q" << row * 2 << ", q" << row * 2 + 1 << ", ["
+       << address << "]\n";
     return;
   }
   if (opcode == "aarch64.neon.square.sum.i32.init" &&
@@ -2818,7 +1889,7 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     return;
   }
   if (opcode ==
-          "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16" &&
+          "aarch64.neon.square.sum.i32.accumulate.panel8.i32x8" &&
       instruction.operands.empty()) {
     for (int vector = 0; vector < 16; ++vector) {
       os << "  mla v" << 16 + (vector & 3) << ".4s, v" << vector
@@ -3074,6 +2145,44 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
   }
   if ((opcode == "madd" || opcode == "msub") &&
       instruction.operands.size() == 3) {
+    if (std::getenv("COMPILER_DISABLE_AARCH64_SHIFTED_MADD") == nullptr) {
+      std::optional<std::size_t> constantIndex;
+      std::uint64_t magnitude = 0;
+      for (std::size_t index = 0; index < 2; ++index) {
+        const auto& operand = instruction.operands[index];
+        if (operand.kind == MachineOperandKind::ImmediateInt &&
+            powerOfTwoMagnitude(operand.intValue, magnitude)) {
+          constantIndex = index;
+          break;
+        }
+      }
+
+      if (constantIndex.has_value()) {
+        const auto type = instruction.result.type;
+        const unsigned width = isNarrow(type) ? 32U : 64U;
+        const unsigned shift = log2PowerOfTwo(magnitude);
+        if (shift < width) {
+          const auto& constant = instruction.operands[*constantIndex];
+          const auto& valueOperand = instruction.operands[1U - *constantIndex];
+          const auto value = integerOperand(os, function, valueOperand,
+                                            kAddrScratch);
+          const auto accumulator = integerOperand(
+              os, function, instruction.operands[2], kHiddenScratch);
+          const auto dst = resultRegister(instruction.result, kImmScratch);
+          const bool subtract =
+              (opcode == "msub") != (constant.intValue < 0);
+          os << "  " << (subtract ? "sub" : "add") << ' '
+             << integerRegister(dst, type) << ", "
+             << integerRegister(accumulator, type) << ", "
+             << integerRegister(value, type);
+          if (shift != 0) os << ", lsl #" << shift;
+          os << '\n';
+          storeResult(os, function, instruction.result, dst);
+          return;
+        }
+      }
+    }
+
     const auto lhs = integerOperand(os, function, instruction.operands[0], kAddrScratch);
     const auto rhs = integerOperand(os, function, instruction.operands[1], kImmScratch);
     const auto accumulator =
@@ -3283,13 +2392,9 @@ std::string AArch64AsmPrinter::print(const MachineModule& module) const {
   os << ".arch armv8-a\n";
   for (const auto& global : module.globals) emitGlobal(os, module, global);
   for (const auto& function : module.functions) emitFunction(os, module, function);
+  emitTailMemoStorage(os, module);
   os << ".section .note.GNU-stack,\"\",%progbits\n";
-  return pairAdjacentStackAccesses(synthesizeConstantMultiplies(vectorizeContiguousConstantFills(
-      memoizePureAdditiveTailLoop(
-          collapsePositivePowerOfTwoSteps(
-              vectorizeConditionalMatrixReduction(
-                  vectorizeGuardedContiguousMadds(
-                      vectorizeContiguousIntegerMadds(os.str()))))))));
+  return os.str();
 }
 
 }  // namespace compiler::backend::asmcode

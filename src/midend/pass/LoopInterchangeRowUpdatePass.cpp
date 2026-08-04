@@ -33,7 +33,31 @@ struct Candidate {
   std::string bound;
   std::string entryPredecessor;
   std::string outerIndex;
+  std::size_t rowStrideBytes = 0;
 };
+
+std::size_t encodableRowStrideBytes(const Function &function,
+                                    const std::string &matrixBase) {
+  for (const auto &parameter : function.parameters()) {
+    if (parameter.name != matrixBase)
+      continue;
+    constexpr const char *prefix = "int[][";
+    if (parameter.type.rfind(prefix, 0) != 0 || parameter.type.back() != ']')
+      return 0;
+    try {
+      const std::size_t columns = std::stoull(
+          parameter.type.substr(6, parameter.type.size() - 7));
+      if (columns == 0 || columns > (32760 - 64) / 4)
+        return 0;
+      const std::size_t bytes = columns * 4;
+      // PRFM (unsigned immediate) encodes an 8-byte scaled 12-bit offset.
+      return bytes % 8 == 0 ? bytes : 0;
+    } catch (...) {
+      return 0;
+    }
+  }
+  return 0;
+}
 
 bool isGep(const Instruction &instruction) {
   return instruction.opcode() == "getelementptr" ||
@@ -345,7 +369,8 @@ std::optional<Candidate> matchHeader(const Function &function,
   return Candidate{header.name(), outerBodyName,    innerHeaderName,
                    innerBodyName, outerLatchName,   exitName,
                    rowBase,       matrixBase,       rowIndex,
-                   bound,         entryPredecessor, j};
+                   bound,         entryPredecessor, j,
+                   encodableRowStrideBytes(function, matrixBase)};
 }
 
 std::unordered_set<std::string> valueNames(const Function &function) {
@@ -540,8 +565,11 @@ void applyVectorCandidate(Function &function, const Candidate &candidate) {
   kBody.addInstruction(
       Instruction{"getelementptr", {candidate.matrixBase, k}, sourceRow});
   kBody.addInstruction(Instruction{"getelementptr", {sourceRow, j}, source});
+  std::vector<std::string> mlsOperands{source, coefficient};
+  if (candidate.rowStrideBytes != 0)
+    mlsOperands.push_back(std::to_string(candidate.rowStrideBytes));
   kBody.addInstruction(
-      Instruction{"aarch64.neon.mls.acc.i32x32", {source, coefficient}});
+      Instruction{"aarch64.neon.mls.acc.i32x32", std::move(mlsOperands)});
   kBody.addInstruction(Instruction{"add", {k, "1"}, kNext});
   kBody.addInstruction(Instruction{"br", {kHeaderName}});
 

@@ -73,6 +73,13 @@ struct FunctionPointerSummary {
   std::vector<ParameterAccess> parameterAccesses;
 };
 
+struct GlobalTransitionSummary {
+  bool valid = true;
+  std::unordered_set<std::string> readGlobals;
+  std::unordered_set<std::string> writtenGlobals;
+  std::vector<std::size_t> callees;
+};
+
 struct CopySeed {
   std::string destination;
   std::string source;
@@ -1015,6 +1022,396 @@ std::string freshName(const Function &function, const std::string &stem) {
   return candidate;
 }
 
+std::vector<GlobalTransitionSummary>
+buildGlobalTransitionSummaries(
+    const Module &module,
+    const std::unordered_map<std::string, std::size_t> &functionIndices) {
+  std::vector<GlobalTransitionSummary> summaries(module.functions().size());
+  for (std::size_t functionIndex = 0;
+       functionIndex < module.functions().size(); ++functionIndex) {
+    const auto &function = module.functions()[functionIndex];
+    auto &summary = summaries[functionIndex];
+    if (function.blocks().empty()) {
+      summary.valid = false;
+      continue;
+    }
+    for (const auto &parameter : function.parameters()) {
+      if (parameter.type != "int" && parameter.type != "float")
+        summary.valid = false;
+    }
+    const auto definitions = buildDefinitions(function);
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.opcode() == "call") {
+          if (instruction.operands().empty()) {
+            summary.valid = false;
+            continue;
+          }
+          const auto callee =
+              functionIndices.find(instruction.operands().front());
+          if (callee == functionIndices.end() ||
+              module.functions()[callee->second].blocks().empty()) {
+            summary.valid = false;
+            continue;
+          }
+          summary.callees.push_back(callee->second);
+          continue;
+        }
+        if (instruction.opcode() != "load" &&
+            instruction.opcode() != "store")
+          continue;
+        if (instruction.operands().empty()) {
+          summary.valid = false;
+          continue;
+        }
+        const auto path =
+            pointerPath(instruction.operands().back(), definitions);
+        if (!path.has_value()) {
+          summary.valid = false;
+          continue;
+        }
+        if (!path->base.empty() && path->base.front() == '@') {
+          if (instruction.opcode() == "load")
+            summary.readGlobals.insert(path->base);
+          else
+            summary.writtenGlobals.insert(path->base);
+          continue;
+        }
+        const auto local = definitions.find(path->base);
+        if (local == definitions.end() ||
+            local->second.instruction->opcode() != "alloca")
+          summary.valid = false;
+      }
+    }
+  }
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t functionIndex = 0;
+         functionIndex < summaries.size(); ++functionIndex) {
+      auto &summary = summaries[functionIndex];
+      if (!summary.valid)
+        continue;
+      for (const auto callee : summary.callees) {
+        if (!summaries[callee].valid) {
+          summary.valid = false;
+          changed = true;
+          break;
+        }
+        for (const auto &global : summaries[callee].readGlobals)
+          changed |= summary.readGlobals.insert(global).second;
+        for (const auto &global : summaries[callee].writtenGlobals)
+          changed |= summary.writtenGlobals.insert(global).second;
+      }
+    }
+  }
+  return summaries;
+}
+
+bool valueDefinedIn(const std::string &value, std::size_t first,
+                    std::size_t second, const DefinitionMap &definitions) {
+  if (value.empty() || value.front() != '%')
+    return false;
+  const auto found = definitions.find(value);
+  return found != definitions.end() &&
+         (found->second.location.block == first ||
+          found->second.location.block == second);
+}
+
+std::string freshValueName(const Function &function, const std::string &stem,
+                           std::unordered_set<std::string> &reserved) {
+  if (reserved.empty()) {
+    for (const auto &parameter : function.parameters())
+      reserved.insert(parameter.name);
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.hasResult())
+          reserved.insert(instruction.result());
+      }
+    }
+  }
+  for (std::size_t suffix = 0;; ++suffix) {
+    const auto candidate = "%" + stem + "." + std::to_string(suffix);
+    if (reserved.insert(candidate).second)
+      return candidate;
+  }
+}
+
+bool collapseFixedStateTransition(
+    Module &module, std::size_t functionIndex,
+    const std::unordered_map<std::string, std::size_t> &functionIndices,
+    const std::vector<GlobalTransitionSummary> &summaries) {
+  auto &function = module.functions()[functionIndex];
+  if (function.blocks().size() < 3)
+    return false;
+  const auto cfg = buildCFG(function);
+  const auto definitions = buildDefinitions(function);
+  std::unordered_map<std::string, std::string> globalTypes;
+  for (const auto &global : module.globals())
+    globalTypes.emplace("@" + global.name(), global.type());
+
+  for (std::size_t headerIndex = 0;
+       headerIndex < function.blocks().size(); ++headerIndex) {
+    const auto &header = function.blocks()[headerIndex];
+    const auto *headerTerminator = header.terminator();
+    if (headerTerminator == nullptr ||
+        headerTerminator->opcode() != "br" ||
+        headerTerminator->operands().size() != 3)
+      continue;
+    const auto condition =
+        definitions.find(headerTerminator->operands().front());
+    if (condition == definitions.end() ||
+        condition->second.location.block != headerIndex ||
+        condition->second.instruction->opcode() != "icmp.sgt" ||
+        condition->second.instruction->operands().size() != 2 ||
+        !isInteger(condition->second.instruction->operands()[1], 0))
+      continue;
+    const auto counter = condition->second.instruction->operands()[0];
+    const auto counterPhi = definitions.find(counter);
+    if (counterPhi == definitions.end() ||
+        counterPhi->second.location.block != headerIndex ||
+        counterPhi->second.instruction->opcode() != "phi" ||
+        counterPhi->second.instruction->operands().size() != 5)
+      continue;
+    const auto bodyFound = cfg.index.find(headerTerminator->operands()[1]);
+    const auto exitFound = cfg.index.find(headerTerminator->operands()[2]);
+    if (bodyFound == cfg.index.end() || exitFound == cfg.index.end() ||
+        bodyFound->second == headerIndex)
+      continue;
+    const auto bodyIndex = bodyFound->second;
+    const auto &body = function.blocks()[bodyIndex];
+    const auto *bodyTerminator = body.terminator();
+    if (bodyTerminator == nullptr || bodyTerminator->opcode() != "br" ||
+        bodyTerminator->operands().size() != 1 ||
+        bodyTerminator->operands()[0] != header.name())
+      continue;
+    if (cfg.predecessors[headerIndex].size() != 2 ||
+        cfg.predecessors[bodyIndex].size() != 1 ||
+        cfg.predecessors[bodyIndex].front() != headerIndex)
+      continue;
+
+    std::size_t backedgeOperand = 0;
+    std::string decrement;
+    std::string preheaderName;
+    const auto &phiOperands = counterPhi->second.instruction->operands();
+    for (std::size_t index = 1; index + 1 < phiOperands.size(); index += 2) {
+      if (phiOperands[index + 1] == body.name()) {
+        backedgeOperand = index;
+        decrement = phiOperands[index];
+      } else {
+        preheaderName = phiOperands[index + 1];
+      }
+    }
+    const auto decrementDefinition = definitions.find(decrement);
+    if (backedgeOperand == 0 || preheaderName.empty() ||
+        decrementDefinition == definitions.end() ||
+        decrementDefinition->second.location.block != bodyIndex ||
+        decrementDefinition->second.instruction->opcode() != "sub" ||
+        decrementDefinition->second.instruction->operands().size() != 2 ||
+        decrementDefinition->second.instruction->operands()[0] != counter ||
+        !isInteger(
+            decrementDefinition->second.instruction->operands()[1], 1))
+      continue;
+
+    bool counterOnlyControlsLoop = true;
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        for (const auto &operand : instruction.operands()) {
+          if (operand == counter &&
+              instruction.result() !=
+                  condition->second.instruction->result() &&
+              instruction.result() != decrement)
+            counterOnlyControlsLoop = false;
+          if (operand == decrement &&
+              instruction.result() != counter)
+            counterOnlyControlsLoop = false;
+        }
+      }
+    }
+    if (!counterOnlyControlsLoop)
+      continue;
+
+    bool otherPhiFeedsBody = false;
+    for (const auto &instruction : header.instructions()) {
+      if (instruction.opcode() != "phi" || instruction.result() == counter)
+        continue;
+      for (const auto &bodyInstruction : body.instructions()) {
+        if (std::find(bodyInstruction.operands().begin(),
+                      bodyInstruction.operands().end(),
+                      instruction.result()) !=
+            bodyInstruction.operands().end())
+          otherPhiFeedsBody = true;
+      }
+    }
+    if (otherPhiFeedsBody)
+      continue;
+
+    std::unordered_set<std::string> reads;
+    std::unordered_set<std::string> writes;
+    std::unordered_set<std::string> resets;
+    bool sawCall = false;
+    bool valid = true;
+    bool leadingResetRegion = true;
+    for (std::size_t instructionIndex = 0;
+         instructionIndex + 1 < body.instructions().size();
+         ++instructionIndex) {
+      const auto &instruction = body.instructions()[instructionIndex];
+      if (instruction.opcode() == "store" && leadingResetRegion) {
+        const auto path =
+            pointerPath(instruction.operands().back(), definitions);
+        if (path.has_value() && path->indices.empty() &&
+            globalTypes.find(path->base) != globalTypes.end() &&
+            globalTypes[path->base] == "int" &&
+            !valueDefinedIn(instruction.operands()[1], headerIndex, bodyIndex,
+                            definitions) &&
+            resets.insert(path->base).second) {
+          writes.insert(path->base);
+          continue;
+        }
+      }
+      leadingResetRegion = false;
+      if (instruction.opcode() == "call") {
+        if (instruction.operands().empty()) {
+          valid = false;
+          break;
+        }
+        const auto callee =
+            functionIndices.find(instruction.operands().front());
+        if (callee == functionIndices.end() ||
+            !summaries[callee->second].valid) {
+          valid = false;
+          break;
+        }
+        sawCall = true;
+        reads.insert(summaries[callee->second].readGlobals.begin(),
+                     summaries[callee->second].readGlobals.end());
+        writes.insert(summaries[callee->second].writtenGlobals.begin(),
+                      summaries[callee->second].writtenGlobals.end());
+        continue;
+      }
+      if (instruction.opcode() == "load" ||
+          instruction.opcode() == "store") {
+        const auto path =
+            pointerPath(instruction.operands().back(), definitions);
+        if (!path.has_value()) {
+          valid = false;
+          break;
+        }
+        if (!path->base.empty() && path->base.front() == '@') {
+          if (instruction.opcode() == "load")
+            reads.insert(path->base);
+          else
+            writes.insert(path->base);
+        } else {
+          const auto local = definitions.find(path->base);
+          if (local == definitions.end() ||
+              local->second.instruction->opcode() != "alloca") {
+            valid = false;
+            break;
+          }
+        }
+      }
+    }
+    if (!valid || !sawCall || writes.empty())
+      continue;
+
+    std::vector<std::string> stateGlobals;
+    for (const auto &global : writes) {
+      if (reads.find(global) == reads.end() ||
+          resets.find(global) != resets.end())
+        continue;
+      const auto type = globalTypes.find(global);
+      if (type == globalTypes.end() || type->second != "int") {
+        valid = false;
+        break;
+      }
+      stateGlobals.push_back(global);
+    }
+    if (!valid)
+      continue;
+
+    for (const auto &global : writes) {
+      if (reads.find(global) == reads.end())
+        continue;
+      const auto type = globalTypes.find(global);
+      if (type == globalTypes.end()) {
+        valid = false;
+        break;
+      }
+      if (type->second != "int" &&
+          resets.find(global) == resets.end()) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid)
+      continue;
+
+    std::sort(stateGlobals.begin(), stateGlobals.end());
+    std::unordered_set<std::string> reserved;
+    std::vector<std::pair<std::string, std::string>> entryValues;
+    auto &mutableBody = function.blocks()[bodyIndex];
+    std::vector<Instruction> rewrittenBody;
+    rewrittenBody.reserve(mutableBody.instructions().size() +
+                          stateGlobals.size() * 3 + 2);
+    for (const auto &global : stateGlobals) {
+      const auto entryValue =
+          freshValueName(function, "state.memo.entry", reserved);
+      rewrittenBody.emplace_back(
+          "load", std::vector<std::string>{"int", global}, entryValue);
+      entryValues.emplace_back(global, entryValue);
+    }
+    for (std::size_t index = 0;
+         index + 1 < mutableBody.instructions().size(); ++index)
+      rewrittenBody.push_back(mutableBody.instructions()[index]);
+
+    std::string fixedCondition = "1";
+    for (std::size_t index = 0; index < entryValues.size(); ++index) {
+      const auto exitValue =
+          freshValueName(function, "state.memo.exit", reserved);
+      const auto equal =
+          freshValueName(function, "state.memo.equal", reserved);
+      rewrittenBody.emplace_back(
+          "load",
+          std::vector<std::string>{"int", entryValues[index].first},
+          exitValue);
+      rewrittenBody.emplace_back(
+          "icmp.eq",
+          std::vector<std::string>{entryValues[index].second, exitValue},
+          equal);
+      if (index == 0) {
+        fixedCondition = equal;
+      } else {
+        const auto combined =
+            freshValueName(function, "state.memo.all.equal", reserved);
+        rewrittenBody.emplace_back(
+            "and", std::vector<std::string>{fixedCondition, equal}, combined);
+        fixedCondition = combined;
+      }
+    }
+    const auto nextCounter =
+        freshValueName(function, "state.memo.remaining", reserved);
+    rewrittenBody.emplace_back(
+        "select", std::vector<std::string>{fixedCondition, "0", decrement},
+        nextCounter);
+    rewrittenBody.push_back(mutableBody.instructions().back());
+    mutableBody.instructions() = std::move(rewrittenBody);
+
+    auto phi = *counterPhi->second.instruction;
+    auto rewrittenPhiOperands = phi.operands();
+    rewrittenPhiOperands[backedgeOperand] = nextCounter;
+    auto &mutableHeader = function.blocks()[headerIndex];
+    mutableHeader.instructions()[counterPhi->second.location.instruction] =
+        Instruction{"phi", std::move(rewrittenPhiOperands), counter};
+    module.addPassNote(
+        "memoized a deterministic repeated state transition and stopped at "
+        "its dynamically proven fixed point");
+    return true;
+  }
+  return false;
+}
+
 bool collapseToAtMostOne(Function &function, const Candidate &candidate) {
   auto &header = function.blocks()[candidate.loop.header];
   auto conditionIndex = header.instructions().size();
@@ -1070,13 +1467,22 @@ void IdempotentIterationCollapsePass::run(Module &module) {
   summaries.reserve(module.functions().size());
   for (const auto &function : module.functions())
     summaries.push_back(summarizeLeafFunction(function));
+  const auto transitionSummaries =
+      buildGlobalTransitionSummaries(module, functionIndices);
 
   std::size_t writeOnly = 0;
   std::size_t seededCalls = 0;
+  std::size_t fixedStateTransitions = 0;
   std::size_t canonical = 0;
   std::size_t controlOnly = 0;
   for (std::size_t functionIndex = 0; functionIndex < module.functions().size();
        ++functionIndex) {
+    if (std::getenv(
+            "COMPILER_DISABLE_FIXED_STATE_TRANSITION_MEMOIZATION") ==
+            nullptr &&
+        collapseFixedStateTransition(module, functionIndex, functionIndices,
+                                     transitionSummaries))
+      ++fixedStateTransitions;
     auto &function = module.functions()[functionIndex];
     bool changed = true;
     while (changed) {
@@ -1117,7 +1523,9 @@ void IdempotentIterationCollapsePass::run(Module &module) {
   }
   if (std::getenv("COMPILER_IDEMPOTENT_ITERATION_COLLAPSE_STATS") != nullptr) {
     std::cerr << "idempotent-iteration-collapse: write_only=" << writeOnly
-              << " seeded_calls=" << seededCalls << " canonical=" << canonical
+              << " seeded_calls=" << seededCalls
+              << " fixed_state=" << fixedStateTransitions
+              << " canonical=" << canonical
               << " control_only=" << controlOnly << '\n';
   }
 }
