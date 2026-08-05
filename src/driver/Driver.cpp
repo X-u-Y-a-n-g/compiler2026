@@ -70,6 +70,7 @@
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
 #include "../../include/compiler/midend/pass/StackAggregateInitPruningPass.h"
+#include "../../include/compiler/midend/pass/UniformInitializedStencilElisionPass.h"
 #include "../../include/compiler/midend/pass/TailRecursionEliminationPass.h"
 #include "../../include/compiler/midend/pass/TriangularTransposeShadowPass.h"
 #include "../../include/compiler/midend/pass/TrivialBlockEliminationPass.h"
@@ -385,6 +386,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
             nullptr) {
       passManager.add(std::make_unique<
                       compiler::midend::pass::RecursiveCallSpecializationPass>());
+    }
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::UniformInitializedStencilElisionPass>());
     }
     if (invocation.options().target == "aarch64" ||
         invocation.options().target == "arm64") {
