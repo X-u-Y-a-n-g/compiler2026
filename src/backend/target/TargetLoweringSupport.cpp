@@ -549,9 +549,22 @@ class FunctionLoweringContext {
     }
 
     if (opcode.rfind(
-            "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row", 0) == 0) {
+            "aarch64.neon.ordered.panel8.i32x8.lazy.coefficient.row", 0) ==
+        0) {
       emit(block, opcode, {},
-           {lowerValueOperand(operands[0], ValueType::int32Type())});
+           {lowerValueOperand(operands[0]),
+            lowerValueOperand(operands[1], ValueType::int32Type())});
+      return;
+    }
+
+    if (opcode.rfind(
+            "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row", 0) == 0) {
+      if (operands.empty()) {
+        emit(block, opcode, {}, {});
+      } else {
+        emit(block, opcode, {},
+             {lowerValueOperand(operands[0], ValueType::int32Type())});
+      }
       return;
     }
 

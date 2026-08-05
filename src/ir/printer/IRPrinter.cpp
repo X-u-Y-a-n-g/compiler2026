@@ -666,8 +666,14 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     return os.str();
   }
   if (opcode.rfind(
+          "aarch64.neon.ordered.panel8.i32x8.lazy.coefficient.row", 0) == 0) {
+    os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
+  if (opcode.rfind(
           "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row", 0) == 0) {
-    os << opcode << " i32 " << operands[0];
+    os << opcode;
+    if (!operands.empty()) os << " i32 " << operands[0];
     return os.str();
   }
   if (opcode.rfind(

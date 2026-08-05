@@ -1797,20 +1797,42 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     os << "  ldp q21, q22, [" << source << "]\n";
     return;
   }
+  const std::string panelCoefficientPrefix =
+      "aarch64.neon.ordered.panel8.i32x8.lazy.coefficient.row";
+  if (opcode.rfind(panelCoefficientPrefix, 0) == 0 &&
+      opcode.size() == panelCoefficientPrefix.size() + 1 &&
+      opcode.back() >= '0' && opcode.back() <= '7' &&
+      instruction.operands.size() == 2) {
+    const int row = opcode.back() - '0';
+    const auto base =
+        integerOperand(os, function, instruction.operands[0], kAddrScratch);
+    const auto index =
+        integerOperand(os, function, instruction.operands[1], kImmScratch);
+    os << "  ldr s" << 23 + row << ", [" << base << ", "
+       << integerRegister(index, ValueType::int32Type()) << ", sxtw #2]\n";
+    return;
+  }
   const std::string panelSharedRowPrefix =
       "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row";
   if (opcode.rfind(panelSharedRowPrefix, 0) == 0 &&
       opcode.size() == panelSharedRowPrefix.size() + 1 &&
       opcode.back() >= '0' && opcode.back() <= '7' &&
-      instruction.operands.size() == 1) {
+      instruction.operands.size() <= 1) {
     const int row = opcode.back() - '0';
-    const auto coefficient =
-        integerOperand(os, function, instruction.operands[0], kImmScratch);
-    os << "  dup v20.4s, "
-       << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    if (!instruction.operands.empty()) {
+      const auto coefficient =
+          integerOperand(os, function, instruction.operands[0], kImmScratch);
+      os << "  dup v20.4s, "
+         << integerRegister(coefficient, ValueType::int32Type()) << '\n';
+    }
     for (int vector = 0; vector < 2; ++vector) {
       os << "  mla v" << row * 2 + vector << ".4s, v"
-         << 21 + vector << ".4s, v20.4s\n";
+         << 21 + vector << ".4s, ";
+      if (instruction.operands.empty()) {
+        os << "v" << 23 + row << ".s[0]\n";
+      } else {
+        os << "v20.4s\n";
+      }
     }
     return;
   }

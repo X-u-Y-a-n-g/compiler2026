@@ -1765,6 +1765,9 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
         value("high.coefficient" + index + ".address");
     highCoefficient[row] = value("high.coefficient" + index);
   }
+  const bool useIndexedLaneCoefficients =
+      std::getenv("COMPILER_DISABLE_AARCH64_INDEXED_LANE_COEFFICIENTS") ==
+      nullptr;
   const auto nextRow = value("row.next");
 
   std::array<std::array<std::string, 8>, 8> dependencyGuards;
@@ -1911,12 +1914,19 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   prefixBody.addInstruction(Instruction{
       "getelementptr", {prefixSourceRow, column}, prefixSource});
   for (int row = 0; row < 8; ++row) {
-    prefixBody.addInstruction(Instruction{
-        "getelementptr", {coefficientRows[row], prefixK},
-        prefixCoefficientAddress[row]});
-    prefixBody.addInstruction(Instruction{
-        "load", {"int", prefixCoefficientAddress[row]},
-        prefixCoefficient[row]});
+    if (useIndexedLaneCoefficients) {
+      prefixBody.addInstruction(Instruction{
+          "aarch64.neon.ordered.panel8.i32x8.lazy.coefficient.row" +
+              std::to_string(row),
+          {coefficientRows[row], prefixK}});
+    } else {
+      prefixBody.addInstruction(Instruction{
+          "getelementptr", {coefficientRows[row], prefixK},
+          prefixCoefficientAddress[row]});
+      prefixBody.addInstruction(Instruction{
+          "load", {"int", prefixCoefficientAddress[row]},
+          prefixCoefficient[row]});
+    }
   }
   prefixBody.addInstruction(Instruction{
       "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load", {prefixSource}});
@@ -1924,7 +1934,9 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
     prefixBody.addInstruction(Instruction{
         "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row" +
             std::to_string(row),
-        {prefixCoefficient[row]}});
+        useIndexedLaneCoefficients
+            ? std::vector<std::string>{}
+            : std::vector<std::string>{prefixCoefficient[row]}});
   }
   prefixBody.addInstruction(
       Instruction{"add", {prefixK, "1"}, prefixNextK});
@@ -1948,11 +1960,19 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
   highBody.addInstruction(
       Instruction{"getelementptr", {highSourceRow, column}, highSource});
   for (int row = 0; row < 8; ++row) {
-    highBody.addInstruction(Instruction{
-        "getelementptr", {coefficientRows[row], highK},
-        highCoefficientAddress[row]});
-    highBody.addInstruction(Instruction{
-        "load", {"int", highCoefficientAddress[row]}, highCoefficient[row]});
+    if (useIndexedLaneCoefficients) {
+      highBody.addInstruction(Instruction{
+          "aarch64.neon.ordered.panel8.i32x8.lazy.coefficient.row" +
+              std::to_string(row),
+          {coefficientRows[row], highK}});
+    } else {
+      highBody.addInstruction(Instruction{
+          "getelementptr", {coefficientRows[row], highK},
+          highCoefficientAddress[row]});
+      highBody.addInstruction(Instruction{
+          "load", {"int", highCoefficientAddress[row]},
+          highCoefficient[row]});
+    }
   }
   highBody.addInstruction(Instruction{
       "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load", {highSource}});
@@ -1960,7 +1980,9 @@ bool buildOrderedEightRowPanel8Lazy(Function &function,
     highBody.addInstruction(Instruction{
         "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row" +
             std::to_string(row),
-        {highCoefficient[row]}});
+        useIndexedLaneCoefficients
+            ? std::vector<std::string>{}
+            : std::vector<std::string>{highCoefficient[row]}});
   }
   highBody.addInstruction(Instruction{"add", {highK, "1"}, highNextK});
   highBody.addInstruction(Instruction{"br", {highHeaderName}});
