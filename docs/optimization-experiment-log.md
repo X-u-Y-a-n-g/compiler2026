@@ -1,7 +1,7 @@
 # 优化实验与消融记录
 
-> 最后更新：2026-08-03
-> 本轮对比基线：`zct-arm-no-magic` / `3a921cf`
+> 最后更新：2026-08-05
+> 本轮对比基线：`zct-arm-no-magic` / `dbe4650`
 > README 只描述当前能力；已撤销的专项方案仅在本文 E 类中留档。
 
 ## 1. 目的和判定规则
@@ -2491,7 +2491,7 @@ cycle-leader 恒等条件、CFG/SSA 改写、匿名正反例、60/140 门禁、�
 specialization、dead-call elimination、runtime loop versioning 与 partition
 degeneracy bypass；未复制外部编译器实现。
 
-## 2026-08-05 二次幂递归分区的公共前缀摘要与非负专用版本（待平台判定）
+## 2026-08-05 二次幂递归分区的公共前缀摘要与非负专用版本（平台确认有效）
 
 - 通用变换：在既有完整 histogram、前缀边界、cycle-leader 分区、唯一递归 fanout
   和无外部副作用证明之上，进一步识别由中端规范化生成的二次幂 digit 语义。桶数
@@ -2521,10 +2521,51 @@ degeneracy bypass；未复制外部编译器实现。
   `0.230028→0.190040s`，下降约 `17.4%`。完整门禁单轮合计为 `0.190478s`。
   每项静态汇编指令约由 `465` 增至 `845`；热执行只进入非负专用版本，但仍存在
   Cortex-A53 I-cache 和布局风险，本地 QEMU 不能替代正式平台结论。
-- 状态：D。本地语义、fallback、隔离、正确性和性能门禁已完成，推送后由官方
-  Cortex-A53 判定；若无稳定改善或出现回归则独立撤回本候选。
+- 官方 Cortex-A53：提交 `dbe4650` 的 `03_sort1/2/3` 为
+  `0.47/0.02/0.05s`，相对父候选约 `0.58/0.02/0.07s`，其中 sort1 下降约
+  `19.0%`、sort3 下降约 `28.6%`，三项均通过。
+- 状态：A。正式平台确认公共前缀跳过与非负专用版本整体有效，保留。
 
 本候选由 AI 辅助完成 common-prefix 语义证明、二次幂 digit 规范式识别、外部调用点
 CFG 版本化、非负递归版本生成、匿名边界测试、60/140 门禁与汇编隔离。技术依据为
 radix trie 的公共前缀跳过、runtime loop versioning、function specialization 和
 value-range propagation；未复制外部编译器实现。
+
+## 2026-08-05 cycle-leader 当前桶游标的条件不别名标量驻留（待平台判定）
+
+- 通用变换：在已经证明完整 histogram、前缀边界、cycle-leader 原地分区、局部
+  head/tail 数组不逃逸和非负 digit 专用版本的基础上，识别“当前桶游标与被置换桶
+  游标”两类索引。内层分支的真实谓词必须证明 `displaced_bucket != current_bucket`；
+  因而内层对 `head[displaced_bucket]` 的动态更新不可能覆盖
+  `head[current_bucket]`。编译器在每个桶入口只加载一次当前 head/tail，以 SSA Phi
+  维护 current head，并在该桶结束时统一写回一次。被置换桶仍按原顺序逐次 load/store，
+  数组元素的 cycle-leader 交换顺序和 i32 语义不变。
+- 完整性与成本门槛：要求当前桶循环具有唯一入口、内层回边和桶退出，当前 head
+  恰有一次单位递增写入，被置换 head 恰有一次按 selector 的单位递增写入；region
+  中不得有调用、tail 写入或其他 head 写入。零趟桶由外层范围分支直接跳过，不提前
+  访问数组。优化只应用于多层非负递归主版本；最终 `state=0` 终止版本保持父版本
+  汇编逐字一致，避免延长活跃区间导致栈帧扩大并破坏已有连续零初始化合并。独立
+  消融开关为 `COMPILER_DISABLE_CYCLE_BUCKET_SCALAR_RESIDENCY=1`。
+- 匿名验证：8 桶、参数顺序变化的递归分区回归在开启/关闭候选时输出一致，并覆盖
+  空区间、非整桶规模和 i32 checksum 回绕。结构匹配只使用 IR 指令、CFG、SSA、
+  局部对象身份、逃逸/效果和分支建立的索引不等事实，不读取路径、样例/函数/变量/
+  基本块名文本、固定桶数、公开输入或输出。
+- 静态热路径：非负主版本中，原来每个当前桶元素都会重新物化
+  `head[current]`/`tail[current]` 地址，在条件、最终交换和 head 自增处执行多次
+  load/store；候选把条件压缩为寄存器 compare，把最终交换改为 resident head 地址，
+  并将当前 head 的逐元素回写改为每桶一次。被置换 head 的同址二次 load 也由已证明
+  不逃逸的局部数组首次 load 转发。终止版本的 177 行函数体及其 load/store 数量与
+  关闭版完全一致。
+- 门禁与隔离：Docker `compiler-impl2026-dev` 中使用 `/workspace/build/compiler`。
+  AArch64 correctness `140/140 AC`；performance 为 `57 AC + 3` 个父提交既有且汇编
+  未变化的 h-4 末尾格式例外。启用/关闭的 60 份最终汇编仅 `03_sort1/2/3` 三项变化，
+  每项总行数 `1078→1077`，其余 57 项逐字一致。最终单次 QEMU 三项合计
+  `0.192170→0.193940s`，约 `0.9%` 反向波动；该结果不足以否定确定减少的 A53 热循环
+  访存，亦不作为正式提速结论。
+- 状态：D。本地语义、fallback、60/140 门禁和全量汇编归因已完成；推送后由官方
+  Cortex-A53 判定。若 sort 总体无明确改善或发生退化，则独立回退本候选。
+
+本候选由 AI 辅助完成 cycle-leader CFG/SSA 热点定位、索引不等与局部对象不别名证明、
+延迟写回改写、寄存器压力/终止版本成本隔离、匿名对拍、60/140 门禁和汇编归因。
+技术依据为经典 scalar replacement、loop-carried SSA promotion 与 conditional
+no-alias analysis；未复制外部编译器实现。

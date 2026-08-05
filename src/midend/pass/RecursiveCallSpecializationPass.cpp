@@ -1746,6 +1746,468 @@ bool rewriteNonnegativeDigitSelectors(Function& function, const std::string& arr
   return true;
 }
 
+struct CycleBucketResidencyRegion {
+  std::string outerHeader;
+  std::string condition;
+  std::string body;
+  std::string innerCondition;
+  std::string innerBody;
+  std::string innerExit;
+  std::string bucketExit;
+  std::string outerIndexSlot;
+  std::string currentValue;
+  std::string selector;
+  std::string currentHeadStoreValue;
+};
+
+bool isLoadFromSlot(const std::string &value, const std::string &slot,
+                    const DefinitionMap &defs) {
+  const auto found = defs.find(value);
+  return found != defs.end() && found->second->opcode() == "load" &&
+         found->second->operands().size() == 2 &&
+         found->second->operands()[1] == slot;
+}
+
+std::optional<CycleBucketResidencyRegion>
+findCycleBucketResidencyRegion(const Function &function,
+                               const UniformPartitionCandidate &candidate) {
+  const auto defs = definitions(function);
+  for (const auto &condition : function.blocks()) {
+    const auto *terminator = condition.terminator();
+    if (terminator == nullptr || terminator->opcode() != "br" ||
+        terminator->operands().size() != 3) {
+      continue;
+    }
+    const auto compare = defs.find(terminator->operands()[0]);
+    if (compare == defs.end() || compare->second->opcode() != "icmp.slt" ||
+        compare->second->operands().size() != 2) {
+      continue;
+    }
+    const auto head = loadedAccess(compare->second->operands()[0], defs);
+    const auto tail = loadedAccess(compare->second->operands()[1], defs);
+    if (!head.has_value() || !tail.has_value() ||
+        head->root != candidate.headAlloca ||
+        tail->root != candidate.tailAlloca ||
+        !loadsSameAddress(head->index, tail->index, defs)) {
+      continue;
+    }
+    const auto currentIndex = defs.find(head->index);
+    if (currentIndex == defs.end() ||
+        currentIndex->second->opcode() != "load" ||
+        currentIndex->second->operands().size() != 2) {
+      continue;
+    }
+    const auto &outerIndexSlot = currentIndex->second->operands()[1];
+    const auto *body = findBlock(function, terminator->operands()[1]);
+    const auto *bucketExit = findBlock(function, terminator->operands()[2]);
+    if (body == nullptr || bucketExit == nullptr ||
+        body->terminator() == nullptr || body->terminator()->opcode() != "br" ||
+        body->terminator()->operands().size() != 1 ||
+        bucketExit->terminator() == nullptr ||
+        bucketExit->terminator()->opcode() != "br" ||
+        bucketExit->terminator()->operands().size() != 1) {
+      continue;
+    }
+    const auto *innerCondition =
+        findBlock(function, body->terminator()->operands()[0]);
+    if (innerCondition == nullptr || innerCondition->terminator() == nullptr ||
+        innerCondition->terminator()->opcode() != "br" ||
+        innerCondition->terminator()->operands().size() != 3) {
+      continue;
+    }
+    const auto innerCompare =
+        defs.find(innerCondition->terminator()->operands()[0]);
+    if (innerCompare == defs.end() ||
+        (innerCompare->second->opcode() != "icmp.ne" &&
+         innerCompare->second->opcode() != "icmp.eq") ||
+        innerCompare->second->operands().size() != 2) {
+      continue;
+    }
+    std::string selector;
+    for (int side = 0; side < 2; ++side) {
+      if (innerCompare->second->operands()[side] == head->index ||
+          isLoadFromSlot(innerCompare->second->operands()[side], outerIndexSlot,
+                         defs)) {
+        selector = innerCompare->second->operands()[1 - side];
+      }
+    }
+    if (selector.empty())
+      continue;
+    const bool bodyWhenTrue = innerCompare->second->opcode() == "icmp.ne";
+    const auto *innerBody = findBlock(
+        function,
+        innerCondition->terminator()->operands()[bodyWhenTrue ? 1 : 2]);
+    const auto *innerExit = findBlock(
+        function,
+        innerCondition->terminator()->operands()[bodyWhenTrue ? 2 : 1]);
+    if (innerBody == nullptr || innerExit == nullptr ||
+        innerBody->terminator() == nullptr ||
+        innerExit->terminator() == nullptr ||
+        innerBody->terminator()->opcode() != "br" ||
+        innerExit->terminator()->opcode() != "br" ||
+        innerBody->terminator()->operands() !=
+            std::vector<std::string>{innerCondition->name()} ||
+        innerExit->terminator()->operands() !=
+            std::vector<std::string>{condition.name()}) {
+      continue;
+    }
+
+    std::string initialValue;
+    for (const auto &instruction : body->instructions()) {
+      if (instruction.opcode() != "load" || instruction.operands().size() != 2)
+        continue;
+      const auto access = loadedAccess(instruction.result(), defs);
+      if (!access.has_value() || access->root != candidate.arrayParameter)
+        continue;
+      const auto source = loadedAccess(access->index, defs);
+      if (source.has_value() && source->root == candidate.headAlloca &&
+          isLoadFromSlot(source->index, outerIndexSlot, defs)) {
+        initialValue = instruction.result();
+      }
+    }
+    if (initialValue.empty())
+      continue;
+
+    std::string currentValue;
+    for (const auto &instruction : innerCondition->instructions()) {
+      if (instruction.opcode() != "phi")
+        continue;
+      bool fromBody = false;
+      bool fromInnerBody = false;
+      for (std::size_t index = 1; index + 1 < instruction.operands().size();
+           index += 2) {
+        fromBody |= instruction.operands()[index] == initialValue &&
+                    instruction.operands()[index + 1] == body->name();
+        fromInnerBody |= instruction.operands()[index + 1] == innerBody->name();
+      }
+      if (fromBody && fromInnerBody)
+        currentValue = instruction.result();
+    }
+    if (currentValue.empty())
+      continue;
+    std::unordered_set<std::string> selectorLeaves;
+    std::unordered_set<std::string> selectorVisiting;
+    collectExpressionLeaves(selector, defs, selectorLeaves, selectorVisiting);
+    if (selectorLeaves.find(currentValue) == selectorLeaves.end())
+      continue;
+
+    bool dynamicIncrement = false;
+    bool displacedStore = false;
+    for (const auto &instruction : innerBody->instructions()) {
+      if (!isStore(instruction))
+        continue;
+      const auto target = accessFor(storeAddress(instruction), defs);
+      if (!target.has_value())
+        continue;
+      dynamicIncrement |= target->root == candidate.headAlloca &&
+                          target->index == selector &&
+                          isAddOneFromAddress(storeValue(instruction),
+                                              storeAddress(instruction), defs);
+      displacedStore |= target->root == candidate.arrayParameter &&
+                        storeValue(instruction) == currentValue;
+    }
+    if (!dynamicIncrement || !displacedStore)
+      continue;
+
+    bool finalStore = false;
+    std::string currentHeadStoreValue;
+    for (const auto &instruction : innerExit->instructions()) {
+      if (!isStore(instruction))
+        continue;
+      const auto target = accessFor(storeAddress(instruction), defs);
+      if (!target.has_value())
+        continue;
+      if (target->root == candidate.arrayParameter &&
+          storeValue(instruction) == currentValue) {
+        const auto indexAccess = loadedAccess(target->index, defs);
+        finalStore |= indexAccess.has_value() &&
+                      indexAccess->root == candidate.headAlloca &&
+                      isLoadFromSlot(indexAccess->index, outerIndexSlot, defs);
+      }
+      if (target->root == candidate.headAlloca &&
+          isLoadFromSlot(target->index, outerIndexSlot, defs) &&
+          isAddOneFromAddress(storeValue(instruction),
+                              storeAddress(instruction), defs)) {
+        currentHeadStoreValue = storeValue(instruction);
+      }
+    }
+    if (!finalStore || currentHeadStoreValue.empty())
+      continue;
+
+    bool outerIncrement = false;
+    for (const auto &instruction : bucketExit->instructions()) {
+      outerIncrement |=
+          isStore(instruction) && storeAddress(instruction) == outerIndexSlot &&
+          isAddOneFromAddress(storeValue(instruction), outerIndexSlot, defs);
+    }
+    if (!outerIncrement)
+      continue;
+
+    std::size_t currentHeadStores = 0;
+    std::size_t displacedHeadStores = 0;
+    bool regionEffectsValid = true;
+    const std::unordered_set<std::string> cycleBlocks{
+        condition.name(),  body->name(),      innerCondition->name(),
+        innerBody->name(), innerExit->name(), bucketExit->name()};
+    for (const auto &cycleBlock : function.blocks()) {
+      if (cycleBlocks.find(cycleBlock.name()) == cycleBlocks.end())
+        continue;
+      for (const auto &instruction : cycleBlock.instructions()) {
+        if (instruction.opcode() == "call") {
+          regionEffectsValid = false;
+          continue;
+        }
+        if (!isStore(instruction))
+          continue;
+        const auto target = accessFor(storeAddress(instruction), defs);
+        if (!target.has_value())
+          continue;
+        if (target->root == candidate.tailAlloca) {
+          regionEffectsValid = false;
+          continue;
+        }
+        if (target->root != candidate.headAlloca)
+          continue;
+        if (isLoadFromSlot(target->index, outerIndexSlot, defs)) {
+          ++currentHeadStores;
+          regionEffectsValid &=
+              cycleBlock.name() == innerExit->name() &&
+              storeValue(instruction) == currentHeadStoreValue;
+        } else if (target->index == selector) {
+          ++displacedHeadStores;
+          regionEffectsValid &=
+              cycleBlock.name() == innerBody->name() &&
+              isAddOneFromAddress(storeValue(instruction),
+                                  storeAddress(instruction), defs);
+        } else {
+          regionEffectsValid = false;
+        }
+      }
+    }
+    if (!regionEffectsValid || currentHeadStores != 1 ||
+        displacedHeadStores != 1)
+      continue;
+
+    std::vector<std::string> predecessors;
+    for (const auto &predecessor : function.blocks()) {
+      const auto *predecessorTerminator = predecessor.terminator();
+      if (predecessorTerminator == nullptr ||
+          predecessorTerminator->opcode() != "br")
+        continue;
+      for (std::size_t index = 1;
+           index < predecessorTerminator->operands().size(); ++index) {
+        if (predecessorTerminator->operands()[index] == condition.name()) {
+          predecessors.push_back(predecessor.name());
+        }
+      }
+      if (predecessorTerminator->operands().size() == 1 &&
+          predecessorTerminator->operands()[0] == condition.name()) {
+        predecessors.push_back(predecessor.name());
+      }
+    }
+    std::sort(predecessors.begin(), predecessors.end());
+    predecessors.erase(std::unique(predecessors.begin(), predecessors.end()),
+                       predecessors.end());
+    if (predecessors.size() != 2 ||
+        std::find(predecessors.begin(), predecessors.end(),
+                  innerExit->name()) == predecessors.end()) {
+      continue;
+    }
+    const auto &outerHeader = predecessors[0] == innerExit->name()
+                                  ? predecessors[1]
+                                  : predecessors[0];
+    return CycleBucketResidencyRegion{
+        outerHeader,          condition.name(),
+        body->name(),         innerCondition->name(),
+        innerBody->name(),    innerExit->name(),
+        bucketExit->name(),   outerIndexSlot,
+        currentValue,         selector,
+        currentHeadStoreValue};
+  }
+  return std::nullopt;
+}
+
+bool promoteCycleBucketCursor(Function &function,
+                              const UniformPartitionCandidate &candidate) {
+  if (std::getenv("COMPILER_DISABLE_CYCLE_BUCKET_SCALAR_RESIDENCY") !=
+      nullptr) {
+    return false;
+  }
+  const auto region = findCycleBucketResidencyRegion(function, candidate);
+  if (!region.has_value())
+    return false;
+  auto valueNames = collectValueNames(function);
+  auto blockNames = collectBlockNames(function);
+  const auto initName = freshBlock(blockNames, "cycle.bucket.init");
+  const auto currentBucket = freshValue(valueNames, "cycle.bucket.index");
+  const auto headAddress = freshValue(valueNames, "cycle.bucket.head.address");
+  const auto initialHead = freshValue(valueNames, "cycle.bucket.head.initial");
+  const auto tailAddress = freshValue(valueNames, "cycle.bucket.tail.address");
+  const auto currentTail = freshValue(valueNames, "cycle.bucket.tail");
+  const auto currentHead = freshValue(valueNames, "cycle.bucket.head");
+
+  auto outerHeader =
+      std::find_if(function.blocks().begin(), function.blocks().end(),
+                   [&](const BasicBlock &block) {
+                     return block.name() == region->outerHeader;
+                   });
+  auto condition =
+      std::find_if(function.blocks().begin(), function.blocks().end(),
+                   [&](const BasicBlock &block) {
+                     return block.name() == region->condition;
+                   });
+  auto innerExit =
+      std::find_if(function.blocks().begin(), function.blocks().end(),
+                   [&](const BasicBlock &block) {
+                     return block.name() == region->innerExit;
+                   });
+  auto bucketExit =
+      std::find_if(function.blocks().begin(), function.blocks().end(),
+                   [&](const BasicBlock &block) {
+                     return block.name() == region->bucketExit;
+                   });
+  if (outerHeader == function.blocks().end() ||
+      condition == function.blocks().end() ||
+      innerExit == function.blocks().end() ||
+      bucketExit == function.blocks().end()) {
+    return false;
+  }
+
+  auto outerOperands = outerHeader->terminator()->operands();
+  bool redirected = false;
+  for (auto &operand : outerOperands) {
+    if (operand == region->condition) {
+      operand = initName;
+      redirected = true;
+    }
+  }
+  if (!redirected)
+    return false;
+  outerHeader->instructions().back() =
+      Instruction{"br", std::move(outerOperands),
+                  outerHeader->instructions().back().result()};
+
+  BasicBlock init{initName};
+  init.addInstruction(
+      Instruction{"load", {"int", region->outerIndexSlot}, currentBucket});
+  init.addInstruction(Instruction{
+      "getelementptr", {candidate.headAlloca, currentBucket}, headAddress});
+  init.addInstruction(Instruction{"load", {"int", headAddress}, initialHead});
+  init.addInstruction(Instruction{
+      "getelementptr", {candidate.tailAlloca, currentBucket}, tailAddress});
+  init.addInstruction(Instruction{"load", {"int", tailAddress}, currentTail});
+  init.addInstruction(Instruction{"br", {region->condition}});
+
+  condition = function.blocks().insert(condition, std::move(init));
+  ++condition;
+  condition->instructions().insert(
+      condition->instructions().begin(),
+      Instruction{"phi",
+                  {"int", initialHead, initName, region->currentHeadStoreValue,
+                   region->innerExit},
+                  currentHead});
+
+  const auto defs = definitions(function);
+
+  const std::unordered_set<std::string> regionBlocks{
+      region->condition, region->body,      region->innerCondition,
+      region->innerBody, region->innerExit, region->bucketExit};
+  std::unordered_map<std::string, std::string> replacements;
+  for (const auto &block : function.blocks()) {
+    if (regionBlocks.find(block.name()) == regionBlocks.end())
+      continue;
+    for (const auto &instruction : block.instructions()) {
+      if (instruction.opcode() != "load" ||
+          instruction.operands().size() != 2 || !instruction.hasResult()) {
+        continue;
+      }
+      if (instruction.operands()[1] == region->outerIndexSlot) {
+        replacements.emplace(instruction.result(), currentBucket);
+        continue;
+      }
+      const auto access = loadedAccess(instruction.result(), defs);
+      if (!access.has_value() ||
+          !isLoadFromSlot(access->index, region->outerIndexSlot, defs)) {
+        continue;
+      }
+      if (access->root == candidate.headAlloca) {
+        replacements.emplace(instruction.result(), currentHead);
+      } else if (access->root == candidate.tailAlloca) {
+        replacements.emplace(instruction.result(), currentTail);
+      }
+    }
+  }
+  const auto *displacedBody = findBlock(function, region->innerBody);
+  if (displacedBody != nullptr) {
+    std::string cachedAddress;
+    std::string cachedValue;
+    for (const auto &instruction : displacedBody->instructions()) {
+      if (instruction.opcode() == "load" &&
+          instruction.operands().size() == 2 && instruction.hasResult()) {
+        const auto access = loadedAccess(instruction.result(), defs);
+        if (access.has_value() && access->root == candidate.headAlloca &&
+            access->index == region->selector) {
+          if (cachedAddress.empty()) {
+            cachedAddress = instruction.operands()[1];
+            cachedValue = instruction.result();
+          } else if (instruction.operands()[1] == cachedAddress) {
+            replacements.emplace(instruction.result(), cachedValue);
+          }
+        }
+      }
+      if (isStore(instruction) && storeAddress(instruction) == cachedAddress) {
+        cachedAddress.clear();
+        cachedValue.clear();
+      }
+    }
+  }
+  for (auto &block : function.blocks()) {
+    if (regionBlocks.find(block.name()) == regionBlocks.end())
+      continue;
+    for (auto &instruction : block.instructions()) {
+      auto operands = instruction.operands();
+      bool changed = false;
+      for (auto &operand : operands) {
+        const auto replacement = replacements.find(operand);
+        if (replacement != replacements.end()) {
+          operand = replacement->second;
+          changed = true;
+        }
+      }
+      if (changed) {
+        instruction = Instruction{instruction.opcode(), std::move(operands),
+                                  instruction.result()};
+      }
+    }
+  }
+
+  innerExit = std::find_if(function.blocks().begin(), function.blocks().end(),
+                           [&](const BasicBlock &block) {
+                             return block.name() == region->innerExit;
+                           });
+  auto &exitInstructions = innerExit->instructions();
+  exitInstructions.erase(
+      std::remove_if(
+          exitInstructions.begin(), exitInstructions.end(),
+          [&](const Instruction &instruction) {
+            if (!isStore(instruction))
+              return false;
+            const auto target = accessFor(storeAddress(instruction), defs);
+            return target.has_value() && target->root == candidate.headAlloca &&
+                   isLoadFromSlot(target->index, region->outerIndexSlot, defs);
+          }),
+      exitInstructions.end());
+
+  bucketExit = std::find_if(function.blocks().begin(), function.blocks().end(),
+                            [&](const BasicBlock &block) {
+                              return block.name() == region->bucketExit;
+                            });
+  bucketExit->instructions().insert(
+      bucketExit->instructions().begin(),
+      Instruction{"store", {"int", currentHead, headAddress}});
+  return true;
+}
+
 bool insertUniformPartitionBypass(Function& function, const EntryReturnSummary& summary,
                                   const RecursiveTransition& transition) {
   const auto candidate = findUniformPartition(function);
@@ -1930,6 +2392,7 @@ bool transformFunction(Module& module, std::size_t functionIndex) {
   }
   std::size_t commonPrefixSites = 0;
   bool nonnegativeVersion = false;
+  bool cycleBucketResidency = false;
   if (commonPrefixDigitWidth.has_value() && initialPartition.has_value()) {
     const auto nonnegativeName = freshFunctionName(module, "__recursive_nonnegative_");
     const auto nonnegativeTerminalName =
@@ -1940,8 +2403,11 @@ bool transformFunction(Module& module, std::size_t functionIndex) {
                                          *commonPrefixDigitWidth, initialPartition->extent)) {
       rewriteDirectCallees(nonnegative, {{"@" + initialSnapshot.name(), "@" + nonnegativeName},
                                          {"@" + specializedName, "@" + nonnegativeTerminalName}});
-      auto nonnegativeTerminal = specializedClone(nonnegative, nonnegativeTerminalName,
-                                                  summary->stateParameter, predecessor);
+      const auto nonnegativeTerminalSource = nonnegative;
+      cycleBucketResidency = promoteCycleBucketCursor(nonnegative, *initialPartition);
+      auto nonnegativeTerminal =
+          specializedClone(nonnegativeTerminalSource, nonnegativeTerminalName,
+                           summary->stateParameter, predecessor);
       if (eraseTerminalCalls(nonnegativeTerminal, nonnegative, *summary)) {
         module.addFunction(std::move(nonnegative));
         module.addFunction(std::move(nonnegativeTerminal));
@@ -1957,7 +2423,8 @@ bool transformFunction(Module& module, std::size_t functionIndex) {
     std::cerr << "recursive-call-specialization: entry_guarded=" << guardedSites
               << " state_specialized=1 uniform_bypass=" << (uniformBypass ? 1 : 0)
               << " common_prefix_calls=" << commonPrefixSites
-              << " nonnegative_version=" << (nonnegativeVersion ? 1 : 0) << '\n';
+              << " nonnegative_version=" << (nonnegativeVersion ? 1 : 0)
+              << " cycle_bucket_residency=" << (cycleBucketResidency ? 1 : 0) << '\n';
   }
   return changed;
 }
