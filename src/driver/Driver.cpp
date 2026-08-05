@@ -65,6 +65,7 @@
 #include "../../include/compiler/midend/pass/RedundantLoadEliminationPass.h"
 #include "../../include/compiler/midend/pass/RedundantStoreEliminationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveInliningPass.h"
+#include "../../include/compiler/midend/pass/RecursiveCallSpecializationPass.h"
 #include "../../include/compiler/midend/pass/RecursiveMemoizationPass.h"
 #include "../../include/compiler/midend/pass/RemainderComparisonPass.h"
 #include "../../include/compiler/midend/pass/StoreProducerReductionFusionPass.h"
@@ -377,6 +378,13 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         nullptr) {
       passManager.add(std::make_unique<
                       compiler::midend::pass::GuardedInitializationSinkingPass>());
+    }
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
+        std::getenv("COMPILER_DISABLE_RECURSIVE_CALL_SPECIALIZATION") ==
+            nullptr) {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::RecursiveCallSpecializationPass>());
     }
     if (invocation.options().target == "aarch64" ||
         invocation.options().target == "arm64") {
