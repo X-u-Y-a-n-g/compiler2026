@@ -1649,10 +1649,10 @@ bool buildOrderedTwoRowPanel(Function &function, const Candidate &candidate,
   return true;
 }
 
-bool buildOrderedFourRowPanel16Lazy(Function &function,
-                                    const Candidate &candidate,
-                                    const UniformSuffixPattern &pattern) {
-  if (std::getenv("COMPILER_DISABLE_ORDERED_FOUR_ROW_PANEL16_LAZY") != nullptr) {
+bool buildOrderedEightRowPanel8Lazy(Function &function,
+                                   const Candidate &candidate,
+                                   const UniformSuffixPattern &pattern) {
+  if (std::getenv("COMPILER_DISABLE_ORDERED_EIGHT_ROW_PANEL8_LAZY") != nullptr) {
     return false;
   }
   const auto definitions = buildDefinitions(function);
@@ -1676,29 +1676,32 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   auto valueNames = collectValueNames(function);
   auto blockNames = collectBlockNames(function);
   auto value = [&](const std::string &stem) {
-    return freshName(valueNames, "%ordered.panel4x16.lazy." + stem);
+    return freshName(valueNames, "%ordered.panel8x8.lazy." + stem);
   };
   auto block = [&](const std::string &stem) {
-    return freshName(blockNames, "ordered.panel4x16.lazy." + stem);
+    return freshName(blockNames, "ordered.panel8x8.lazy." + stem);
   };
 
-  std::array<std::string, 4> rows{pattern.row, value("row1"), value("row2"),
-                                  value("row3")};
-  std::array<std::string, 4> cutoffs;
-  std::array<std::string, 4> coefficientRows;
-  std::array<std::string, 4> destinationRows;
-  std::array<std::string, 4> destinations;
-  std::array<std::string, 4> suffixHeaders;
-  std::array<std::string, 4> suffixBodies;
-  std::array<std::string, 4> suffixK;
-  std::array<std::string, 4> suffixAcc;
-  std::array<std::string, 4> suffixHasK;
-  std::array<std::string, 4> suffixAddress;
-  std::array<std::string, 4> suffixCoefficient;
-  std::array<std::string, 4> suffixProduct;
-  std::array<std::string, 4> suffixNextAcc;
-  std::array<std::string, 4> suffixNextK;
-  for (int row = 0; row < 4; ++row) {
+  std::array<std::string, 8> rows;
+  rows[0] = pattern.row;
+  for (int row = 1; row < 8; ++row) {
+    rows[row] = value("row" + std::to_string(row));
+  }
+  std::array<std::string, 8> cutoffs;
+  std::array<std::string, 8> coefficientRows;
+  std::array<std::string, 8> destinationRows;
+  std::array<std::string, 8> destinations;
+  std::array<std::string, 8> suffixHeaders;
+  std::array<std::string, 8> suffixBodies;
+  std::array<std::string, 8> suffixK;
+  std::array<std::string, 8> suffixAcc;
+  std::array<std::string, 8> suffixHasK;
+  std::array<std::string, 8> suffixAddress;
+  std::array<std::string, 8> suffixCoefficient;
+  std::array<std::string, 8> suffixProduct;
+  std::array<std::string, 8> suffixNextAcc;
+  std::array<std::string, 8> suffixNextK;
+  for (int row = 0; row < 8; ++row) {
     const auto index = std::to_string(row);
     cutoffs[row] = value("cutoff" + index);
     coefficientRows[row] = value("coefficient.row" + index);
@@ -1726,13 +1729,13 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   const auto highBodyName = block("high.body");
   const auto storeName = block("store");
   const auto rowLatchName = block("row.latch");
-  const auto hasRow3 = value("has.row3");
+  const auto hasRow7 = value("has.row7");
   const auto columnRemainder = value("column.remainder");
   const auto fullColumns = value("full.columns");
   const auto usePanel = value("use");
   const auto threshold = value("threshold");
-  std::array<std::string, 4> below;
-  for (int row = 0; row < 4; ++row) {
+  std::array<std::string, 8> below;
+  for (int row = 0; row < 8; ++row) {
     below[row] = value("below" + std::to_string(row));
   }
   const auto column = value("column");
@@ -1749,11 +1752,11 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   const auto highSourceRow = value("high.source.row");
   const auto highSource = value("high.source");
   const auto highNextK = value("high.k.next");
-  std::array<std::string, 4> prefixCoefficientAddress;
-  std::array<std::string, 4> prefixCoefficient;
-  std::array<std::string, 4> highCoefficientAddress;
-  std::array<std::string, 4> highCoefficient;
-  for (int row = 0; row < 4; ++row) {
+  std::array<std::string, 8> prefixCoefficientAddress;
+  std::array<std::string, 8> prefixCoefficient;
+  std::array<std::string, 8> highCoefficientAddress;
+  std::array<std::string, 8> highCoefficient;
+  for (int row = 0; row < 8; ++row) {
     const auto index = std::to_string(row);
     prefixCoefficientAddress[row] =
         value("prefix.coefficient" + index + ".address");
@@ -1764,13 +1767,13 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   }
   const auto nextRow = value("row.next");
 
-  std::array<std::array<std::string, 4>, 4> dependencyGuards;
-  std::array<std::array<std::string, 4>, 4> dependencyBodies;
-  std::array<std::array<std::string, 4>, 4> dependencyIncluded;
-  std::array<std::array<std::string, 4>, 4> dependencyAddresses;
-  std::array<std::array<std::string, 4>, 4> dependencyCoefficients;
-  for (int destination = 0; destination < 4; ++destination) {
-    for (int source = 0; source < 4; ++source) {
+  std::array<std::array<std::string, 8>, 8> dependencyGuards;
+  std::array<std::array<std::string, 8>, 8> dependencyBodies;
+  std::array<std::array<std::string, 8>, 8> dependencyIncluded;
+  std::array<std::array<std::string, 8>, 8> dependencyAddresses;
+  std::array<std::array<std::string, 8>, 8> dependencyCoefficients;
+  for (int destination = 0; destination < 8; ++destination) {
+    for (int source = 0; source < 8; ++source) {
       const auto stem = "dep.r" + std::to_string(destination) + ".s" +
                         std::to_string(source);
       dependencyGuards[destination][source] = block(stem + ".guard");
@@ -1788,16 +1791,17 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
       Instruction{"br", std::move(rowTerminator)};
 
   BasicBlock guard{guardName};
-  guard.addInstruction(Instruction{"add", {pattern.row, "1"}, rows[1]});
-  guard.addInstruction(Instruction{"add", {pattern.row, "2"}, rows[2]});
-  guard.addInstruction(Instruction{"add", {pattern.row, "3"}, rows[3]});
+  for (int row = 1; row < 8; ++row) {
+    guard.addInstruction(Instruction{
+        "add", {pattern.row, std::to_string(row)}, rows[row]});
+  }
   guard.addInstruction(
-      Instruction{"icmp.slt", {rows[3], candidate.outerBound}, hasRow3});
+      Instruction{"icmp.slt", {rows[7], candidate.outerBound}, hasRow7});
   guard.addInstruction(
-      Instruction{"srem", {candidate.outerBound, "16"}, columnRemainder});
+      Instruction{"srem", {candidate.outerBound, "8"}, columnRemainder});
   guard.addInstruction(
       Instruction{"icmp.eq", {columnRemainder, "0"}, fullColumns});
-  guard.addInstruction(Instruction{"and", {hasRow3, fullColumns}, usePanel});
+  guard.addInstruction(Instruction{"and", {hasRow7, fullColumns}, usePanel});
   guard.addInstruction(
       Instruction{"br", {usePanel, setupName, fallback}});
 
@@ -1806,7 +1810,7 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
       "sdiv",
       {candidate.outerBound, std::to_string(pattern.thresholdDivisor)},
       threshold});
-  for (int row = 0; row < 4; ++row) {
+  for (int row = 0; row < 8; ++row) {
     setup.addInstruction(
         Instruction{"icmp.slt", {rows[row], threshold}, below[row]});
     setup.addInstruction(
@@ -1822,11 +1826,11 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   setup.addInstruction(Instruction{"br", {suffixHeaders[0]}});
 
   std::vector<BasicBlock> generated;
-  for (int row = 0; row < 4; ++row) {
+  for (int row = 0; row < 8; ++row) {
     const std::string incoming =
         row == 0 ? setupName : suffixHeaders[row - 1];
     const std::string next =
-        row == 3 ? columnHeaderName : suffixHeaders[row + 1];
+        row == 7 ? columnHeaderName : suffixHeaders[row + 1];
     BasicBlock header{suffixHeaders[row]};
     header.addInstruction(
         Instruction{"phi",
@@ -1866,7 +1870,7 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   BasicBlock columnHeader{columnHeaderName};
   columnHeader.addInstruction(
       Instruction{"phi",
-                  {"int", "0", suffixHeaders[3], nextColumn, storeName},
+                  {"int", "0", suffixHeaders[7], nextColumn, storeName},
                   column});
   columnHeader.addInstruction(
       Instruction{"icmp.slt", {column, candidate.outerBound}, hasColumn});
@@ -1875,16 +1879,18 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   generated.push_back(std::move(columnHeader));
 
   BasicBlock columnBody{columnBodyName};
-  for (int row = 0; row < 4; ++row) {
+  for (int row = 0; row < 8; ++row) {
     columnBody.addInstruction(Instruction{
         "getelementptr", {destinationRows[row], column}, destinations[row]});
   }
-  columnBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x16.lazy.begin",
-      {destinations[0], destinations[1], destinations[2], destinations[3],
-       suffixAcc[0], suffixAcc[1], suffixAcc[2], suffixAcc[3]}});
+  for (int row = 0; row < 8; ++row) {
+    columnBody.addInstruction(Instruction{
+        "aarch64.neon.ordered.panel8.i32x8.lazy.begin.row" +
+            std::to_string(row),
+        {suffixAcc[row]}});
+  }
   columnBody.addInstruction(
-      Instruction{"add", {pattern.row, "4"}, highStart});
+      Instruction{"add", {pattern.row, "8"}, highStart});
   columnBody.addInstruction(Instruction{"br", {prefixHeaderName}});
   generated.push_back(std::move(columnBody));
 
@@ -1904,7 +1910,7 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
       "getelementptr", {pattern.destinationMatrix, prefixK}, prefixSourceRow});
   prefixBody.addInstruction(Instruction{
       "getelementptr", {prefixSourceRow, column}, prefixSource});
-  for (int row = 0; row < 4; ++row) {
+  for (int row = 0; row < 8; ++row) {
     prefixBody.addInstruction(Instruction{
         "getelementptr", {coefficientRows[row], prefixK},
         prefixCoefficientAddress[row]});
@@ -1913,9 +1919,13 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
         prefixCoefficient[row]});
   }
   prefixBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x16.lazy.shared",
-      {prefixSource, prefixCoefficient[0], prefixCoefficient[1],
-       prefixCoefficient[2], prefixCoefficient[3]}});
+      "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load", {prefixSource}});
+  for (int row = 0; row < 8; ++row) {
+    prefixBody.addInstruction(Instruction{
+        "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row" +
+            std::to_string(row),
+        {prefixCoefficient[row]}});
+  }
   prefixBody.addInstruction(
       Instruction{"add", {prefixK, "1"}, prefixNextK});
   prefixBody.addInstruction(Instruction{"br", {prefixHeaderName}});
@@ -1937,7 +1947,7 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
       "getelementptr", {pattern.destinationMatrix, highK}, highSourceRow});
   highBody.addInstruction(
       Instruction{"getelementptr", {highSourceRow, column}, highSource});
-  for (int row = 0; row < 4; ++row) {
+  for (int row = 0; row < 8; ++row) {
     highBody.addInstruction(Instruction{
         "getelementptr", {coefficientRows[row], highK},
         highCoefficientAddress[row]});
@@ -1945,20 +1955,24 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
         "load", {"int", highCoefficientAddress[row]}, highCoefficient[row]});
   }
   highBody.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x16.lazy.shared",
-      {highSource, highCoefficient[0], highCoefficient[1],
-       highCoefficient[2], highCoefficient[3]}});
+      "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load", {highSource}});
+  for (int row = 0; row < 8; ++row) {
+    highBody.addInstruction(Instruction{
+        "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row" +
+            std::to_string(row),
+        {highCoefficient[row]}});
+  }
   highBody.addInstruction(Instruction{"add", {highK, "1"}, highNextK});
   highBody.addInstruction(Instruction{"br", {highHeaderName}});
   generated.push_back(std::move(highBody));
 
-  for (int destination = 0; destination < 4; ++destination) {
-    for (int source = 0; source < 4; ++source) {
-      const int linear = destination * 4 + source;
+  for (int destination = 0; destination < 8; ++destination) {
+    for (int source = 0; source < 8; ++source) {
+      const int linear = destination * 8 + source;
       const std::string next =
-          linear == 15
+          linear == 63
               ? storeName
-              : dependencyGuards[(linear + 1) / 4][(linear + 1) % 4];
+              : dependencyGuards[(linear + 1) / 8][(linear + 1) % 8];
       BasicBlock dependencyGuard{
           dependencyGuards[destination][source]};
       dependencyGuard.addInstruction(
@@ -1984,7 +1998,7 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
       }
       operands.push_back(dependencyCoefficients[destination][source]);
       dependencyBody.addInstruction(Instruction{
-          "aarch64.neon.ordered.panel4.i32x16.lazy." + version +
+          "aarch64.neon.ordered.panel8.i32x8.lazy." + version +
               std::to_string(source) + ".to.row" +
               std::to_string(destination),
           std::move(operands)});
@@ -1994,16 +2008,19 @@ bool buildOrderedFourRowPanel16Lazy(Function &function,
   }
 
   BasicBlock store{storeName};
-  store.addInstruction(Instruction{
-      "aarch64.neon.ordered.panel4.i32x16.lazy.store",
-      {destinations[0], destinations[1], destinations[2], destinations[3]}});
-  store.addInstruction(Instruction{"add", {column, "16"}, nextColumn});
+  for (int row = 0; row < 8; ++row) {
+    store.addInstruction(Instruction{
+        "aarch64.neon.ordered.panel8.i32x8.lazy.store.row" +
+            std::to_string(row),
+        {destinations[row]}});
+  }
+  store.addInstruction(Instruction{"add", {column, "8"}, nextColumn});
   store.addInstruction(Instruction{"br", {columnHeaderName}});
   generated.push_back(std::move(store));
 
   BasicBlock rowLatch{rowLatchName};
   rowLatch.addInstruction(
-      Instruction{"add", {pattern.row, "4"}, nextRow});
+      Instruction{"add", {pattern.row, "8"}, nextRow});
   rowLatch.addInstruction(Instruction{"br", {rowBlock->second}});
   generated.push_back(std::move(rowLatch));
 
@@ -2595,7 +2612,7 @@ void LoopUnrollAndJamPass::run(compiler::ir::core::Module& module) {
       if (transformed && uniformPattern.has_value() &&
           useAArch64VectorAccumulator_) {
         if (buildOrderedTwoRowPanel(function, *candidate, *uniformPattern)) {
-          buildOrderedFourRowPanel16Lazy(function, *candidate, *uniformPattern);
+          buildOrderedEightRowPanel8Lazy(function, *candidate, *uniformPattern);
         }
       }
     }

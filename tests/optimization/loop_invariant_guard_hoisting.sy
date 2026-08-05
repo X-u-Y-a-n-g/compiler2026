@@ -1,0 +1,101 @@
+int data[64];
+int ticks;
+
+int guarded_grid(int rows, int columns, int upper) {
+  int row = 0;
+  while (row < rows) {
+    int column = 0;
+    int shifted_row = row - 2;
+    while (column < columns) {
+      int shifted_column = column - 1;
+      if (shifted_row >= 0 && shifted_row < upper && shifted_column >= 0) {
+        data[row * columns + column] = shifted_row + shifted_column;
+      }
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  int total = 0;
+  int index = 0;
+  while (index < rows * columns) {
+    total = total + data[index];
+    index = index + 1;
+  }
+  return total;
+}
+
+int varying_guard(int rows, int columns) {
+  int total = 0;
+  int row = 0;
+  while (row < rows) {
+    int column = 0;
+    while (column < columns) {
+      if (column >= row) {
+        total = total + row + column;
+      }
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  return total;
+}
+
+int observable_prefix(int rows, int columns) {
+  ticks = 0;
+  int row = 0;
+  while (row < rows) {
+    int column = 0;
+    int enabled = row - 9;
+    while (column < columns) {
+      ticks = ticks + 1;
+      if (enabled >= 0) {
+        data[column] = row;
+      }
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  return ticks;
+}
+
+int reversed_guard(int rows, int columns) {
+  int row = 0;
+  while (row < rows) {
+    int column = 0;
+    int disabled = row - 3;
+    while (column < columns) {
+      if (disabled < 0) {
+        data[row * columns + column] = row + column;
+      }
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  int total = 0;
+  int index = 0;
+  while (index < rows * columns) {
+    total = total + data[index];
+    index = index + 1;
+  }
+  return total;
+}
+
+int main() {
+  putint(guarded_grid(0, 7, 8));
+  putch(10);
+  putint(guarded_grid(1, 7, 8));
+  putch(10);
+  putint(guarded_grid(5, 0, 8));
+  putch(10);
+  putint(guarded_grid(5, 7, 0));
+  putch(10);
+  putint(guarded_grid(5, 7, 8));
+  putch(10);
+  putint(varying_guard(5, 7));
+  putch(10);
+  putint(observable_prefix(4, 6));
+  putch(10);
+  putint(reversed_guard(5, 6));
+  putch(10);
+  return 0;
+}

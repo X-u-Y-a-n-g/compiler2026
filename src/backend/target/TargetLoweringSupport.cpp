@@ -467,9 +467,13 @@ class FunctionLoweringContext {
     }
 
     if (opcode == "aarch64.neon.mls.acc.i32x32") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0]),
-            lowerValueOperand(operands[1], ValueType::int32Type())});
+      std::vector<MachineOperand> lowered{
+          lowerValueOperand(operands[0]),
+          lowerValueOperand(operands[1], ValueType::int32Type())};
+      if (operands.size() == 3)
+        lowered.push_back(
+            lowerValueOperand(operands[2], ValueType::int32Type()));
+      emit(block, opcode, {}, std::move(lowered));
       return;
     }
 
@@ -532,41 +536,32 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.begin") {
-      emit(block, opcode,
-           {lowerValueOperand(operands[0]),
-            lowerValueOperand(operands[1]),
-            lowerValueOperand(operands[2]),
-            lowerValueOperand(operands[3]),
-            lowerValueOperand(operands[4], ValueType::int32Type()),
-            lowerValueOperand(operands[5], ValueType::int32Type()),
-            lowerValueOperand(operands[6], ValueType::int32Type()),
-            lowerValueOperand(operands[7], ValueType::int32Type())});
+    if (opcode.rfind(
+            "aarch64.neon.ordered.panel8.i32x8.lazy.begin.row", 0) == 0) {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.shared") {
-      std::vector<MachineOperand> lowered{lowerValueOperand(operands[0])};
-      lowered.reserve(operands.size());
-      for (std::size_t index = 1; index < operands.size(); ++index) {
-        lowered.push_back(
-            lowerValueOperand(operands[index], ValueType::int32Type()));
-      }
-      emit(block, opcode, std::move(lowered));
+    if (opcode == "aarch64.neon.ordered.panel8.i32x8.lazy.shared.load") {
+      emit(block, opcode, {}, {lowerValueOperand(operands[0])});
       return;
     }
 
-    if (opcode == "aarch64.neon.ordered.panel4.i32x16.lazy.store") {
-      std::vector<MachineOperand> lowered;
-      lowered.reserve(operands.size());
-      for (const auto& operand : operands) {
-        lowered.push_back(lowerValueOperand(operand));
-      }
-      emit(block, opcode, std::move(lowered));
+    if (opcode.rfind(
+            "aarch64.neon.ordered.panel8.i32x8.lazy.shared.row", 0) == 0) {
+      emit(block, opcode, {},
+           {lowerValueOperand(operands[0], ValueType::int32Type())});
       return;
     }
 
-    if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.old", 0) ==
+    if (opcode.rfind(
+            "aarch64.neon.ordered.panel8.i32x8.lazy.store.row", 0) == 0) {
+      emit(block, opcode, {}, {lowerValueOperand(operands[0])});
+      return;
+    }
+
+    if (opcode.rfind("aarch64.neon.ordered.panel8.i32x8.lazy.old", 0) ==
         0) {
       emit(block, opcode,
            {lowerValueOperand(operands[0]),
@@ -574,7 +569,7 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode.rfind("aarch64.neon.ordered.panel4.i32x16.lazy.new", 0) ==
+    if (opcode.rfind("aarch64.neon.ordered.panel8.i32x8.lazy.new", 0) ==
         0) {
       emit(block, opcode,
            {lowerValueOperand(operands[0], ValueType::int32Type())});
@@ -586,7 +581,7 @@ class FunctionLoweringContext {
         opcode ==
             "aarch64.neon.square.sum.i32.accumulate.panel.i32x16x2" ||
         opcode ==
-            "aarch64.neon.square.sum.i32.accumulate.panel4.i32x16") {
+            "aarch64.neon.square.sum.i32.accumulate.panel8.i32x8") {
       emit(block, opcode, {}, {});
       return;
     }

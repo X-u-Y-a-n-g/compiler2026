@@ -53,3 +53,75 @@
   unconditional outer-body edge into the middle header, a unique normal middle
   exit, and no non-latch edge back to the outer header. These checks only narrow
   eligibility and leave the accepted h-8 assembly unchanged.
+
+## Contract v2: crypto modular state-machine simplification
+
+- Frozen at: 2026-08-03
+- Selected idea ID: arm-crypto-modular-state-machine-v1
+- Hypothesis: a general i32 modular-affine canonicalizer, followed only when
+  structurally proven by immutable local-array value forwarding and bounded
+  pure-loop expansion, removes a material fraction of the serial crypto hot
+  path without using benchmark identity or changing wrapping semantics.
+- Baseline: commit `3a921cf` on `zct-arm-no-magic`.
+- Primary observation: official Cortex-A53 time for the affected programs.
+- Controlled local evidence: enabled versus independent component switches on
+  crypto-1/2/3, final assembly, QEMU timer, all 60 performance cases, and 140
+  correctness cases because this is shared mid-end code.
+- Success: byte-identical outputs, structural anonymous tests and fallbacks,
+  no demonstrated target-relevant regression in other changed programs, and a
+  clear local hot-path reduction sufficient to justify official submission.
+- Failure: wrong output, incomplete overflow/alias/effect proof, code growth
+  without hot-path reduction, focused timing regression, or a full-gate failure.
+- Mandatory ablations: disable affine canonicalization; disable bounded
+  recurrence specialization; disable the complete candidate.
+- Budget and stop rule: run the affine stage first and kill it if crypto final
+  assembly does not simplify; run full 60/140 only after the integrated focused
+  candidate is correct and locally positive.
+- Compliance: triggers may use only IR/MIR semantics, CFG, dominance, use-def,
+  loop/range, alias, escape and effect analysis. Names, paths, labels, source
+  text, public inputs, constants used as identities, and runtime probing are
+  prohibited.
+- Local outcome: both components passed their anonymous differential suites.
+  The integrated candidate changed only crypto-1/2/3 among the 60 final
+  assemblies, reducing each from 655 to 601 parsed instructions. The focused
+  timer sum was `0.181242s` with both components disabled, `0.152859s` with
+  affine canonicalization alone, and `0.138165s` with both enabled. Full gates
+  were `57 AC + 3` pre-existing h-4 formatting exceptions and `140/140 AC`.
+- Promotion state: locally validated and pushed only for official Cortex-A53
+  evaluation; no official speedup is claimed until the owner reports it.
+
+## Contract v3: loop-invariant guard-chain hoisting
+
+- Frozen at: 2026-08-03
+- Selected idea ID: arm-loop-invariant-guard-hoisting-v1
+- Hypothesis: when a counted inner loop begins with a short-circuit guard chain
+  whose leading predicates are invariant for the whole loop, evaluating those
+  predicates once in the unique preheader and skipping the effect-free loop
+  when they fail reduces Cortex-A53 control-flow work without changing results.
+- Baseline: commit `d9db8a8` on `zct-arm-no-magic`.
+- Preconditions: unique preheader/backedge/exit; zero-based unit-step signed
+  induction with a loop-invariant bound; no loop-defined SSA value escaping;
+  no exit Phi; cloned predicates contain only non-trapping pure integer work or
+  loads from non-escaping, loop-unmodified scalar allocas; skipped prefix work
+  has no observable stores, calls, division or remainder. Both true/false CFG
+  orientations are normalized. Dynamic bounds and zero-trip loops are kept.
+- Primary observation: official Cortex-A53 time for structurally affected
+  programs. Local QEMU is a submission screen only.
+- Controls: `COMPILER_DISABLE_LOOP_INVARIANT_GUARD_HOISTING=1`, O0 output,
+  renamed/resized positive cases, reversed branch orientation, zero-trip and
+  invariant-false boundaries, varying-guard fallback, observable-prefix
+  fallback, all 60 performance cases and all 140 correctness cases.
+- Success: structural differential output equality, complete gates, a reduced
+  hot-loop branch count and a meaningful official target improvement.
+- Failure: any skipped observable effect, induction/termination proof gap,
+  output mismatch, full-gate failure, or flat/regressed official result.
+- Local outcome: anonymous enabled/disabled/O0 outputs agree and two differently
+  oriented guard chains transform; the observable-prefix and varying-guard
+  cases fall back. Final performance is `57 AC + 3` unchanged h-4 formatting
+  exceptions, correctness is `140/140 AC`, and only conv2d-1/2/3 assembly
+  changes. Their single final QEMU screen is `0.071782s -> 0.061491s`, about
+  `14.3%` lower.
+- Compliance: the pass consumes only IR opcode/operand/type, CFG, dominance,
+  use-def, loop induction and non-escape/effect facts. It does not inspect any
+  path, source text, symbol/function/block name spelling, benchmark constant,
+  generated label text, input or output.

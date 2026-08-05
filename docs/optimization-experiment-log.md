@@ -1,5 +1,7 @@
 # 优化实验与消融记录
 
+> 最后更新：2026-08-03
+> 本轮对比基线：`zct-arm-no-magic` / `3a921cf`
 > 最后更新：2026-07-31
 > 本轮对比基线：`wz-arm` / `d6ca1db`
 > README 只描述当前能力；已撤销的专项方案仅在本文 E 类中留档。
@@ -58,7 +60,9 @@ https://documentation-service.arm.com/static/6040c321ee937942ba301626）。
 4. 140 项 correctness 不启用优化模式。仅当改动影响 `-O0`、前端/语义公共路径或存在额外风险时才运行。
 5. 动态指令和 LLVM `generic-ooo` 只作诊断证据；本地模式下 QEMU 的程序内部计时可作为接受证据，但必须重复且超过噪声，不用宿主机 CPU 直接执行 RISC-V 程序。
 6. 对静态指令数、load/store、move、mul/div/rem、循环加权指令和必要的动态指令数做汇编级消融。
-7. 只有 A 类候选可以作为优化提交推送到当前交付分支；RISC-V 交付分支为 `wz`，AArch64 交付分支为 `wz-arm`。每个优化独立提交、独立消融、独立推送。B/C/D 类代码必须撤回，但实验结论继续在本文留档；E 类必须删除并做合规清理。
+7. “单类样例”只定义本轮测量重点，不定义编译器匹配范围。一个通用优化可以合法改变其他样例的汇编，包括后续 pass 暴露出的直接或间接机会；只要语义前置条件成立、全量正确性通过，并且变化减少目标相关开销或没有已证实的回归，就不因“其他样例变了”而撤回。
+8. 全量汇编逐用例比较用于列出直接命中、下游连锁变化和未变化项，逐字相同只是归因/安全证据而不是接受门槛。对每个变化记录成本和目标结果；静态指令数减少或 QEMU 变快不能替代官方 Cortex-A53 判定，出现明确目标回归的变化必须隔离移除。
+9. 只有 A 类候选可以作为优化提交推送到当前交付分支；RISC-V 交付分支为 `wz`，AArch64 交付分支为 `wz-arm`。每个优化独立提交、独立消融、独立推送。B/C/D 类代码必须撤回，但实验结论继续在本文留档；E 类必须删除并做合规清理。
 
 2026-07-18 的二维仿射复制与数组维度布局候选由 AI 辅助完成方案对比、独立实现、汇编差异审查和本地消融。技术参考仅为用户提供的公开参赛仓库中的通用数组布局、仿射别名和 store-to-load forwarding 思路；未复制外部实现，未使用测试名、固定规模或已知结果作为触发条件。
 
@@ -68,6 +72,7 @@ https://documentation-service.arm.com/static/6040c321ee937942ba301626）。
 
 | 提交 | 优化 | 完整性审查 | 正确性 | 隔离性能证据 | 结论 |
 |---|---|---|---|---|---|
+| 本提交 | AArch64 连续常量填充的 64 字节 strip-mining | 在已证明安全的单/双目标连续 i32 常量填充上，将主循环由每轮 4 元素扩展为两条 `stp q` 写入 16 元素；保留 4 元素向量尾循环和标量尾循环。双目标仍必须先通过完整区间不重叠证明；不读取路径、名称、固定尺寸、输入或输出 | 动态长度 `0/1/3/4/5/15/16/17/31/32/33/64` 的双目标对拍全部一致；AArch64 correctness `140/140 AC`；performance 除父版本已有的 h-4 末尾格式差异外为 `57/57 AC`；60 份汇编消融仅 `sl1/2/3` 变化 | 同一 Docker 正反顺序严格开关 A/B：关闭版两轮合计 `2.508862/2.497979s`，候选两轮 `2.331130/2.341039s`；均值 `2.503421→2.336085s`，下降 `6.68%`。`sl1` 均值下降约 `8.85%`，`sl3` 约 `6.87%`，`sl2` 在噪声内持平 | 保留并独立提交到 `wz-arm`；官方 Cortex-A53 若显示总体退化则独立撤回 |
 | 本提交 | AArch64 连续常量填充循环四路 NEON 向量化 | 仅匹配单一入口的规范计数循环，循环体只能包含一至两个相同索引的连续 i32 常量 store 和单位递增；常量必须可由 `movi .4s` 精确广播，生成四路主循环和完整标量尾循环。双目标时在入口用完整写区间做运行时不重叠证明，区间重叠立即回退原标量循环；保留原访存顺序，不读取源码、函数、全局、块、用例名称、固定数组规模、输入或输出 | AArch64 correctness `140/140 AC`；performance 60 项全部编译、链接、运行完成，除既有 h-4 输出格式差异外其余 `57/57 AC`。精确汇编消融仅 `01_mm1/2/3` 与 `sl1/2/3` 六项变化，其余 54 项逐字一致 | 同一 Docker、同一编译器开关 A/B 中 `sl1/2/3` 基线合计 `3.759651s`，两轮候选分别 `3.225674s/3.211156s`，候选均值 `3.218415s`，下降 `14.40%`；三项单项均改善。`01_mm` 只改变清零循环，在 QEMU 中处于顺序噪声范围，等待真实 A53 复核 | 保留并只提交到 `wz-arm`；平台重点观察 `sl1/2/3`，若任一出现明确退化则独立撤回 |
 | `463aa57` | AArch64 二次幂有符号除余降低 | 处理 i32/i64、正负除数、`INT_MIN`、截断向零、余数符号与 `±1`；仅当常量绝对值为二次幂且移位合法时使用偏置移位、掩码与条件取负，其他完整 fallback | AArch64 correctness `140/140 AC`，performance `60/60 AC`；11 个被除数×11 个正负除数边界对拍 `121/121` | 正反顺序均值：Huffman 约 `0.183→0.124s`，CRC `0.102→0.063s`，crypto `0.123→0.088s`，FFT1 `0.0369→0.0314s`；Huffman 的 `sdiv` `23→3` | 保留到 `wz-arm`，针对 A53 高延迟整数除法 |
 | `0bf5278` | AArch64 最短宽立即数序列 | 对 32/64 位立即数穷举 16 位分片成本，在 `movz/movk` 与 `movn/movk` 间选最少指令；全零、全一和高位单分片均有合法初始指令 | `140/140 AC`，`60/60 AC` | 60 项总计少 21 条指令；crypto、h-4 各项少 3 条，matmul 各项少 1 条；matmul2 两轮诊断均改善 | 保留到 `wz-arm` |
@@ -1205,14 +1210,83 @@ address hoisting 和 ARMv8-A Advanced SIMD；未复制外部编译器实现。
   `0.502043/0.501420/0.478123s`；候选在完整 performance run 中为
   `0.382610/0.379907/0.380133s`，方向仍一致。完整 performance 为
   `57 AC + 3` 个 h-4 既有本地格式差异；本候选未改变 h-4 相关源码。
-- 状态：D，已提交到 `zct-arm-no-magic` 等待官方 Cortex-A53 结果。若官方
-  many_mat 变慢或其它项异常，回退本候选；若三项稳定变快，再补记官方截图、
-  SHA-256 和接受状态。
+- 官方 Cortex-A53：用户于 `2026-08-02` 回传的完整排行榜截图显示三项均
+  AC，`many_mat_cal-1/2/3` 为 `2.61/2.64/2.64s`；相对此前接受的 4×8
+  结果 `3.79/3.70/3.74s`，三项合计 `11.23→7.89s`，下降约 `29.74%`，
+  三项方向一致。
+- 状态：A，保留。后续 8×8 lazy 面板建立在本候选上，并继续单独完成动态
+  边界、全量正确性、汇编隔离和官方平台验证。
 
 本候选由 AI 辅助完成四行 16 列数据流扩展、lazy old-row load lowering、
 寄存器活跃区间审查、匿名动态边界对拍、完整 performance 门禁和汇编检查。
 技术依据为标准 dependence-preserving loop versioning、SIMD unroll-and-jam
 和 ARMv8-A NEON lowering；未复制外部编译器实现。
+
+## 2026-08-02 AArch64 有序八行 8 列 lazy 行面板候选
+
+- 通用条件：把已接受的四行 16 列 lazy 面板扩展为八行 8 列面板；仍沿用
+  规范原地线性行递推、统一常量后缀、二维根对象、严格行依赖和无 clobber
+  证明。只有动态列界能被 8 整除且当前行后仍有连续八行时进入，否则完整
+  回退既有较小面板。触发不读取源码路径、测试/函数/变量/全局/基本块名称、
+  固定矩阵规模、输入或输出。消融开关为
+  `COMPILER_DISABLE_ORDERED_EIGHT_ROW_PANEL8_LAZY=1`。
+- 数据流：八行结果仍只占 `v0..v15`，每行两个 i32x4 向量。`k<row` 与
+  `k>=row+8` 的 8 列源面板只加载一次并向八个目标行共享；面板内部严格按
+  `row0→…→row7` 完成，已完成源行直接复用对应结果向量，尚未完成源行在
+  依赖点 lazy 载入旧值。列宽减半使结果寄存器总量与四行 16 列版本相同，
+  跨行源载入复用则从四行扩大到八行。
+- 后端压力修正：初始化、共享系数和八行写回分别拆为单操作数 pseudo，避免
+  多个 spilled 地址/标量在同一机器指令前同时 reload 时覆盖 `x16/x17`
+  scratch。初版 8 操作数初始化导致 row1 的 suffix 初值被地址 scratch
+  覆盖，三份公开输入均 WA；逐行拆分后矩阵与最终输出恢复逐字一致。固定
+  向量状态仍为 `v0..v15` 结果、`v16..v19` 平方和、`v20` 广播和
+  `v21..v22` 共享源，不增加向量寄存器峰值。
+- 动态边界：匿名同构程序在
+  `n=0/1/7/8/9/15/16/17/24/31/32/33`、`repeat=3` 下，候选与关闭版
+  stdout 逐字一致，覆盖零趟、首个面板、阈值穿越、多面板、多行块和非 8
+  整除 fallback。三份公开 many_mat 完整输入均 AC。
+- 门禁与隔离：AArch64 correctness `140/140 AC`；完整 performance 为
+  `57 AC + 3` 个父提交已有的 h-4 终端空行格式差异。与本候选父提交保存的
+  60 份最终汇编逐项比较，只有 `many_mat_cal-1/2/3` 改变，其余 57 份
+  逐字相同。
+- 本地诊断：关闭版/候选交错两轮三项合计均值为
+  `1.547579s→1.088837s`，下降约 `29.64%`；语义化重命名后的独立复测为
+  `0.300040/0.291165/0.290627s`。QEMU 只作方向诊断，正式接受仍以官方
+  Cortex-A53 三项稳定改善且全量 AC 为准。
+- 官方 Cortex-A53：用户于 `2026-08-02` 回传的完整排行榜截图显示 60 项
+  全部通过；`many_mat_cal-1/2/3` 从父版本的 `2.61/2.64/2.64s` 变为
+  `2.50/2.47/2.37s`，三项合计 `7.89→7.34s`，减少 `0.55s`、下降约
+  `6.97%`，三项方向一致。
+- 状态：A，官方平台确认有效，保留在 `wz-arm`。
+
+本候选由 AI 辅助完成八行依赖分区、寄存器等量换宽、scratch 覆盖定位、
+逐 pseudo 降压、动态边界对拍、140/60 门禁和汇编隔离。技术依据为标准
+ordered in-place recurrence、register tiling、lazy snapshot 与 ARMv8-A
+Advanced SIMD；未复制外部实现。
+
+## 2026-08-02 AArch64 有序十六行 4 列 lazy 行面板（本地否决）
+
+- 候选把 8×8 面板等量换形为 16×4：结果仍占 `v0..v15`，共享源缩为一个
+  i32x4 向量，并把面板内新旧行依赖扩展到 16 行。合法性、动态边界和
+  fallback 证明沿用已接受的 lazy 面板，不读取名称、固定规模或输入输出。
+- 三份公开 many_mat 均 AC，但本地 QEMU 三项合计从 8×8 独立复测的
+  `0.881832s` 退化到 `1.446047s`，增加约 `63.99%`；单项编译时间也从约
+  `1.1s` 增至 `14.8–16.4s`。4 列循环控制、256 组内部依赖 CFG 和更窄的
+  连续访存抵消了额外跨行复用。
+- 状态：B，代码已完整撤回，未提交、未推送、未进入官方平台。后续不再沿
+  这条等寄存器缩列路线扩大行数；需要降低算法级扫描次数或采用不同阻塞法。
+
+## 2026-08-02 AArch64 尾递归普通标签清零省略（平台否决）
+
+- 候选提交 `ed30160` 只在已证明单一不可变上下文、分类确定且无驱逐的尾递归
+  记忆化缓存中，省略普通加性条目写入时冗余的旁表零字节 Store；绝对终止值
+  标签写入、命中分类和全部 fallback 不变。AArch64 correctness
+  `140/140 AC`，完整 performance 门禁通过且仅 h-1 三项汇编改变。
+- 本地 QEMU 完整三项合计曾下降约 `2.86%`；官方 Cortex-A53 则从
+  `8.68/0.86/3.88s` 变为 `8.77/0.87/3.96s`，三项合计
+  `13.42→13.60s`，退化约 `1.34%`，方向一致。
+- 状态：R，已由 `8903a3a` 独立撤回。省一条字节 Store 不足以抵消真实平台
+  的调度或代码布局变化；不得依据 QEMU 恢复。
 
 ## 2026-07-29 非逃逸栈数组完整覆盖前的死初始化裁剪候选
 
@@ -1790,25 +1864,3 @@ versioning 与 recurrence summarization；未复制外部编译器源码。
   继承父版本已记录的 `57 AC + 3` 个 h-4 格式例外及 `140/140 AC` 结果。
 - 状态：合规修复。保留官方加速候选的热路径和最终汇编，仅扩大不安全结构的
   fallback 集合；由 AI 辅助完成反例构造、CFG 必经条件、实现、差分与记录。
-## 2026-07-31 closed append-only duplicate-chain aggregation (candidate)
-
-- Transformation: for a closed append-only i32 side chain whose unique reader
-  is the exact zero-terminated additive recurrence, retain the original fresh
-  allocation and secondary stores but replace `primary.link = fresh` with
-  `primary.payload += appended.payload`.  The unchanged reader then performs a
-  single iteration because the primary link remains zero.
-- Preconditions: zero-initialized link object; monotonic `counter + 1` fresh
-  index committed to the same scalar; exact old-link copy; exact SSA node and
-  sum recurrences; unique closed builder/reader ownership; no aliases, escapes,
-  extra effects, ambiguous candidates, or non-additive observation.
-- Expected impact: remove both duplicate-chain construction and later traversal
-  work without adding a cache probe or metadata working set.  Disable with
-  `COMPILER_DISABLE_CLOSED_DUPLICATE_CHAIN_FOLD=1`.
-- Validation status: Docker daemon unavailable, so Docker-dependent local gates
-  are skipped under the repository exception and this isolated candidate is sent
-  directly to `yang-arm` for official Cortex-A53 acceptance.
-- AI scope and references: AI-assisted invariant proof, object/effect matcher,
-  SSA recurrence matching, implementation, and documentation.  Basis is classic
-  scalar replacement, incremental aggregation, SSA/data-flow analysis and
-  ARMv8-A integer/cache semantics; no external implementation or prohibited
-  benchmark identity/input trigger is used.

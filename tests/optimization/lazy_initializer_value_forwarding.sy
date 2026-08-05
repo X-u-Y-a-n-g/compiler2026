@@ -1,0 +1,59 @@
+int cells[64];
+int widths[8];
+
+int remap(int total, int data[], int width) {
+  int height = total / width;
+  int row = 0;
+  int column = 0;
+  while (row < height) {
+    column = 0;
+    while (column < width) {
+      if (row < column) {
+        column = column + 1;
+        continue;
+      }
+      int value = data[row * width + column];
+      data[column * height + row] = data[row * width + column];
+      data[row * width + column] = value;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  return -1;
+}
+
+int main() {
+  int total = getint();
+  int length = 6;
+  widths[0] = 1;
+  widths[1] = 2;
+  widths[2] = 4;
+  widths[3] = 1;
+  widths[4] = 2;
+  widths[5] = 4;
+
+  int cursor = 0;
+  while (cursor < total) {
+    cells[cursor] = cursor * 11 - 7;
+    if ((cursor & 1) == 0) {
+      cells[cursor] = cursor + 19;
+    }
+    cursor = cursor + 1;
+  }
+
+  cursor = 0;
+  while (cursor < length) {
+    remap(total, cells, widths[cursor]);
+    cursor = cursor + 1;
+  }
+
+  int result = 0;
+  cursor = 0;
+  while (cursor < length) {
+    result = result + (cursor + 3) * cells[cursor];
+    cursor = cursor + 1;
+  }
+  putint(result);
+  putch(10);
+  return 0;
+}

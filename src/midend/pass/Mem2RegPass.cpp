@@ -1,7 +1,9 @@
 #include "../../../include/compiler/midend/pass/Mem2RegPass.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <deque>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -89,6 +91,84 @@ CFG buildCFG(const Function& function) {
     }
   }
   return cfg;
+}
+
+bool isCyclicBlock(const CFG& cfg, std::size_t start) {
+  std::vector<bool> visited(cfg.names.size(), false);
+  std::deque<std::size_t> worklist(cfg.successors[start].begin(),
+                                   cfg.successors[start].end());
+  while (!worklist.empty()) {
+    const auto block = worklist.front();
+    worklist.pop_front();
+    if (block == start) {
+      return true;
+    }
+    if (visited[block]) {
+      continue;
+    }
+    visited[block] = true;
+    worklist.insert(worklist.end(), cfg.successors[block].begin(),
+                    cfg.successors[block].end());
+  }
+  return false;
+}
+
+void canonicalizeScalarAllocas(Function& function, const CFG& cfg) {
+  if (function.blocks().empty() ||
+      std::getenv("COMPILER_DISABLE_NON_ENTRY_SCALAR_ALLOCA_PROMOTION") !=
+          nullptr) {
+    return;
+  }
+
+  std::unordered_map<std::string, std::size_t> useCounts;
+  std::unordered_map<std::string, bool> firstStoreIsDynamic;
+  for (const auto& block : function.blocks()) {
+    for (const auto& instruction : block.instructions()) {
+      for (const auto& operand : instruction.operands()) {
+        ++useCounts[operand];
+      }
+      if (instruction.opcode() == "store" &&
+          instruction.operands().size() == 3) {
+        const auto& value = instruction.operands()[1];
+        const auto& address = instruction.operands()[2];
+        firstStoreIsDynamic.try_emplace(
+            address, !value.empty() && value.front() == '%');
+      }
+    }
+  }
+
+  std::vector<Instruction> moved;
+  for (std::size_t block = 1; block < function.blocks().size(); ++block) {
+    auto& instructions = function.blocks()[block].instructions();
+    std::vector<Instruction> kept;
+    kept.reserve(instructions.size());
+    const bool cyclic = isCyclicBlock(cfg, block);
+    for (auto& instruction : instructions) {
+      // Restrict late promotion to loop-resident slots with enough memory
+      // traffic and a dynamic seed to repay the additional SSA live range.
+      // Constant-seeded induction variables and isolated branch temporaries
+      // stay in memory and cannot perturb register allocation.
+      if (isScalarAlloca(instruction) && cyclic &&
+          useCounts[instruction.result()] >= 5 &&
+          firstStoreIsDynamic[instruction.result()]) {
+        moved.push_back(std::move(instruction));
+      } else {
+        kept.push_back(std::move(instruction));
+      }
+    }
+    instructions = std::move(kept);
+  }
+  if (moved.empty()) {
+    return;
+  }
+
+  auto& entry = function.blocks().front().instructions();
+  auto insertion = entry.begin();
+  while (insertion != entry.end() && insertion->opcode() == "alloca") {
+    ++insertion;
+  }
+  entry.insert(insertion, std::make_move_iterator(moved.begin()),
+               std::make_move_iterator(moved.end()));
 }
 
 std::vector<bool> computeReachable(const CFG& cfg) {
@@ -486,12 +566,15 @@ void renameBlock(Function& function, std::size_t blockIndex, RenameState& state)
   }
 }
 
-void runMem2Reg(Function& function) {
+void runMem2Reg(Function& function, bool canonicalizeNonEntryAllocas) {
   if (function.blocks().empty()) {
     return;
   }
 
   const CFG cfg = buildCFG(function);
+  if (canonicalizeNonEntryAllocas) {
+    canonicalizeScalarAllocas(function, cfg);
+  }
   const DominatorInfo dom = computeDominators(cfg);
   const auto slots = collectSlotInfo(function, cfg);
   bool hasPromotableSlot = false;
@@ -514,7 +597,7 @@ void runMem2Reg(Function& function) {
 
 void Mem2RegPass::run(compiler::ir::core::Module& module) {
   for (auto& function : module.functions()) {
-    runMem2Reg(function);
+    runMem2Reg(function, canonicalizeNonEntryAllocas_);
   }
 }
 

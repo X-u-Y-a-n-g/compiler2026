@@ -21,6 +21,7 @@ add_library(compiler_lib
   src/midend/pass/AffineArrayCopyPropagationPass.cpp
   src/midend/pass/AffineModularRecurrencePass.cpp
   src/midend/pass/AdjacentProducerConsumerLoopFusionPass.cpp
+  src/midend/pass/AssociativeChainAggregationPass.cpp
   src/midend/pass/AArch64IntegerDotReductionPass.cpp
   src/midend/pass/AArch64PureMapRecurrenceVectorizationPass.cpp
   src/midend/pass/AArch64VectorConstantRemainderPass.cpp
@@ -28,6 +29,7 @@ add_library(compiler_lib
   src/midend/pass/ArrayDimensionLayoutPass.cpp
   src/midend/pass/BitwiseIdiomRecognitionPass.cpp
   src/midend/pass/BoundedModuloReductionPass.cpp
+  src/midend/pass/BoundedRecurrenceExpansionPass.cpp
   src/midend/pass/CommonSubexpressionEliminationPass.cpp
   src/midend/pass/ConstantArgumentPropagationPass.cpp
   src/midend/pass/ConstantFoldingPass.cpp
@@ -42,6 +44,7 @@ add_library(compiler_lib
   src/midend/pass/LocalScalarCleanupPass.cpp
   src/midend/pass/LazyAffineCopyResolutionPass.cpp
   src/midend/pass/LoopInvariantCodeMotionPass.cpp
+  src/midend/pass/LoopInvariantGuardHoistingPass.cpp
   src/midend/pass/LoopCarriedStoreToLoadForwardingPass.cpp
   src/midend/pass/LoopInterchangeRowUpdatePass.cpp
   src/midend/pass/LoopWavefrontColumnPackingPass.cpp
@@ -51,6 +54,7 @@ add_library(compiler_lib
   src/midend/pass/Mem2RegPass.cpp
   src/midend/pass/MonotonicContinueEliminationPass.cpp
   src/midend/pass/MonotonicLoopBoundPass.cpp
+  src/midend/pass/ModularAffineCanonicalizationPass.cpp
   src/midend/pass/NestedInvariantReductionPass.cpp
   src/midend/pass/PassManager.cpp
   src/midend/pass/PowerOfTwoDispatchPass.cpp
@@ -72,6 +76,8 @@ add_library(compiler_lib
   src/backend/target/AArch64Target.cpp
   src/backend/isel/InstructionSelector.cpp
   src/backend/opt/AArch64InstructionCombining.cpp
+  src/backend/opt/AArch64LateMachineOptimization.cpp
+  src/backend/opt/AArch64PostRAVectorization.cpp
   src/backend/opt/AddressReassociation.cpp
   src/backend/opt/CompareBranchFusion.cpp
   src/backend/opt/MachineDeadCodeElimination.cpp

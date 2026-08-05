@@ -26,6 +26,7 @@
 #include "../../include/compiler/ir/verify/IRVerifier.h"
 #include "../../include/compiler/midend/pass/AffineArrayCopyPropagationPass.h"
 #include "../../include/compiler/midend/pass/AdjacentProducerConsumerLoopFusionPass.h"
+#include "../../include/compiler/midend/pass/AssociativeChainAggregationPass.h"
 #include "../../include/compiler/midend/pass/ArraySummaryDimensionCollapsePass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
@@ -33,6 +34,7 @@
 #include "../../include/compiler/midend/pass/AArch64VectorConstantRemainderPass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
 #include "../../include/compiler/midend/pass/BoundedModuloReductionPass.h"
+#include "../../include/compiler/midend/pass/BoundedRecurrenceExpansionPass.h"
 #include "../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
 #include "../../include/compiler/midend/pass/ConstantArgumentPropagationPass.h"
 #include "../../include/compiler/midend/pass/ConstantFoldingPass.h"
@@ -47,6 +49,7 @@
 #include "../../include/compiler/midend/pass/IdempotentIterationCollapsePass.h"
 #include "../../include/compiler/midend/pass/LazyAffineCopyResolutionPass.h"
 #include "../../include/compiler/midend/pass/LoopInvariantCodeMotionPass.h"
+#include "../../include/compiler/midend/pass/LoopInvariantGuardHoistingPass.h"
 #include "../../include/compiler/midend/pass/LoopCarriedStoreToLoadForwardingPass.h"
 #include "../../include/compiler/midend/pass/LoopInterchangeRowUpdatePass.h"
 #include "../../include/compiler/midend/pass/LoopWavefrontColumnPackingPass.h"
@@ -55,6 +58,7 @@
 #include "../../include/compiler/midend/pass/Mem2RegPass.h"
 #include "../../include/compiler/midend/pass/MonotonicContinueEliminationPass.h"
 #include "../../include/compiler/midend/pass/MonotonicLoopBoundPass.h"
+#include "../../include/compiler/midend/pass/ModularAffineCanonicalizationPass.h"
 #include "../../include/compiler/midend/pass/NestedInvariantReductionPass.h"
 #include "../../include/compiler/midend/pass/PassManager.h"
 #include "../../include/compiler/midend/pass/PowerOfTwoDispatchPass.h"
@@ -211,6 +215,13 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         std::make_unique<compiler::midend::pass::RecursiveInliningPass>());
     if ((invocation.options().target == "aarch64" ||
          invocation.options().target == "arm64") &&
+        std::getenv("COMPILER_DISABLE_ASSOCIATIVE_CHAIN_AGGREGATION") ==
+            nullptr) {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::AssociativeChainAggregationPass>());
+    }
+    if ((invocation.options().target == "aarch64" ||
+         invocation.options().target == "arm64") &&
         std::getenv("COMPILER_DISABLE_RECURSIVE_MEMOIZATION") == nullptr) {
       passManager.add(
           std::make_unique<compiler::midend::pass::RecursiveMemoizationPass>());
@@ -267,6 +278,11 @@ int Pipeline::execute(const CompilerInvocation& invocation,
     passManager.add(
         std::make_unique<compiler::midend::pass::CommonSubexpressionEliminationPass>());
     passManager.add(std::make_unique<compiler::midend::pass::LoopInvariantCodeMotionPass>());
+    if (invocation.options().target == "aarch64" ||
+        invocation.options().target == "arm64") {
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::LoopInvariantGuardHoistingPass>());
+    }
     const bool isAArch64 = invocation.options().target == "aarch64" ||
                            invocation.options().target == "arm64";
     if (isAArch64) {
@@ -280,7 +296,7 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         isAArch64 ? 32 : 10, isAArch64));
     passManager.add(
         std::make_unique<compiler::midend::pass::CrossLoopStoreForwardingPass>());
-    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>());
+    passManager.add(std::make_unique<compiler::midend::pass::Mem2RegPass>(true));
     passManager.add(
         std::make_unique<compiler::midend::pass::DivRemPairStrengthReductionPass>());
     passManager.add(std::make_unique<compiler::midend::pass::RemainderComparisonPass>());
@@ -307,6 +323,10 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(
           std::make_unique<compiler::midend::pass::BoundedModuloReductionPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::ModularAffineCanonicalizationPass>());
+      passManager.add(std::make_unique<
+                      compiler::midend::pass::BoundedRecurrenceExpansionPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::LoopWavefrontColumnPackingPass>());
       passManager.add(std::make_unique<
