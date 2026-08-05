@@ -1,0 +1,143 @@
+const int bucket_count = 8;
+
+int observed;
+
+int category(int value, int phase) {
+  return (value + phase * bucket_count) & (bucket_count - 1);
+}
+
+void distribute(int left, int phase, int right, int values[]) {
+  int begin[bucket_count] = {};
+  int finish[bucket_count] = {};
+  int count[bucket_count] = {};
+  if (phase == -1 || left + 1 >= right) return;
+
+  int cursor = left;
+  while (cursor < right) {
+    count[category(values[cursor], phase)] =
+        count[category(values[cursor], phase)] + 1;
+    cursor = cursor + 1;
+  }
+  begin[0] = left;
+  finish[0] = left + count[0];
+  cursor = 1;
+  while (cursor < bucket_count) {
+    begin[cursor] = finish[cursor - 1];
+    finish[cursor] = begin[cursor] + count[cursor];
+    cursor = cursor + 1;
+  }
+
+  cursor = 0;
+  while (cursor < bucket_count) {
+    while (begin[cursor] < finish[cursor]) {
+      int value = values[begin[cursor]];
+      while (category(value, phase) != cursor) {
+        int displaced = value;
+        value = values[begin[category(displaced, phase)]];
+        values[begin[category(displaced, phase)]] = displaced;
+        begin[category(displaced, phase)] =
+            begin[category(displaced, phase)] + 1;
+      }
+      values[begin[cursor]] = value;
+      begin[cursor] = begin[cursor] + 1;
+    }
+    cursor = cursor + 1;
+  }
+
+  begin[0] = left;
+  finish[0] = left + count[0];
+  cursor = 0;
+  while (cursor < bucket_count) {
+    if (cursor > 0) {
+      begin[cursor] = finish[cursor - 1];
+      finish[cursor] = begin[cursor] + count[cursor];
+    }
+    distribute(begin[cursor], phase - 1, finish[cursor], values);
+    cursor = cursor + 1;
+  }
+}
+
+void distribute_with_effect(int left, int phase, int right, int values[]) {
+  int begin[bucket_count] = {};
+  int finish[bucket_count] = {};
+  int count[bucket_count] = {};
+  if (phase == -1 || left + 1 >= right) return;
+
+  int cursor = left;
+  while (cursor < right) {
+    observed = observed + 1;
+    count[category(values[cursor], phase)] =
+        count[category(values[cursor], phase)] + 1;
+    cursor = cursor + 1;
+  }
+  begin[0] = left;
+  finish[0] = left + count[0];
+  cursor = 1;
+  while (cursor < bucket_count) {
+    begin[cursor] = finish[cursor - 1];
+    finish[cursor] = begin[cursor] + count[cursor];
+    cursor = cursor + 1;
+  }
+
+  cursor = 0;
+  while (cursor < bucket_count) {
+    while (begin[cursor] < finish[cursor]) {
+      int value = values[begin[cursor]];
+      while (category(value, phase) != cursor) {
+        int displaced = value;
+        value = values[begin[category(displaced, phase)]];
+        values[begin[category(displaced, phase)]] = displaced;
+        begin[category(displaced, phase)] =
+            begin[category(displaced, phase)] + 1;
+      }
+      values[begin[cursor]] = value;
+      begin[cursor] = begin[cursor] + 1;
+    }
+    cursor = cursor + 1;
+  }
+
+  begin[0] = left;
+  finish[0] = left + count[0];
+  cursor = 0;
+  while (cursor < bucket_count) {
+    if (cursor > 0) {
+      begin[cursor] = finish[cursor - 1];
+      finish[cursor] = begin[cursor] + count[cursor];
+    }
+    distribute_with_effect(begin[cursor], phase - 1, finish[cursor], values);
+    cursor = cursor + 1;
+  }
+}
+
+int first[24];
+int second[24];
+
+int checksum(int values[], int count) {
+  int result = 0;
+  int index = 0;
+  while (index < count) {
+    result = result * 17 + values[index];
+    index = index + 1;
+  }
+  return result;
+}
+
+int main() {
+  int index = 0;
+  while (index < 24) {
+    first[index] = (index - 11) * 8 + 5;
+    second[index] = (index * 13 + 7) & 63;
+    index = index + 1;
+  }
+  distribute(0, 5, 24, first);
+  distribute(3, 4, 3, first);
+  distribute(7, 4, 8, first);
+  distribute_with_effect(0, 3, 24, second);
+  putint(checksum(first, 24));
+  putch(10);
+  putint(checksum(second, 24));
+  putch(10);
+  putint(observed);
+  putch(10);
+  return 0;
+}

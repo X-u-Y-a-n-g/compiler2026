@@ -2440,3 +2440,51 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
   合成对拍、60/140 门禁和文档更新；技术依据为经典 Machine IR peephole、CFG/
   def-use/effect analysis、bounded memoization 与 AArch64 指令编码，未复制外部
   编译器实现。
+
+## 2026-08-05 递归分区的入口守卫、有限状态特化与统一分类旁路（待平台判定）
+
+- 三个协同子变换：第一，被调函数入口若由最多三层纯整数谓词直接通向无作用
+  `void return`，则把谓词切片克隆到直接自调用点，空区间、单元素或终止状态
+  直接跳过调用。第二，若全部直接自调用对同一整数状态执行一致的非零常量步进，
+  从无作用终止状态推出唯一前驱状态，只生成一份前驱专用克隆；克隆中下一状态
+  已到终止值的自调用直接删除。第三，对完整计数、前缀边界、cycle-leader 原地
+  分区和唯一递归 fanout 做结构证明；运行时若整个区间的纯分类表达式结果一致，
+  则原分区是恒等变换，全部空桶调用与唯一非空桶调用可合并为一次全区间下一状态
+  调用，否则进入逐字保留的原分区 CFG。
+- 通用证明条件：匹配只使用 IR opcode/type/operand、函数符号身份、CFG、SSA、
+  局部数组 extent、指针根对象、逃逸、内存效果和递归状态转移。区间起止从规范
+  单位递增扫描的初始化 Store 与 `icmp.slt` 上界提取，不依赖参数位置；桶数来自
+  局部数组类型，不固定为 16。入口谓词和分类切片不得含 load、未知调用或不可安全
+  克隆的除余；统一旁路要求所有局部对象不逃逸、函数中没有外部调用、只有一个
+  结构化自调用、数组参数恰有 cycle-leader 的两处原址 Store，其他 Store 只能
+  指向局部 alloca。递归实参必须由同一桶下标的 head/tail Load 构成，桶循环从零
+  单位递增到动态取得的 extent。实现不读取路径、样例/函数/变量/全局/基本块名
+  文本、生成标签、汇编文本、固定公开输入范围或输出。
+- 匿名边界与 fallback：新增 8 桶、参数顺序打乱的递归分区程序，覆盖空区间、
+  单元素、全同分类、首段后出现不同分类、混合正负整数和 i32 checksum 回绕；
+  O0、开启 O1 和总开关关闭 O1 的 stdout SHA-256 完全一致。加入相同结构但每次
+  histogram 更新可观察全局计数的反例，统一分类旁路被效果证明拒绝，最终计数
+  保持一致。统计只报告结构命中数量，不输出或消费用户符号名称。
+- 隔离与门禁：Docker `compiler-impl2026-dev` 中使用 `/workspace/build/compiler`。
+  AArch64 correctness 为 `140/140 AC`。最终 performance 为 `57 AC + 3` 个父提交
+  已记录的 h-4 末尾格式例外；三份 h-4 最终汇编与关闭版逐字一致。启用/关闭的
+  60 份最终汇编只有 `03_sort1/2/3` 三项变化，均为直接结构命中，其余 57 份
+  逐字一致。中途曾因 Driver 无条件追加清理 pass 使 h-4、h-8、transpose 出现
+  非命中变化；其中 transpose 本地明显退化，最终改为仅在本 pass 实际修改模块时
+  运行清理，九份无收益变化全部消失。
+- 本地诊断：同一最终变换的定向开关 A/B 中，sort 三项 timer 合计约
+  `0.296912s→0.225122s`，下降约 `24.2%`；最终候选复跑为 `0.229329s`。
+  运行时收益来自大量空/单元素递归调用跳过、终止前驱克隆消除下一层 fanout，
+  以及高层统一分类时只扫描一次而不再 histogram、prefix、cycle partition 和
+  多桶递归。代价是每项静态汇编约由 245 增至 465 条，存在 A53 I-cache 和分支
+  布局风险；QEMU 只作诊断，不能据此宣称正式目标提速。
+- 消融与状态：总开关为
+  `COMPILER_DISABLE_RECURSIVE_CALL_SPECIALIZATION=1`，统计开关为
+  `COMPILER_RECURSIVE_CALL_SPECIALIZATION_STATS=1`。状态：D；本地正确性、隔离、
+  合规和性能门禁已完成，推送后由官方 Cortex-A53 判断保留或独立回退。
+
+本候选由 AI 辅助完成递归调用树热点统计、无作用入口摘要、有限状态前驱推导、
+cycle-leader 恒等条件、CFG/SSA 改写、匿名正反例、60/140 门禁、下游误触发隔离
+和实验记录。技术依据为经典 interprocedural predicate propagation、function
+specialization、dead-call elimination、runtime loop versioning 与 partition
+degeneracy bypass；未复制外部编译器实现。
