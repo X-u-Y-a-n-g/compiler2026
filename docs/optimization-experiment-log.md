@@ -2572,50 +2572,21 @@ value-range propagation；未复制外部编译器实现。
 技术依据为经典 scalar replacement、loop-carried SSA promotion 与 conditional
 no-alias analysis；未复制外部编译器实现。
 
-## 2026-08-05 AArch64 连续只读映射的四路有序状态提交（待平台判定）
+## 2026-08-05 AArch64 连续只读映射的四路有序状态提交（官方平台否决并撤销）
 
-- 通用语义条件：只匹配唯一预头、唯一回边、两个 i32 Phi 和 signed `<` 上界的
-  单位步长循环。一个 Phi 是 induction，另一个是 ordered state；每步必须严格等价
-  于 `state = state < threshold ? replacement : state`。threshold/replacement 只能
-  由一至两个只读 i32 load 及 `add/sub/mul` 纯 DAG 构成；load 地址必须是循环不变
-  基址加 `iv+constant`。循环体出现 Store、Call、额外 Phi、非连续索引、动态地址
-  基址或其他效果时完整回退。当前固定向量槽尚未进入统一寄存器分配，同函数存在
-  浮点运算或其他固定 NEON 状态时也回退，避免覆盖跨区域存活值。匹配只使用 IR
-  opcode/type/operand、CFG、SSA、对象与
-  def-use 身份，不读取路径、样例/函数/变量/全局/基本块名文本、汇编文本、生成标签、
-  固定数组规模、输入或输出。
-- 变换：原循环头先计算一次 i64 `remaining`，将四的倍数主区间 strip-mine 为
-  i32x4 路径；偏移不在 `0/1` 时额外证明首末仿射下标均落在 i32。每个向量迭代
-  以 q-load 读取四个连续元素，并行计算四组 threshold/replacement；loop-carried
-  state 不做向量归约，而是提取 lane 后严格按 `0→1→2→3` 执行原 signed compare
-  与 select。主区间结束后回到原 header，剩余 `0..3` 项执行原 scalar body。
-- 后端成本：新增结构化 `aarch64.neon.pure.map.load.i32x4` pseudo，AsmPrinter 只
-  lowering 已证明的 Machine IR，不解析最终汇编或标签文本。纯映射 i32x4 乘法的
-  `0/±1/±2^k` 统一降为 `MOVI/MOV/NEG/SHL`；h-8 的 `first*2` 从“常量物化、
-  DUP、MUL”缩为单条 `SHL`。最终热循环每四项为两个 q-load、三条向量算术和
-  四次有序 `CMP/CSEL`，向量体内不再重复 i64 guard。
-- 匿名验证：新增改名 10×10 三角递推，覆盖内层行程 `0..8`、负值、
-  `INT_MIN/MAX`、i32 加乘回绕、连续两次调用，以及带额外数组写入和浮点状态冲突的
-  同形 fallback；
-  O0、候选 O1 和双关闭 O1 输出逐字一致。候选汇编出现向量主循环，关闭开关恢复
-  原标量循环。
-- 隔离与门禁：Docker `compiler-impl2026-dev` 中使用 `/workspace/build/compiler`。
-  AArch64 correctness `140/140 AC`；performance 为 `57 AC + 3` 个父提交既有的
-  h-4 末尾格式例外，三份 h-4 最终汇编与双关闭版逐字一致。开启/双关闭的 60 份
-  最终汇编仅 `h-8-01/02/03` 三项变化，其余 57 份逐字一致。三项候选均 AC。
-- 本地诊断：一次开启/关闭 h-8 三项 timer 合计约 `3.378→3.094s`，QEMU 对 NEON
-  软件模拟显示约 9% 反向波动；历史多项真实 A53 NEON 候选与 QEMU 方向相反，故
-  该结果只记风险信号，不据此宣称目标收益或提前否决。候选静态函数体因保留完整
-  fallback 增加约 16 条指令并多保存一个 callee-saved 寄存器，但热循环每四项删除
-  多次标量地址、载入、算术和回边控制，最终去留必须由 Cortex-A53 判定。
-- 消融开关：`COMPILER_DISABLE_AARCH64_ORDERED_MEMORY_RECURRENCE_VECTOR=1`；向量
-  二次幂乘法降低可用
-  `COMPILER_DISABLE_AARCH64_VECTOR_POWER_OF_TWO_MULTIPLY=1` 独立关闭。
-- 状态：D。本地语义、fallback、60/140 门禁和全量汇编归因已完成；提交并推送到
-  GitLab `eduxiji` 的 `zct-arm-no-magic` 后等待官方 Cortex-A53。平台稳定改善则
-  升级为 A，持平、退化或错误则独立回退本候选。
+- 候选提交：`df0e2f6`。该实现对连续只读映射做四路 NEON 计算，再按原顺序逐 lane
+  提交 loop-carried 标量状态；本地语义、fallback、60 项性能样例和 140 项正确性
+  门禁均已完成，只有 `h-8-01/02/03` 三项最终汇编发生变化。
+- 官方 Cortex-A53：父版本约为 `3.14/3.15/3.15s`，候选为
+  `3.40/3.39/3.39s`。三项均通过但方向一致地退化约 `7.6%–8.3%`，属于明确的目标
+  平台回归。
+- 原因判断：四路只读计算减少的标量地址与算术开销，未能抵消逐 lane 提取与有序
+  提交、增大的 CFG/栈帧/寄存器压力和代码体积在 Cortex-A53 上的成本。本地 QEMU
+  反向波动与静态热循环缩减均只属于诊断证据，不能覆盖官方平台结论。
+- 状态：B/R。已完整移除该 pass、Machine IR lowering、驱动接线、开关、测试和能力
+  文档，并回退到已确认有效的 `f516942`。不得恢复这一实现；若继续处理同类热点，
+  应将标量 `LDP`/计数循环或缓存、分块方案作为独立候选重新验证。
 
-本候选由 AI 辅助完成 h-8 热递推数据流分析、strip-mined CFG/Phi 改写、连续流
-向量 load、逐 lane 有序提交、向量二次幂强度削弱、匿名边界/fallback、60/140
-门禁和全量汇编归因。技术依据为经典 strip-mining、SLP/loop vectorization、
-ordered recurrence preservation 与 ARMv8-A Advanced SIMD；未复制外部实现。
+本候选及回退由 AI 辅助完成热点分析、结构化实现、门禁、官方结果归因和撤销记录。
+技术依据为经典 strip-mining、ordered recurrence preservation 与 ARMv8-A Advanced
+SIMD；未复制外部编译器实现。

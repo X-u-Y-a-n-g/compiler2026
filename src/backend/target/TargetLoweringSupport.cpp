@@ -639,14 +639,6 @@ class FunctionLoweringContext {
       return;
     }
 
-    if (opcode == "aarch64.neon.pure.map.load.i32x4") {
-      emit(block, opcode, {},
-           {lowerValueOperand(operands[0], ValueType::int32Type()),
-            lowerValueOperand(operands[1]),
-            lowerValueOperand(operands[2], ValueType::int32Type())});
-      return;
-    }
-
     if (opcode == "aarch64.neon.pure.map.binary.i32x4" ||
         opcode == "aarch64.neon.pure.map.sdiv.i32x4" ||
         opcode == "aarch64.neon.pure.map.srem.i32x4") {

@@ -23,7 +23,6 @@ add_library(compiler_lib
   src/midend/pass/AdjacentProducerConsumerLoopFusionPass.cpp
   src/midend/pass/AssociativeChainAggregationPass.cpp
   src/midend/pass/AArch64IntegerDotReductionPass.cpp
-  src/midend/pass/AArch64OrderedMemoryRecurrenceVectorizationPass.cpp
   src/midend/pass/AArch64PureMapRecurrenceVectorizationPass.cpp
   src/midend/pass/AArch64VectorConstantRemainderPass.cpp
   src/midend/pass/ArraySummaryDimensionCollapsePass.cpp

@@ -2000,20 +2000,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     }
     return;
   }
-  if (opcode == "aarch64.neon.pure.map.load.i32x4" &&
-      instruction.operands.size() == 3 &&
-      instruction.operands[0].kind == MachineOperandKind::ImmediateInt) {
-    const auto slot = instruction.operands[0].intValue;
-    if (slot < 0 || slot >= 14) return;
-    const auto base =
-        integerOperand(os, function, instruction.operands[1], kAddrScratch);
-    const auto index =
-        integerOperand(os, function, instruction.operands[2], kImmScratch);
-    os << "  add x16, " << base << ", "
-       << integerRegister(index, ValueType::int32Type()) << ", sxtw #2\n";
-    os << "  ldr q" << (16 + slot) << ", [x16]\n";
-    return;
-  }
   if (opcode == "aarch64.neon.pure.map.binary.i32x4" &&
       instruction.operands.size() == 6) {
     for (const auto& operand : instruction.operands) {
@@ -2033,43 +2019,6 @@ void emitInstruction(std::ostringstream& os, const MachineModule&,
     const auto vectorRegister = [](std::int64_t slot) {
       return "v" + std::to_string(16 + slot) + ".4s";
     };
-    if (operation == 2 && lhsImmediate != rhsImmediate &&
-        std::getenv("COMPILER_DISABLE_AARCH64_VECTOR_POWER_OF_TWO_MULTIPLY") ==
-            nullptr) {
-      const auto immediate = static_cast<std::int32_t>(
-          lhsImmediate ? lhsValue : rhsValue);
-      const auto source = lhsImmediate ? rhsValue : lhsValue;
-      const auto destinationRegister = vectorRegister(destination);
-      const auto sourceRegister = vectorRegister(source);
-      const std::uint32_t magnitude = immediate < 0
-                                          ? 0U - static_cast<std::uint32_t>(immediate)
-                                          : static_cast<std::uint32_t>(immediate);
-      if (immediate == 0) {
-        os << "  movi " << destinationRegister << ", #0\n";
-        return;
-      }
-      if (magnitude == 1) {
-        if (immediate > 0) {
-          os << "  mov v" << (16 + destination) << ".16b, v"
-             << (16 + source) << ".16b\n";
-        } else {
-          os << "  neg " << destinationRegister << ", " << sourceRegister
-             << '\n';
-        }
-        return;
-      }
-      if ((magnitude & (magnitude - 1U)) == 0) {
-        unsigned shift = 0;
-        for (std::uint32_t value = magnitude; value > 1U; value >>= 1U)
-          ++shift;
-        os << "  shl " << destinationRegister << ", " << sourceRegister
-           << ", #" << shift << '\n';
-        if (immediate < 0)
-          os << "  neg " << destinationRegister << ", "
-             << destinationRegister << '\n';
-        return;
-      }
-    }
     std::string lhs;
     if (lhsImmediate) {
       emitImmediate(os, "w16", static_cast<std::int32_t>(lhsValue),
