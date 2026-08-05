@@ -724,6 +724,26 @@ std::string printInstruction(const compiler::ir::core::Instruction& instruction,
     os << opcode << " ptr " << operands[0] << ", i32 " << operands[1];
     return os.str();
   }
+  if (opcode == "aarch64.neon.pure.map.load.i32x4") {
+    os << opcode << " i32 " << operands[0] << ", ptr " << operands[1]
+       << ", i32 " << operands[2];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.pure.map.i32x4.init" ||
+      opcode == "aarch64.neon.pure.map.binary.i32x4" ||
+      opcode == "aarch64.neon.pure.map.sdiv.i32x4" ||
+      opcode == "aarch64.neon.pure.map.srem.i32x4") {
+    os << opcode;
+    for (std::size_t index = 0; index < operands.size(); ++index)
+      os << (index == 0 ? " i32 " : ", i32 ") << operands[index];
+    return os.str();
+  }
+
+  if (opcode == "aarch64.neon.pure.map.extract.i32x4") {
+    os << opcode << " i32 " << operands[0] << ", i32 " << operands[1];
+    return os.str();
+  }
 
   if (opcode == "aarch64.widened.mul.lhs.i32" ||
       opcode == "aarch64.widened.mul.rhs.i32") {

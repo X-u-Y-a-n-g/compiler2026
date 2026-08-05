@@ -1,0 +1,106 @@
+int surface[10][10];
+int effect_cells[10][10];
+
+void advance_surface(int matrix[][10]) {
+  int outer;
+  int middle;
+  int inner;
+  int first;
+  int second;
+  int threshold;
+  int replacement;
+  outer = 9;
+  while (outer >= 0) {
+    middle = outer + 1;
+    while (middle < 10) {
+      inner = outer + 1;
+      while (inner < middle) {
+        first = matrix[outer][inner];
+        second = matrix[inner + 1][middle];
+        threshold = first + second;
+        replacement = first * 2 + second;
+        if (matrix[outer][middle] < threshold) {
+          matrix[outer][middle] = replacement;
+        }
+        inner = inner + 1;
+      }
+      middle = middle + 1;
+    }
+    outer = outer - 1;
+  }
+}
+
+void effect_fallback(int matrix[][10]) {
+  int outer;
+  int middle;
+  int inner;
+  int first;
+  int second;
+  outer = 9;
+  while (outer >= 0) {
+    middle = outer + 1;
+    while (middle < 10) {
+      inner = outer + 1;
+      while (inner < middle) {
+        first = matrix[outer][inner];
+        second = matrix[inner + 1][middle];
+        effect_cells[outer][middle] = effect_cells[outer][middle] + 1;
+        if (matrix[outer][middle] < first + second) {
+          matrix[outer][middle] = first - second;
+        }
+        inner = inner + 1;
+      }
+      middle = middle + 1;
+    }
+    outer = outer - 1;
+  }
+}
+
+int main() {
+  int row;
+  int column;
+  int checksum;
+  row = 0;
+  while (row < 10) {
+    column = 0;
+    while (column < 10) {
+      surface[row][column] =
+          (row * 1103515245 + column * 715827883) * (row - column + 3);
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  surface[2][7] = 2147483647;
+  surface[3][7] = -2147483647 - 1;
+  surface[6][9] = 2147483647;
+
+  advance_surface(surface);
+  advance_surface(surface);
+  effect_fallback(surface);
+
+  checksum = 0;
+  row = 0;
+  while (row < 10) {
+    column = 0;
+    while (column < 10) {
+      checksum = checksum + surface[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(checksum);
+  putch(10);
+  int effect_sum = 0;
+  row = 0;
+  while (row < 10) {
+    column = 0;
+    while (column < 10) {
+      effect_sum = effect_sum + effect_cells[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(effect_sum);
+  putch(10);
+  return 0;
+}

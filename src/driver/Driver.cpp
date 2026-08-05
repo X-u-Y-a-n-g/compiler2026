@@ -30,6 +30,7 @@
 #include "../../include/compiler/midend/pass/ArraySummaryDimensionCollapsePass.h"
 #include "../../include/compiler/midend/pass/AffineModularRecurrencePass.h"
 #include "../../include/compiler/midend/pass/AArch64IntegerDotReductionPass.h"
+#include "../../include/compiler/midend/pass/AArch64OrderedMemoryRecurrenceVectorizationPass.h"
 #include "../../include/compiler/midend/pass/AArch64PureMapRecurrenceVectorizationPass.h"
 #include "../../include/compiler/midend/pass/AArch64VectorConstantRemainderPass.h"
 #include "../../include/compiler/midend/pass/BitwiseIdiomRecognitionPass.h"
@@ -357,6 +358,8 @@ int Pipeline::execute(const CompilerInvocation& invocation,
         invocation.options().target == "arm64") {
       passManager.add(std::make_unique<
                       compiler::midend::pass::TriangularTransposeShadowPass>());
+      passManager.add(std::make_unique<compiler::midend::pass::
+                                          AArch64OrderedMemoryRecurrenceVectorizationPass>());
       passManager.add(std::make_unique<
                       compiler::midend::pass::AArch64PureMapRecurrenceVectorizationPass>());
       passManager.add(std::make_unique<

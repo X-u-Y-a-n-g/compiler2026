@@ -1,6 +1,6 @@
 # 当前优化模式、严格条件与泛化路线
 
-> 更新：2026-08-01
+> 更新：2026-08-05
 > 范围：当前分支 `src/driver/Driver.cpp` 中接入的 `-O1` 流水线，重点覆盖 AArch64。
 > 说明：表中的“严格条件”是对当前实现和实验记录的语义级概括，不替代源码中的逐条合法性检查。
 
@@ -70,6 +70,7 @@
 | `TriangularTransposeShadowPass` | 转置影子表/跨行局部性 | 外层递减、中层和内层递增的规范三角 CFG；外层体无条件进入中层，所有正常路径必须经过 commit 或零趟 mirror；目标 Store/Call 和额外矩阵写入受限；影子尺寸从已证明数组类型和边界得到，旁路或提前 break 回退。 |
 | `AArch64IntegerDotReductionPass`、`StoreProducerReductionFusionPass` | NEON 整数点积、生产写回与平方归约融合 | 只读连续流或已证明的生产 SCC；向量 accumulator 独立、无调用和未知写入；系数/源/目标 GEP 连续且不别名；平方归约、写回顺序和 i32 模回绕必须等价；尾部、零趟和不整除宽度走标量路径。 |
 | `AArch64PureMapRecurrenceVectorizationPass` | 有序递推中的纯映射 SLP/NEON | 循环只有可识别 induction 和 state recurrence；被并行的 DAG 只依赖 induction、无内存/调用/未知副作用；四 lane 的包装、signed compare、回绕和原 state 更新顺序逐 lane 保留；动态步长、动态除数和额外 Phi 回退。 |
+| `AArch64OrderedMemoryRecurrenceVectorizationPass` | 连续只读流/有序 threshold-select 递推 | 规范单位步长 signed-`<` 循环；一至两个只读 i32 流必须是循环不变基址加 `iv+constant`；阈值/替换 DAG 仅含 i32 `add/sub/mul`；四 lane 只并行映射计算，state 必须按 `0→3` 原序提交；额外 Phi、Store、Call、非连续地址、下标回绕风险、同函数浮点或其他固定 NEON 状态均回退原标量循环。 |
 | `AArch64VectorConstantRemainderPass` | 连续数组余数向量化 | 当前只接受连续 i32 load、固定常量余数、原址 Store 的规范循环；除数、符号修正和 reciprocal 序列必须可证明，负起点、短尾、非单位步长和其他除数回退。固定除数是当前明显的泛化瓶颈。 |
 
 ### 2.6 AArch64 Machine IR、汇编与寄存器层
@@ -77,6 +78,7 @@
 | 当前优化 | 模式归类 | 当前收紧的严格条件 |
 |---|---|---|
 | AArch64 `MADD/MSUB` 移位加减降级 | 指令选择/强度削弱 | 乘数必须是合法的 `±2^k` 立即数，类型为 i32/i64 且移位合法；模 `2^w` 语义和源/目标寄存器关系必须保持，其他常数保留原 MADD/MSUB。 |
+| AArch64 i32x4 二次幂向量乘法降低 | 向量指令选择/强度削弱 | 纯映射 binary pseudo 的一侧必须是 `0/±1/±2^k` i32 立即数，另一侧是合法向量槽；分别使用 `MOVI/MOV/NEG/SHL`，负二次幂在移位后取负，其他常数保留广播加 `MUL`。 |
 | `AddressReassociation`、`MachineLoopStrengthReduction` | GEP 重关联/指针归纳 | 基址和步长循环不变；归纳变量、GEP scale、Phi 入边和所有使用可解析；当前只放宽少数嵌套循环和小步长，超过函数/候选规模或可能增加寄存器压力时回退。 |
 | `CompareBranchFusion`、AArch64 指令合并 | compare+branch/select 合并 | 比较结果单用途、条件码生存区间无冲突、目标/源寄存器和 NZCV 使用安全；只能合并语义等价且不改变 fall-through、异常和控制流的形态。 |
 | Machine block placement、loop layout、machine DCE | CFG 布局/机器死代码 | CFG 边和指令语义不变；只在静态控制转移或不可达指令严格减少时调整；入口、调用约定、分支目标和显式终结必须保留。 |

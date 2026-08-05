@@ -1,0 +1,60 @@
+int fallback_surface[6][6];
+
+void floating_state_fallback(float scale, int matrix[][6]) {
+  int outer;
+  int middle;
+  int inner;
+  int first;
+  int second;
+  float marker;
+  marker = scale + 1.0;
+  outer = 5;
+  while (outer >= 0) {
+    middle = outer + 1;
+    while (middle < 6) {
+      inner = outer + 1;
+      while (inner < middle) {
+        first = matrix[outer][inner];
+        second = matrix[inner + 1][middle];
+        if (matrix[outer][middle] < first + second) {
+          matrix[outer][middle] = first * 2 + second;
+        }
+        inner = inner + 1;
+      }
+      middle = middle + 1;
+    }
+    outer = outer - 1;
+  }
+  if (marker < 0.0) {
+    matrix[0][0] = matrix[0][0] + 1;
+  }
+}
+
+int main() {
+  int row;
+  int column;
+  int checksum;
+  row = 0;
+  while (row < 6) {
+    column = 0;
+    while (column < 6) {
+      fallback_surface[row][column] = row * 97 - column * 53 + 11;
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  floating_state_fallback(2.5, fallback_surface);
+  checksum = 0;
+  row = 0;
+  while (row < 6) {
+    column = 0;
+    while (column < 6) {
+      checksum = checksum + fallback_surface[row][column];
+      column = column + 1;
+    }
+    row = row + 1;
+  }
+  putint(checksum);
+  putch(10);
+  return 0;
+}
