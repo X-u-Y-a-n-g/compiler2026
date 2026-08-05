@@ -1,6 +1,4 @@
 #include "../../../include/compiler/midend/pass/RecursiveCallSpecializationPass.h"
-#include "../../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
-#include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -16,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "../../../include/compiler/midend/pass/CommonSubexpressionEliminationPass.h"
+#include "../../../include/compiler/midend/pass/ConstantFoldingPass.h"
 #include "IRPassUtils.h"
 
 namespace compiler::midend::pass {
@@ -66,9 +66,8 @@ const BasicBlock* findBlock(const Function& function, const std::string& name) {
 
 bool isSafeNoEffectInstruction(const Instruction& instruction) {
   const auto& opcode = instruction.opcode();
-  return detail::isSideEffectFree(instruction) && opcode != "load" &&
-         opcode != "div" && opcode != "mod" && opcode != "sdiv" &&
-         opcode != "srem";
+  return detail::isSideEffectFree(instruction) && opcode != "load" && opcode != "div" &&
+         opcode != "mod" && opcode != "sdiv" && opcode != "srem";
 }
 
 bool isVoidReturnBlock(const Function& function, const std::string& name) {
@@ -134,30 +133,38 @@ std::optional<std::int32_t> evaluateConstant(
   } else if (instruction.opcode() == "neg" && operands.size() == 1) {
     const auto operand = unary(operands[0]);
     if (operand.has_value()) {
-      result = static_cast<std::int32_t>(
-          0U - static_cast<std::uint32_t>(*operand));
+      result = static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(*operand));
     }
-  } else if (instruction.opcode().rfind("icmp.", 0) == 0 &&
-             operands.size() == 2) {
+  } else if (instruction.opcode().rfind("icmp.", 0) == 0 && operands.size() == 2) {
     const auto values = binary();
     if (values.has_value()) {
       const auto lhs = values->first;
       const auto rhs = values->second;
       bool folded = false;
       const auto predicate = instruction.opcode().substr(5);
-      if (predicate == "eq") folded = lhs == rhs;
-      else if (predicate == "ne") folded = lhs != rhs;
-      else if (predicate == "slt") folded = lhs < rhs;
-      else if (predicate == "sle") folded = lhs <= rhs;
-      else if (predicate == "sgt") folded = lhs > rhs;
-      else if (predicate == "sge") folded = lhs >= rhs;
+      if (predicate == "eq")
+        folded = lhs == rhs;
+      else if (predicate == "ne")
+        folded = lhs != rhs;
+      else if (predicate == "slt")
+        folded = lhs < rhs;
+      else if (predicate == "sle")
+        folded = lhs <= rhs;
+      else if (predicate == "sgt")
+        folded = lhs > rhs;
+      else if (predicate == "sge")
+        folded = lhs >= rhs;
       else {
         const auto ulhs = static_cast<std::uint32_t>(lhs);
         const auto urhs = static_cast<std::uint32_t>(rhs);
-        if (predicate == "ult") folded = ulhs < urhs;
-        else if (predicate == "ule") folded = ulhs <= urhs;
-        else if (predicate == "ugt") folded = ulhs > urhs;
-        else if (predicate == "uge") folded = ulhs >= urhs;
+        if (predicate == "ult")
+          folded = ulhs < urhs;
+        else if (predicate == "ule")
+          folded = ulhs <= urhs;
+        else if (predicate == "ugt")
+          folded = ulhs > urhs;
+        else if (predicate == "uge")
+          folded = ulhs >= urhs;
         else {
           visiting.erase(value);
           return std::nullopt;
@@ -165,10 +172,8 @@ std::optional<std::int32_t> evaluateConstant(
       }
       result = folded ? 1 : 0;
     }
-  } else if ((instruction.opcode() == "cast" ||
-              instruction.opcode() == "zext" ||
-              instruction.opcode() == "sext" ||
-              instruction.opcode() == "trunc") &&
+  } else if ((instruction.opcode() == "cast" || instruction.opcode() == "zext" ||
+              instruction.opcode() == "sext" || instruction.opcode() == "trunc") &&
              operands.size() == 2) {
     result = unary(operands[0]);
   } else if (instruction.opcode() == "select" && operands.size() == 3) {
@@ -188,13 +193,11 @@ std::optional<std::int32_t> evaluateConstant(
   return evaluateConstant(value, defs, parameters, visiting);
 }
 
-bool dependsOnlyOnParameters(
-    const std::string& value, const DefinitionMap& defs,
-    const std::unordered_set<std::string>& parameters,
-    std::unordered_set<std::string>& visiting) {
+bool dependsOnlyOnParameters(const std::string& value, const DefinitionMap& defs,
+                             const std::unordered_set<std::string>& parameters,
+                             std::unordered_set<std::string>& visiting) {
   long long literal = 0;
-  if (detail::parseIntegerLiteral(value, literal) ||
-      parameters.find(value) != parameters.end()) {
+  if (detail::parseIntegerLiteral(value, literal) || parameters.find(value) != parameters.end()) {
     return true;
   }
   if (value.empty() || value.front() != '%' || !visiting.insert(value).second) {
@@ -207,20 +210,17 @@ bool dependsOnlyOnParameters(
   }
   const auto& instruction = *found->second;
   const auto& opcode = instruction.opcode();
-  if (!detail::isSideEffectFree(instruction) || opcode == "alloca" ||
-      opcode == "load" || opcode == "div" || opcode == "mod" ||
-      opcode == "sdiv" || opcode == "srem") {
+  if (!detail::isSideEffectFree(instruction) || opcode == "alloca" || opcode == "load" ||
+      opcode == "div" || opcode == "mod" || opcode == "sdiv" || opcode == "srem") {
     visiting.erase(value);
     return false;
   }
   std::size_t operandCount = instruction.operands().size();
-  if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
-      opcode == "trunc") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
     operandCount = std::min<std::size_t>(1, operandCount);
   }
   for (std::size_t index = 0; index < operandCount; ++index) {
-    if (!dependsOnlyOnParameters(instruction.operands()[index], defs, parameters,
-                                visiting)) {
+    if (!dependsOnlyOnParameters(instruction.operands()[index], defs, parameters, visiting)) {
       visiting.erase(value);
       return false;
     }
@@ -255,23 +255,20 @@ std::optional<EntryReturnSummary> summarizeEntryReturn(const Function& function)
     }
     if (!safePrefix) break;
     std::unordered_set<std::string> visiting;
-    if (!dependsOnlyOnParameters(terminator.operands()[0], defs, parameterNames,
-                                 visiting)) {
+    if (!dependsOnlyOnParameters(terminator.operands()[0], defs, parameterNames, visiting)) {
       break;
     }
     const bool trueReturns = isVoidReturnBlock(function, terminator.operands()[1]);
     const bool falseReturns = isVoidReturnBlock(function, terminator.operands()[2]);
     if (trueReturns == falseReturns) break;
-    summary.predicates.push_back(
-        ReturnPredicate{terminator.operands()[0], trueReturns});
-    current = findBlock(function,
-                        trueReturns ? terminator.operands()[2]
-                                    : terminator.operands()[1]);
+    summary.predicates.push_back(ReturnPredicate{terminator.operands()[0], trueReturns});
+    current =
+        findBlock(function, trueReturns ? terminator.operands()[2] : terminator.operands()[1]);
   }
   if (summary.predicates.empty()) return std::nullopt;
 
-  for (std::size_t parameterIndex = 0;
-       parameterIndex < function.parameters().size(); ++parameterIndex) {
+  for (std::size_t parameterIndex = 0; parameterIndex < function.parameters().size();
+       ++parameterIndex) {
     const auto& parameter = function.parameters()[parameterIndex];
     if (parameter.type != "int") continue;
     for (const auto& predicate : summary.predicates) {
@@ -303,8 +300,8 @@ bool isDirectSelfCall(const Instruction& instruction, const Function& function) 
          instruction.operands().size() == function.parameters().size() + 1;
 }
 
-std::optional<RecursiveTransition> recursiveTransition(
-    const Function& function, std::size_t stateParameter) {
+std::optional<RecursiveTransition> recursiveTransition(const Function& function,
+                                                       std::size_t stateParameter) {
   const auto defs = definitions(function);
   std::optional<std::int32_t> commonStep;
   bool sawCall = false;
@@ -337,8 +334,7 @@ std::optional<RecursiveTransition> recursiveTransition(
                  lhs == function.parameters()[stateParameter].name) {
         const auto constant = evaluateConstant(rhs, defs);
         if (!constant.has_value()) return std::nullopt;
-        step = static_cast<std::int32_t>(0U -
-                                         static_cast<std::uint32_t>(*constant));
+        step = static_cast<std::int32_t>(0U - static_cast<std::uint32_t>(*constant));
       } else {
         return std::nullopt;
       }
@@ -368,8 +364,7 @@ std::string freshFunctionName(const Module& module, const std::string& stem) {
 }
 
 Function specializedClone(const Function& source, const std::string& name,
-                          std::size_t stateParameter,
-                          std::int32_t specializedState) {
+                          std::size_t stateParameter, std::int32_t specializedState) {
   Function clone{name, source.returnType(), source.parameters()};
   const auto stateName = source.parameters()[stateParameter].name;
   const auto literal = std::to_string(specializedState);
@@ -399,26 +394,23 @@ bool eraseTerminalCalls(Function& clone, const Function& original,
   bool erased = false;
   for (auto& block : clone.blocks()) {
     auto& instructions = block.instructions();
-    instructions.erase(
-        std::remove_if(instructions.begin(), instructions.end(),
-                       [&](const Instruction& instruction) {
-                         if (instruction.opcode() != "call" ||
-                             instruction.operands().empty() ||
-                             instruction.operands()[0] !=
-                                 "@" + original.name()) {
-                           return false;
-                         }
-                         const auto& stateArgument =
-                             instruction.operands()[summary.stateParameter + 1];
-                         const auto value = evaluateConstant(stateArgument, defs);
-                         if (!value.has_value() ||
-                             *value != summary.terminalState) {
-                           return false;
-                         }
-                         erased = true;
-                         return true;
-                       }),
-        instructions.end());
+    instructions.erase(std::remove_if(instructions.begin(), instructions.end(),
+                                      [&](const Instruction& instruction) {
+                                        if (instruction.opcode() != "call" ||
+                                            instruction.operands().empty() ||
+                                            instruction.operands()[0] != "@" + original.name()) {
+                                          return false;
+                                        }
+                                        const auto& stateArgument =
+                                            instruction.operands()[summary.stateParameter + 1];
+                                        const auto value = evaluateConstant(stateArgument, defs);
+                                        if (!value.has_value() || *value != summary.terminalState) {
+                                          return false;
+                                        }
+                                        erased = true;
+                                        return true;
+                                      }),
+                       instructions.end());
   }
   return erased;
 }
@@ -440,20 +432,16 @@ std::unordered_set<std::string> collectBlockNames(const Function& function) {
   return names;
 }
 
-std::string freshValue(std::unordered_set<std::string>& names,
-                       const std::string& stem) {
+std::string freshValue(std::unordered_set<std::string>& names, const std::string& stem) {
   for (std::size_t suffix = 0;; ++suffix) {
-    const std::string candidate = "%recursive.call." + stem + "." +
-                                  std::to_string(suffix);
+    const std::string candidate = "%recursive.call." + stem + "." + std::to_string(suffix);
     if (names.insert(candidate).second) return candidate;
   }
 }
 
-std::string freshBlock(std::unordered_set<std::string>& names,
-                       const std::string& stem) {
+std::string freshBlock(std::unordered_set<std::string>& names, const std::string& stem) {
   for (std::size_t suffix = 0;; ++suffix) {
-    const std::string candidate = "recursive.call." + stem + "." +
-                                  std::to_string(suffix);
+    const std::string candidate = "recursive.call." + stem + "." + std::to_string(suffix);
     if (names.insert(candidate).second) return candidate;
   }
 }
@@ -469,10 +457,8 @@ std::vector<std::string> branchSuccessors(const std::vector<Instruction>& suffix
   return {};
 }
 
-void replacePhiPredecessor(Function& function,
-                           const std::vector<std::string>& successors,
-                           const std::string& oldPredecessor,
-                           const std::string& newPredecessor) {
+void replacePhiPredecessor(Function& function, const std::vector<std::string>& successors,
+                           const std::string& oldPredecessor, const std::string& newPredecessor) {
   const std::unordered_set<std::string> targets(successors.begin(), successors.end());
   for (auto& block : function.blocks()) {
     if (targets.find(block.name()) == targets.end()) continue;
@@ -482,18 +468,16 @@ void replacePhiPredecessor(Function& function,
       for (std::size_t index = 2; index < operands.size(); index += 2) {
         if (operands[index] == oldPredecessor) operands[index] = newPredecessor;
       }
-      instruction =
-          Instruction{"phi", std::move(operands), instruction.result()};
+      instruction = Instruction{"phi", std::move(operands), instruction.result()};
     }
   }
 }
 
-std::string cloneExpression(
-    const std::string& value, const DefinitionMap& calleeDefs,
-    const std::unordered_map<std::string, std::string>& parameters,
-    std::unordered_map<std::string, std::string>& cloned,
-    std::unordered_set<std::string>& valueNames,
-    std::vector<Instruction>& output) {
+std::string cloneExpression(const std::string& value, const DefinitionMap& calleeDefs,
+                            const std::unordered_map<std::string, std::string>& parameters,
+                            std::unordered_map<std::string, std::string>& cloned,
+                            std::unordered_set<std::string>& valueNames,
+                            std::vector<Instruction>& output) {
   long long literal = 0;
   if (detail::parseIntegerLiteral(value, literal)) return value;
   const auto parameter = parameters.find(value);
@@ -504,20 +488,18 @@ std::string cloneExpression(
   if (found == calleeDefs.end()) return {};
   const auto& source = *found->second;
   const auto& opcode = source.opcode();
-  if (!detail::isSideEffectFree(source) || opcode == "alloca" ||
-      opcode == "load" || opcode == "div" || opcode == "mod" ||
-      opcode == "sdiv" || opcode == "srem") {
+  if (!detail::isSideEffectFree(source) || opcode == "alloca" || opcode == "load" ||
+      opcode == "div" || opcode == "mod" || opcode == "sdiv" || opcode == "srem") {
     return {};
   }
   auto operands = source.operands();
   std::size_t operandCount = operands.size();
-  if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
-      opcode == "trunc") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
     operandCount = std::min<std::size_t>(1, operandCount);
   }
   for (std::size_t index = 0; index < operandCount; ++index) {
-    operands[index] = cloneExpression(operands[index], calleeDefs, parameters,
-                                      cloned, valueNames, output);
+    operands[index] =
+        cloneExpression(operands[index], calleeDefs, parameters, cloned, valueNames, output);
     if (operands[index].empty()) return {};
   }
   const auto result = freshValue(valueNames, "guard");
@@ -527,8 +509,7 @@ std::string cloneExpression(
 }
 
 bool specializeCallSite(Function& function, const Function& snapshot,
-                        const EntryReturnSummary& summary,
-                        const std::string& specializedName,
+                        const EntryReturnSummary& summary, const std::string& specializedName,
                         std::int32_t specializedState, std::size_t blockIndex,
                         std::size_t instructionIndex) {
   const auto call = function.blocks()[blockIndex].instructions()[instructionIndex];
@@ -538,30 +519,26 @@ bool specializeCallSite(Function& function, const Function& snapshot,
   const auto calleeDefs = definitions(snapshot);
   std::unordered_map<std::string, std::string> parameters;
   for (std::size_t index = 0; index < snapshot.parameters().size(); ++index) {
-    parameters.emplace(snapshot.parameters()[index].name,
-                       call.operands()[index + 1]);
+    parameters.emplace(snapshot.parameters()[index].name, call.operands()[index + 1]);
   }
   std::unordered_map<std::string, std::string> cloned;
   std::vector<Instruction> guardInstructions;
   std::string noOpCondition;
   for (const auto& predicate : summary.predicates) {
-    auto condition = cloneExpression(predicate.condition, calleeDefs, parameters,
-                                     cloned, valueNames, guardInstructions);
+    auto condition = cloneExpression(predicate.condition, calleeDefs, parameters, cloned,
+                                     valueNames, guardInstructions);
     if (condition.empty()) return false;
     if (!predicate.returnWhenTrue) {
       const auto inverted = freshValue(valueNames, "guard.not");
-      guardInstructions.emplace_back("xor",
-                                     std::vector<std::string>{condition, "1"},
-                                     inverted);
+      guardInstructions.emplace_back("xor", std::vector<std::string>{condition, "1"}, inverted);
       condition = inverted;
     }
     if (noOpCondition.empty()) {
       noOpCondition = condition;
     } else {
       const auto combined = freshValue(valueNames, "guard.or");
-      guardInstructions.emplace_back(
-          "or", std::vector<std::string>{noOpCondition, condition},
-          combined);
+      guardInstructions.emplace_back("or", std::vector<std::string>{noOpCondition, condition},
+                                     combined);
       noOpCondition = combined;
     }
   }
@@ -577,8 +554,7 @@ bool specializeCallSite(Function& function, const Function& snapshot,
 
   auto& originalInstructions = function.blocks()[blockIndex].instructions();
   std::vector<Instruction> suffix(
-      originalInstructions.begin() +
-          static_cast<std::ptrdiff_t>(instructionIndex + 1),
+      originalInstructions.begin() + static_cast<std::ptrdiff_t>(instructionIndex + 1),
       originalInstructions.end());
   const auto oldSuccessors = branchSuccessors(suffix);
   originalInstructions.erase(
@@ -592,10 +568,9 @@ bool specializeCallSite(Function& function, const Function& snapshot,
 
   BasicBlock dispatch{dispatchName};
   dispatch.addInstruction(Instruction{
-      "icmp.eq", {stateArgument, std::to_string(specializedState)},
-      specializeCondition});
-  dispatch.addInstruction(Instruction{
-      "br", {specializeCondition, specializedBlockName, genericName}});
+      "icmp.eq", {stateArgument, std::to_string(specializedState)}, specializeCondition});
+  dispatch.addInstruction(
+      Instruction{"br", {specializeCondition, specializedBlockName, genericName}});
 
   BasicBlock generic{genericName};
   generic.addInstruction(call);
@@ -604,16 +579,14 @@ bool specializeCallSite(Function& function, const Function& snapshot,
   auto specializedOperands = call.operands();
   specializedOperands[0] = "@" + specializedName;
   BasicBlock specialized{specializedBlockName};
-  specialized.addInstruction(
-      Instruction{"call", std::move(specializedOperands), call.result()});
+  specialized.addInstruction(Instruction{"call", std::move(specializedOperands), call.result()});
   specialized.addInstruction(Instruction{"br", {continuationName}});
 
   BasicBlock continuation{continuationName};
   for (auto& instruction : suffix) continuation.addInstruction(std::move(instruction));
   replacePhiPredecessor(function, oldSuccessors, callerName, continuationName);
 
-  auto insertion = function.blocks().begin() +
-                   static_cast<std::ptrdiff_t>(blockIndex + 1);
+  auto insertion = function.blocks().begin() + static_cast<std::ptrdiff_t>(blockIndex + 1);
   insertion = function.blocks().insert(insertion, std::move(dispatch));
   ++insertion;
   insertion = function.blocks().insert(insertion, std::move(specialized));
@@ -648,14 +621,13 @@ struct CountedRange {
 
 bool isGep(const Instruction& instruction) {
   const auto& opcode = instruction.opcode();
-  return opcode == "getelementptr" || opcode == "getelementptr.linear" ||
-         opcode == "gep" || opcode == "gep.linear";
+  return opcode == "getelementptr" || opcode == "getelementptr.linear" || opcode == "gep" ||
+         opcode == "gep.linear";
 }
 
 bool isStore(const Instruction& instruction) {
   return instruction.opcode() == "store" &&
-         (instruction.operands().size() == 2 ||
-          instruction.operands().size() == 3);
+         (instruction.operands().size() == 2 || instruction.operands().size() == 3);
 }
 
 const std::string& storeValue(const Instruction& instruction) {
@@ -666,11 +638,9 @@ const std::string& storeAddress(const Instruction& instruction) {
   return instruction.operands().back();
 }
 
-std::optional<Access> accessFor(const std::string& address,
-                                const DefinitionMap& defs) {
+std::optional<Access> accessFor(const std::string& address, const DefinitionMap& defs) {
   const auto found = defs.find(address);
-  if (found == defs.end() || !isGep(*found->second) ||
-      found->second->operands().size() != 2) {
+  if (found == defs.end() || !isGep(*found->second) || found->second->operands().size() != 2) {
     return std::nullopt;
   }
   return Access{found->second->operands()[0], found->second->operands()[1]};
@@ -725,34 +695,27 @@ bool allocaDoesNotEscape(const Function& function, const DefinitionMap& defs,
   return true;
 }
 
-bool isLoadFrom(const std::string& value, const std::string& address,
-                const DefinitionMap& defs) {
+bool isLoadFrom(const std::string& value, const std::string& address, const DefinitionMap& defs) {
   const auto found = defs.find(value);
   return found != defs.end() && found->second->opcode() == "load" &&
-         found->second->operands().size() == 2 &&
-         found->second->operands()[1] == address;
+         found->second->operands().size() == 2 && found->second->operands()[1] == address;
 }
 
-bool loadsSameAddress(const std::string& lhs, const std::string& rhs,
-                      const DefinitionMap& defs) {
+bool loadsSameAddress(const std::string& lhs, const std::string& rhs, const DefinitionMap& defs) {
   if (lhs == rhs) return true;
   const auto lhsDefinition = defs.find(lhs);
   const auto rhsDefinition = defs.find(rhs);
   return lhsDefinition != defs.end() && rhsDefinition != defs.end() &&
-         lhsDefinition->second->opcode() == "load" &&
-         rhsDefinition->second->opcode() == "load" &&
+         lhsDefinition->second->opcode() == "load" && rhsDefinition->second->opcode() == "load" &&
          lhsDefinition->second->operands().size() == 2 &&
          rhsDefinition->second->operands().size() == 2 &&
-         lhsDefinition->second->operands()[1] ==
-             rhsDefinition->second->operands()[1];
+         lhsDefinition->second->operands()[1] == rhsDefinition->second->operands()[1];
 }
 
-bool isOneLess(const std::string& value, const std::string& reference,
-               const DefinitionMap& defs) {
+bool isOneLess(const std::string& value, const std::string& reference, const DefinitionMap& defs) {
   const auto found = defs.find(value);
   if (found == defs.end() || found->second->opcode() != "sub" ||
-      found->second->operands().size() != 2 ||
-      found->second->operands()[1] != "1") {
+      found->second->operands().size() != 2 || found->second->operands()[1] != "1") {
     return false;
   }
   return loadsSameAddress(found->second->operands()[0], reference, defs);
@@ -762,8 +725,7 @@ std::string pointerRoot(std::string address, const DefinitionMap& defs) {
   std::unordered_set<std::string> visited;
   while (visited.insert(address).second) {
     const auto found = defs.find(address);
-    if (found == defs.end() || !isGep(*found->second) ||
-        found->second->operands().size() != 2) {
+    if (found == defs.end() || !isGep(*found->second) || found->second->operands().size() != 2) {
       break;
     }
     address = found->second->operands()[0];
@@ -783,8 +745,7 @@ bool isAddOneFromAddress(const std::string& value, const std::string& address,
          (operands[1] == "1" && isLoadFrom(operands[0], address, defs));
 }
 
-bool isAddOne(const std::string& value, const std::string& prior,
-              const DefinitionMap& defs) {
+bool isAddOne(const std::string& value, const std::string& prior, const DefinitionMap& defs) {
   const auto found = defs.find(value);
   if (found == defs.end() || found->second->opcode() != "add" ||
       found->second->operands().size() != 2) {
@@ -807,8 +768,7 @@ void collectExpressionLeaves(const std::string& value, const DefinitionMap& defs
   }
   const auto& instruction = *found->second;
   if (!detail::isSideEffectFree(instruction) || instruction.opcode() == "load" ||
-      instruction.opcode() == "phi" || instruction.opcode() == "alloca" ||
-      isGep(instruction)) {
+      instruction.opcode() == "phi" || instruction.opcode() == "alloca" || isGep(instruction)) {
     leaves.insert(value);
     visiting.erase(value);
     return;
@@ -824,16 +784,16 @@ void collectExpressionLeaves(const std::string& value, const DefinitionMap& defs
   visiting.erase(value);
 }
 
-std::optional<std::string> expressionFingerprint(
-    const std::string& value, const DefinitionMap& defs,
-    const Function& function, const std::string& element,
-    std::unordered_map<std::string, std::string>& memo,
-    std::unordered_set<std::string>& visiting) {
+std::optional<std::string> expressionFingerprint(const std::string& value,
+                                                 const DefinitionMap& defs,
+                                                 const Function& function,
+                                                 const std::string& element,
+                                                 std::unordered_map<std::string, std::string>& memo,
+                                                 std::unordered_set<std::string>& visiting) {
   if (value == element) return std::string{"$element"};
   long long literal = 0;
   if (detail::parseIntegerLiteral(value, literal)) {
-    return "#" + std::to_string(static_cast<std::int32_t>(
-                     static_cast<std::uint32_t>(literal)));
+    return "#" + std::to_string(static_cast<std::int32_t>(static_cast<std::uint32_t>(literal)));
   }
   for (std::size_t index = 0; index < function.parameters().size(); ++index) {
     if (function.parameters()[index].name == value) {
@@ -846,13 +806,12 @@ std::optional<std::string> expressionFingerprint(
   if (found == defs.end() || !visiting.insert(value).second) return std::nullopt;
   const auto& instruction = *found->second;
   const auto& opcode = instruction.opcode();
-  if (!detail::isSideEffectFree(instruction) || opcode == "load" ||
-      opcode == "phi" || opcode == "alloca" || isGep(instruction)) {
+  if (!detail::isSideEffectFree(instruction) || opcode == "load" || opcode == "phi" ||
+      opcode == "alloca" || isGep(instruction)) {
     visiting.erase(value);
     return std::nullopt;
   }
-  if ((opcode == "sdiv" || opcode == "srem" || opcode == "div" ||
-       opcode == "mod") &&
+  if ((opcode == "sdiv" || opcode == "srem" || opcode == "div" || opcode == "mod") &&
       (instruction.operands().size() != 2 ||
        !evaluateConstant(instruction.operands()[1], defs).has_value() ||
        *evaluateConstant(instruction.operands()[1], defs) == 0)) {
@@ -860,15 +819,14 @@ std::optional<std::string> expressionFingerprint(
     return std::nullopt;
   }
   std::size_t count = instruction.operands().size();
-  if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
-      opcode == "trunc") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
     count = std::min<std::size_t>(1, count);
   }
   std::ostringstream stream;
   stream << opcode << '(';
   for (std::size_t index = 0; index < count; ++index) {
-    const auto operand = expressionFingerprint(instruction.operands()[index], defs,
-                                               function, element, memo, visiting);
+    const auto operand = expressionFingerprint(instruction.operands()[index], defs, function,
+                                               element, memo, visiting);
     if (!operand.has_value()) {
       visiting.erase(value);
       return std::nullopt;
@@ -882,17 +840,17 @@ std::optional<std::string> expressionFingerprint(
   return stream.str();
 }
 
-std::optional<std::string> expressionFingerprint(
-    const std::string& value, const DefinitionMap& defs,
-    const Function& function, const std::string& element) {
+std::optional<std::string> expressionFingerprint(const std::string& value,
+                                                 const DefinitionMap& defs,
+                                                 const Function& function,
+                                                 const std::string& element) {
   std::unordered_map<std::string, std::string> memo;
   std::unordered_set<std::string> visiting;
   return expressionFingerprint(value, defs, function, element, memo, visiting);
 }
 
-bool hasCountedIndex(const Function& function, const DefinitionMap& defs,
-                     const std::string& index, std::int32_t initial,
-                     std::size_t bound) {
+bool hasCountedIndex(const Function& function, const DefinitionMap& defs, const std::string& index,
+                     std::int32_t initial, std::size_t bound) {
   const auto load = defs.find(index);
   if (load == defs.end() || load->second->opcode() != "load" ||
       load->second->operands().size() != 2) {
@@ -907,11 +865,9 @@ bool hasCountedIndex(const Function& function, const DefinitionMap& defs,
       if (isStore(instruction) && storeAddress(instruction) == slot) {
         const auto constant = evaluateConstant(storeValue(instruction), defs);
         initialized |= constant.has_value() && *constant == initial;
-        incremented |=
-            isAddOneFromAddress(storeValue(instruction), slot, defs);
+        incremented |= isAddOneFromAddress(storeValue(instruction), slot, defs);
       }
-      if (instruction.opcode() == "icmp.slt" &&
-          instruction.operands().size() == 2) {
+      if (instruction.opcode() == "icmp.slt" && instruction.operands().size() == 2) {
         const auto& operands = instruction.operands();
         bounded |= isLoadFrom(operands[0], slot, defs) &&
                    evaluateConstant(operands[1], defs) ==
@@ -922,9 +878,10 @@ bool hasCountedIndex(const Function& function, const DefinitionMap& defs,
   return initialized && incremented && bounded;
 }
 
-std::optional<CountedRange> countedRangeForBodyIndex(
-    const Function& function, const DefinitionMap& defs,
-    const BasicBlock& body, const std::string& index) {
+std::optional<CountedRange> countedRangeForBodyIndex(const Function& function,
+                                                     const DefinitionMap& defs,
+                                                     const BasicBlock& body,
+                                                     const std::string& index) {
   const auto indexLoad = defs.find(index);
   if (indexLoad == defs.end() || indexLoad->second->opcode() != "load" ||
       indexLoad->second->operands().size() != 2) {
@@ -939,8 +896,7 @@ std::optional<CountedRange> countedRangeForBodyIndex(
     }
   }
   const auto* bodyTerminator = body.terminator();
-  if (!increments || bodyTerminator == nullptr ||
-      bodyTerminator->opcode() != "br" ||
+  if (!increments || bodyTerminator == nullptr || bodyTerminator->opcode() != "br" ||
       bodyTerminator->operands().size() != 1) {
     return std::nullopt;
   }
@@ -977,8 +933,7 @@ std::optional<CountedRange> countedRangeForBodyIndex(
 }
 
 bool verifyPrefixBoundaries(const Function& function, const DefinitionMap& defs,
-                            const std::string& countAlloca,
-                            const std::string& headAlloca,
+                            const std::string& countAlloca, const std::string& headAlloca,
                             const std::string& rangeBegin, std::size_t extent,
                             std::string& tailAlloca) {
   bool headZero = false;
@@ -1021,18 +976,15 @@ bool verifyPrefixBoundaries(const Function& function, const DefinitionMap& defs,
             tailZero = true;
           }
         }
-        if (!tailAlloca.empty() && target->root == tailAlloca &&
-            !indexConstant.has_value() &&
+        if (!tailAlloca.empty() && target->root == tailAlloca && !indexConstant.has_value() &&
             hasCountedIndex(function, defs, target->index, 1, extent)) {
           const auto& other = value->second->operands()[0] == operand
                                   ? value->second->operands()[1]
                                   : value->second->operands()[0];
           const auto previousLoad = defs.find(other);
-          if (previousLoad != defs.end() &&
-              previousLoad->second->opcode() == "load" &&
+          if (previousLoad != defs.end() && previousLoad->second->opcode() == "load" &&
               previousLoad->second->operands().size() == 2) {
-            const auto previous =
-                accessFor(previousLoad->second->operands()[1], defs);
+            const auto previous = accessFor(previousLoad->second->operands()[1], defs);
             if (previous.has_value() && previous->root == tailAlloca &&
                 isOneLess(previous->index, target->index, defs)) {
               recursiveStep = true;
@@ -1047,10 +999,8 @@ bool verifyPrefixBoundaries(const Function& function, const DefinitionMap& defs,
 
 bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
                           const std::string& arrayParameter,
-                          const std::string& histogramFingerprint,
-                          const std::string& rangeBegin, std::size_t extent,
-                          std::string& headAlloca,
-                          std::string& tailAlloca,
+                          const std::string& histogramFingerprint, const std::string& rangeBegin,
+                          std::size_t extent, std::string& headAlloca, std::string& tailAlloca,
                           const std::string& countAlloca) {
   for (const auto& conditionBlock : function.blocks()) {
     const auto* terminator = conditionBlock.terminator();
@@ -1060,8 +1010,7 @@ bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
     }
     const auto compare = defs.find(terminator->operands()[0]);
     if (compare == defs.end() ||
-        (compare->second->opcode() != "icmp.ne" &&
-         compare->second->opcode() != "icmp.eq") ||
+        (compare->second->opcode() != "icmp.ne" && compare->second->opcode() != "icmp.eq") ||
         compare->second->operands().size() != 2) {
       continue;
     }
@@ -1072,24 +1021,20 @@ bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
       std::unordered_set<std::string> visiting;
       collectExpressionLeaves(selector, defs, leaves, visiting);
       for (const auto& currentValue : leaves) {
-        const auto fingerprint =
-            expressionFingerprint(selector, defs, function, currentValue);
+        const auto fingerprint = expressionFingerprint(selector, defs, function, currentValue);
         if (!fingerprint.has_value() || *fingerprint != histogramFingerprint) {
           continue;
         }
-        const std::string bodyName =
-            compare->second->opcode() == "icmp.ne"
-                ? terminator->operands()[1]
-                : terminator->operands()[2];
-        const std::string exitName =
-            compare->second->opcode() == "icmp.ne"
-                ? terminator->operands()[2]
-                : terminator->operands()[1];
+        const std::string bodyName = compare->second->opcode() == "icmp.ne"
+                                         ? terminator->operands()[1]
+                                         : terminator->operands()[2];
+        const std::string exitName = compare->second->opcode() == "icmp.ne"
+                                         ? terminator->operands()[2]
+                                         : terminator->operands()[1];
         const auto* body = findBlock(function, bodyName);
         const auto* exit = findBlock(function, exitName);
         if (body == nullptr || exit == nullptr || body->terminator() == nullptr ||
-            body->terminator()->opcode() != "br" ||
-            body->terminator()->operands().size() != 1 ||
+            body->terminator()->opcode() != "br" || body->terminator()->operands().size() != 1 ||
             body->terminator()->operands()[0] != conditionBlock.name()) {
           continue;
         }
@@ -1104,20 +1049,18 @@ bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
           const auto target = accessFor(storeAddress(instruction), defs);
           if (!target.has_value()) continue;
           if (target->index == selector && target->root != arrayParameter) {
-            if (isAddOneFromAddress(storeValue(instruction),
-                                    storeAddress(instruction), defs)) {
+            if (isAddOneFromAddress(storeValue(instruction), storeAddress(instruction), defs)) {
               candidateHead = target->root;
               bodyIncrement = true;
             }
           }
-          if (target->root == arrayParameter &&
-              storeValue(instruction) == currentValue) {
-            const auto displacedLoad = std::find_if(
-                body->instructions().begin(), body->instructions().end(),
-                [&](const Instruction& load) {
-                  return load.opcode() == "load" && load.operands().size() == 2 &&
-                         load.operands()[1] == storeAddress(instruction);
-                });
+          if (target->root == arrayParameter && storeValue(instruction) == currentValue) {
+            const auto displacedLoad =
+                std::find_if(body->instructions().begin(), body->instructions().end(),
+                             [&](const Instruction& load) {
+                               return load.opcode() == "load" && load.operands().size() == 2 &&
+                                      load.operands()[1] == storeAddress(instruction);
+                             });
             if (displacedLoad != body->instructions().end()) {
               displaced = displacedLoad->result();
               bodyStore = true;
@@ -1133,51 +1076,45 @@ bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
           }
           const auto target = accessFor(storeAddress(instruction), defs);
           if (!target.has_value()) continue;
-          if (target->root == arrayParameter &&
-              storeValue(instruction) == currentValue) {
+          if (target->root == arrayParameter && storeValue(instruction) == currentValue) {
             exitStore = true;
           }
-          if (target->root == candidateHead &&
-              loadsSameAddress(target->index, outer, defs)) {
-            exitIncrement |= isAddOneFromAddress(
-                storeValue(instruction), storeAddress(instruction), defs);
+          if (target->root == candidateHead && loadsSameAddress(target->index, outer, defs)) {
+            exitIncrement |=
+                isAddOneFromAddress(storeValue(instruction), storeAddress(instruction), defs);
           }
         }
         const auto phi = defs.find(currentValue);
         bool phiCarriesDisplaced = false;
         if (phi != defs.end() && phi->second->opcode() == "phi") {
-          for (std::size_t index = 1; index < phi->second->operands().size();
-               index += 2) {
+          for (std::size_t index = 1; index < phi->second->operands().size(); index += 2) {
             phiCarriesDisplaced |= phi->second->operands()[index] == displaced;
           }
         }
         if (!exitStore || !exitIncrement || !phiCarriesDisplaced) continue;
         if (!hasCountedIndex(function, defs, outer, 0, extent)) continue;
         std::string candidateTail;
-        if (!verifyPrefixBoundaries(function, defs, countAlloca, candidateHead,
-                                    rangeBegin, extent, candidateTail)) {
+        if (!verifyPrefixBoundaries(function, defs, countAlloca, candidateHead, rangeBegin, extent,
+                                    candidateTail)) {
           continue;
         }
         bool headTailCondition = false;
         for (const auto& block : function.blocks()) {
           for (const auto& instruction : block.instructions()) {
-            if (instruction.opcode() != "icmp.slt" ||
-                instruction.operands().size() != 2) {
+            if (instruction.opcode() != "icmp.slt" || instruction.operands().size() != 2) {
               continue;
             }
             const auto lhsLoad = defs.find(instruction.operands()[0]);
             const auto rhsLoad = defs.find(instruction.operands()[1]);
             if (lhsLoad == defs.end() || rhsLoad == defs.end() ||
-                lhsLoad->second->opcode() != "load" ||
-                rhsLoad->second->opcode() != "load" ||
+                lhsLoad->second->opcode() != "load" || rhsLoad->second->opcode() != "load" ||
                 lhsLoad->second->operands().size() != 2 ||
                 rhsLoad->second->operands().size() != 2) {
               continue;
             }
             const auto lhs = accessFor(lhsLoad->second->operands()[1], defs);
             const auto rhs = accessFor(rhsLoad->second->operands()[1], defs);
-            headTailCondition |= lhs.has_value() && rhs.has_value() &&
-                                 lhs->root == candidateHead &&
+            headTailCondition |= lhs.has_value() && rhs.has_value() && lhs->root == candidateHead &&
                                  rhs->root == candidateTail &&
                                  loadsSameAddress(lhs->index, rhs->index, defs);
           }
@@ -1192,8 +1129,7 @@ bool verifyCyclePartition(const Function& function, const DefinitionMap& defs,
   return false;
 }
 
-std::optional<UniformPartitionCandidate> findUniformPartition(
-    const Function& function) {
+std::optional<UniformPartitionCandidate> findUniformPartition(const Function& function) {
   const auto defs = definitions(function);
   std::unordered_map<std::string, std::size_t> localArrays;
   for (const auto& [value, definition] : defs) {
@@ -1239,38 +1175,33 @@ std::optional<UniformPartitionCandidate> findUniformPartition(
           arrayParameter |= parameter.type != "int" && parameter.name == source->root;
         }
         if (!arrayParameter) continue;
-        const auto range =
-            countedRangeForBodyIndex(function, defs, block, source->index);
+        const auto range = countedRangeForBodyIndex(function, defs, block, source->index);
         if (!range.has_value()) continue;
-        const auto fingerprint =
-            expressionFingerprint(count->index, defs, function, leaf);
+        const auto fingerprint = expressionFingerprint(count->index, defs, function, leaf);
         if (!fingerprint.has_value()) continue;
         std::string head;
         std::string tail;
-        if (!verifyCyclePartition(function, defs, source->root, *fingerprint,
-                                  range->begin, extent->second, head, tail,
-                                  count->root)) {
+        if (!verifyCyclePartition(function, defs, source->root, *fingerprint, range->begin,
+                                  extent->second, head, tail, count->root)) {
           continue;
         }
-        return UniformPartitionCandidate{source->root, range->begin, range->end,
-                                         count->root, head, tail, extent->second,
-                                         count->index, leaf};
+        return UniformPartitionCandidate{source->root,   range->begin, range->end,
+                                         count->root,    head,         tail,
+                                         extent->second, count->index, leaf};
       }
     }
   }
   return std::nullopt;
 }
 
-std::optional<std::size_t> parameterIndex(const Function& function,
-                                          const std::string& value) {
+std::optional<std::size_t> parameterIndex(const Function& function, const std::string& value) {
   for (std::size_t index = 0; index < function.parameters().size(); ++index) {
     if (function.parameters()[index].name == value) return index;
   }
   return std::nullopt;
 }
 
-std::optional<Access> loadedAccess(const std::string& value,
-                                   const DefinitionMap& defs) {
+std::optional<Access> loadedAccess(const std::string& value, const DefinitionMap& defs) {
   const auto load = defs.find(value);
   if (load == defs.end() || load->second->opcode() != "load" ||
       load->second->operands().size() != 2) {
@@ -1279,15 +1210,14 @@ std::optional<Access> loadedAccess(const std::string& value,
   return accessFor(load->second->operands()[1], defs);
 }
 
-bool verifyUniformEffectsAndFanout(
-    const Function& function, const UniformPartitionCandidate& candidate,
-    const RecursiveTransition& transition) {
+bool verifyUniformEffectsAndFanout(const Function& function,
+                                   const UniformPartitionCandidate& candidate,
+                                   const RecursiveTransition& transition) {
   const auto beginParameter = parameterIndex(function, candidate.rangeBegin);
   const auto endParameter = parameterIndex(function, candidate.rangeEnd);
   const auto arrayParameter = parameterIndex(function, candidate.arrayParameter);
-  if (!beginParameter.has_value() || !endParameter.has_value() ||
-      !arrayParameter.has_value() || *beginParameter == *endParameter ||
-      *arrayParameter == transition.stateParameter) {
+  if (!beginParameter.has_value() || !endParameter.has_value() || !arrayParameter.has_value() ||
+      *beginParameter == *endParameter || *arrayParameter == transition.stateParameter) {
     return false;
   }
 
@@ -1307,20 +1237,15 @@ bool verifyUniformEffectsAndFanout(
       if (instruction.opcode() == "call") {
         if (!isDirectSelfCall(instruction, function)) return false;
         ++selfCalls;
-        if (instruction.operands()[*arrayParameter + 1] !=
-            candidate.arrayParameter) {
+        if (instruction.operands()[*arrayParameter + 1] != candidate.arrayParameter) {
           return false;
         }
-        const auto begin = loadedAccess(
-            instruction.operands()[*beginParameter + 1], defs);
-        const auto end =
-            loadedAccess(instruction.operands()[*endParameter + 1], defs);
-        if (!begin.has_value() || !end.has_value() ||
-            begin->root != candidate.headAlloca ||
+        const auto begin = loadedAccess(instruction.operands()[*beginParameter + 1], defs);
+        const auto end = loadedAccess(instruction.operands()[*endParameter + 1], defs);
+        if (!begin.has_value() || !end.has_value() || begin->root != candidate.headAlloca ||
             end->root != candidate.tailAlloca ||
             !loadsSameAddress(begin->index, end->index, defs) ||
-            !hasCountedIndex(function, defs, begin->index, 0,
-                             candidate.extent)) {
+            !hasCountedIndex(function, defs, begin->index, 0, candidate.extent)) {
           return false;
         }
       }
@@ -1336,11 +1261,12 @@ bool verifyUniformEffectsAndFanout(
   return selfCalls == 1 && arrayStores == 2;
 }
 
-std::string cloneUniformExpression(
-    const std::string& value, const DefinitionMap& defs,
-    const std::string& element, const std::string& replacement,
-    const Function& function, std::unordered_map<std::string, std::string>& cloned,
-    std::unordered_set<std::string>& names, std::vector<Instruction>& output) {
+std::string cloneUniformExpression(const std::string& value, const DefinitionMap& defs,
+                                   const std::string& element, const std::string& replacement,
+                                   const Function& function,
+                                   std::unordered_map<std::string, std::string>& cloned,
+                                   std::unordered_set<std::string>& names,
+                                   std::vector<Instruction>& output) {
   if (value == element) return replacement;
   long long literal = 0;
   if (detail::parseIntegerLiteral(value, literal)) return value;
@@ -1353,12 +1279,11 @@ std::string cloneUniformExpression(
   if (found == defs.end()) return {};
   const auto& instruction = *found->second;
   const auto& opcode = instruction.opcode();
-  if (!detail::isSideEffectFree(instruction) || opcode == "load" ||
-      opcode == "phi" || opcode == "alloca" || isGep(instruction)) {
+  if (!detail::isSideEffectFree(instruction) || opcode == "load" || opcode == "phi" ||
+      opcode == "alloca" || isGep(instruction)) {
     return {};
   }
-  if ((opcode == "sdiv" || opcode == "srem" || opcode == "div" ||
-       opcode == "mod") &&
+  if ((opcode == "sdiv" || opcode == "srem" || opcode == "div" || opcode == "mod") &&
       (instruction.operands().size() != 2 ||
        !evaluateConstant(instruction.operands()[1], defs).has_value() ||
        *evaluateConstant(instruction.operands()[1], defs) == 0)) {
@@ -1366,13 +1291,12 @@ std::string cloneUniformExpression(
   }
   auto operands = instruction.operands();
   std::size_t count = operands.size();
-  if (opcode == "cast" || opcode == "zext" || opcode == "sext" ||
-      opcode == "trunc") {
+  if (opcode == "cast" || opcode == "zext" || opcode == "sext" || opcode == "trunc") {
     count = std::min<std::size_t>(1, count);
   }
   for (std::size_t index = 0; index < count; ++index) {
-    operands[index] = cloneUniformExpression(
-        operands[index], defs, element, replacement, function, cloned, names, output);
+    operands[index] = cloneUniformExpression(operands[index], defs, element, replacement, function,
+                                             cloned, names, output);
     if (operands[index].empty()) return {};
   }
   const auto result = freshValue(names, "uniform.selector");
@@ -1381,18 +1305,457 @@ std::string cloneUniformExpression(
   return result;
 }
 
-bool insertUniformPartitionBypass(Function& function,
-                                  const EntryReturnSummary& summary,
+const Instruction* definitionWithOpcode(const std::string& value, const DefinitionMap& defs,
+                                        const std::string& opcode, std::size_t operandCount) {
+  const auto found = defs.find(value);
+  if (found == defs.end() || found->second->opcode() != opcode ||
+      found->second->operands().size() != operandCount) {
+    return nullptr;
+  }
+  return found->second;
+}
+
+std::optional<unsigned> powerOfTwoDigitWidth(const Function& function,
+                                             const UniformPartitionCandidate& candidate,
+                                             const RecursiveTransition& transition) {
+  if (transition.step != -1 || candidate.extent < 2 ||
+      (candidate.extent & (candidate.extent - 1)) != 0) {
+    return std::nullopt;
+  }
+  unsigned digitWidth = 0;
+  for (std::size_t extent = candidate.extent; extent > 1; extent >>= 1) {
+    ++digitWidth;
+  }
+  if (digitWidth == 0 || digitWidth >= 32) return std::nullopt;
+  const auto threshold = static_cast<std::int32_t>((32U + digitWidth - 1) / digitWidth);
+  const auto& state = function.parameters()[transition.stateParameter].name;
+  const auto defs = definitions(function);
+
+  const auto* result = definitionWithOpcode(candidate.selector, defs, "select", 3);
+  if (result == nullptr || result->operands()[1] != "0") return std::nullopt;
+  const auto* reachesZero = definitionWithOpcode(result->operands()[0], defs, "icmp.sge", 2);
+  if (reachesZero == nullptr || reachesZero->operands()[0] != state ||
+      evaluateConstant(reachesZero->operands()[1], defs) != threshold) {
+    return std::nullopt;
+  }
+
+  const auto* remainder = definitionWithOpcode(result->operands()[2], defs, "srem", 2);
+  if (remainder == nullptr || evaluateConstant(remainder->operands()[1], defs) !=
+                                  static_cast<std::int32_t>(candidate.extent)) {
+    return std::nullopt;
+  }
+  const auto* quotient = definitionWithOpcode(remainder->operands()[0], defs, "ashr", 2);
+  if (quotient == nullptr) return std::nullopt;
+  const auto& adjustedValue = quotient->operands()[0];
+  const auto& shiftValue = quotient->operands()[1];
+
+  const auto* shift = definitionWithOpcode(shiftValue, defs, "mul", 2);
+  if (shift == nullptr) return std::nullopt;
+  std::string selectedState;
+  if (evaluateConstant(shift->operands()[0], defs) == static_cast<std::int32_t>(digitWidth)) {
+    selectedState = shift->operands()[1];
+  } else if (evaluateConstant(shift->operands()[1], defs) ==
+             static_cast<std::int32_t>(digitWidth)) {
+    selectedState = shift->operands()[0];
+  } else {
+    return std::nullopt;
+  }
+  const auto* selected = definitionWithOpcode(selectedState, defs, "select", 3);
+  if (selected == nullptr || selected->operands()[1] != state || selected->operands()[2] != "0") {
+    return std::nullopt;
+  }
+  const auto* inRange = definitionWithOpcode(selected->operands()[0], defs, "and", 2);
+  if (inRange == nullptr) return std::nullopt;
+  bool positive = false;
+  bool belowThreshold = false;
+  for (const auto& operand : inRange->operands()) {
+    const auto* greater = definitionWithOpcode(operand, defs, "icmp.sgt", 2);
+    positive |= greater != nullptr && greater->operands()[0] == state &&
+                evaluateConstant(greater->operands()[1], defs) == 0;
+    const auto* less = definitionWithOpcode(operand, defs, "icmp.slt", 2);
+    belowThreshold |= less != nullptr && less->operands()[0] == state &&
+                      evaluateConstant(less->operands()[1], defs) == threshold;
+  }
+  if (!positive || !belowThreshold) return std::nullopt;
+
+  const auto* adjusted = definitionWithOpcode(adjustedValue, defs, "add", 2);
+  if (adjusted == nullptr) return std::nullopt;
+  std::string biasValue;
+  if (adjusted->operands()[0] == candidate.selectorElement) {
+    biasValue = adjusted->operands()[1];
+  } else if (adjusted->operands()[1] == candidate.selectorElement) {
+    biasValue = adjusted->operands()[0];
+  } else {
+    return std::nullopt;
+  }
+  const auto* bias = definitionWithOpcode(biasValue, defs, "and", 2);
+  if (bias == nullptr) return std::nullopt;
+  std::string signValue;
+  std::string maskValue;
+  for (const auto& operand : bias->operands()) {
+    const auto* sign = definitionWithOpcode(operand, defs, "ashr", 2);
+    if (sign != nullptr && sign->operands()[0] == candidate.selectorElement &&
+        evaluateConstant(sign->operands()[1], defs) == 31) {
+      signValue = operand;
+    } else {
+      maskValue = operand;
+    }
+  }
+  if (signValue.empty() || maskValue.empty()) return std::nullopt;
+  const auto* mask = definitionWithOpcode(maskValue, defs, "sub", 2);
+  if (mask == nullptr || evaluateConstant(mask->operands()[1], defs) != 1) {
+    return std::nullopt;
+  }
+  const auto* power = definitionWithOpcode(mask->operands()[0], defs, "shl", 2);
+  if (power == nullptr || evaluateConstant(power->operands()[0], defs) != 1 ||
+      power->operands()[1] != shiftValue) {
+    return std::nullopt;
+  }
+  return digitWidth;
+}
+
+bool specializeExternalCommonPrefixCallSite(Function& caller, const Function& callee,
+                                            const UniformPartitionCandidate& candidate,
+                                            const RecursiveTransition& transition,
+                                            unsigned digitWidth, const std::string& fastCalleeName,
+                                            std::size_t blockIndex, std::size_t instructionIndex) {
+  if (blockIndex >= caller.blocks().size() ||
+      instructionIndex >= caller.blocks()[blockIndex].instructions().size()) {
+    return false;
+  }
+  const auto call = caller.blocks()[blockIndex].instructions()[instructionIndex];
+  if (call.opcode() != "call" || call.hasResult() || call.operands().empty() ||
+      call.operands()[0] != "@" + callee.name() ||
+      call.operands().size() != callee.parameters().size() + 1) {
+    return false;
+  }
+  const auto beginParameter = parameterIndex(callee, candidate.rangeBegin);
+  const auto endParameter = parameterIndex(callee, candidate.rangeEnd);
+  const auto arrayParameter = parameterIndex(callee, candidate.arrayParameter);
+  if (!beginParameter.has_value() || !endParameter.has_value() || !arrayParameter.has_value()) {
+    return false;
+  }
+  const auto& begin = call.operands()[*beginParameter + 1];
+  const auto& end = call.operands()[*endParameter + 1];
+  const auto& array = call.operands()[*arrayParameter + 1];
+  const auto& state = call.operands()[transition.stateParameter + 1];
+
+  auto valueNames = collectValueNames(caller);
+  auto blockNames = collectBlockNames(caller);
+  const auto loadName = freshBlock(blockNames, "prefix.load");
+  const auto headerName = freshBlock(blockNames, "prefix.header");
+  const auto bodyName = freshBlock(blockNames, "prefix.body");
+  const auto advanceName = freshBlock(blockNames, "prefix.advance");
+  const auto summaryName = freshBlock(blockNames, "prefix.summary");
+  const auto digitInitName = freshBlock(blockNames, "prefix.digit.init");
+  const auto digitHeaderName = freshBlock(blockNames, "prefix.digit.header");
+  const auto digitBodyName = freshBlock(blockNames, "prefix.digit.body");
+  const auto dispatchName = freshBlock(blockNames, "prefix.dispatch");
+  const auto fastCallName = freshBlock(blockNames, "prefix.fast");
+  const auto fallbackName = freshBlock(blockNames, "prefix.fallback");
+  const auto continuationName = freshBlock(blockNames, "prefix.continuation");
+
+  const auto nonempty = freshValue(valueNames, "prefix.nonempty");
+  const auto firstAddress = freshValue(valueNames, "prefix.first.address");
+  const auto firstValue = freshValue(valueNames, "prefix.first.value");
+  const auto firstNonnegative = freshValue(valueNames, "prefix.first.nonnegative");
+  const auto firstIndex = freshValue(valueNames, "prefix.first.index");
+  const auto index = freshValue(valueNames, "prefix.index");
+  const auto difference = freshValue(valueNames, "prefix.difference");
+  const auto inRange = freshValue(valueNames, "prefix.in.range");
+  const auto address = freshValue(valueNames, "prefix.address");
+  const auto value = freshValue(valueNames, "prefix.value");
+  const auto nonnegative = freshValue(valueNames, "prefix.nonnegative");
+  const auto changedBits = freshValue(valueNames, "prefix.changed.bits");
+  const auto combined = freshValue(valueNames, "prefix.combined");
+  const auto nextIndex = freshValue(valueNames, "prefix.next.index");
+  const auto identical = freshValue(valueNames, "prefix.identical");
+  const auto shifted = freshValue(valueNames, "prefix.shifted");
+  const auto remaining = freshValue(valueNames, "prefix.remaining");
+  const auto digit = freshValue(valueNames, "prefix.digit");
+  const auto hasMore = freshValue(valueNames, "prefix.has.more");
+  const auto nextRemaining = freshValue(valueNames, "prefix.next.remaining");
+  const auto nextDigit = freshValue(valueNames, "prefix.next.digit");
+  const auto canSkip = freshValue(valueNames, "prefix.can.skip");
+
+  auto& original = caller.blocks()[blockIndex].instructions();
+  std::vector<Instruction> suffix(
+      original.begin() + static_cast<std::ptrdiff_t>(instructionIndex + 1), original.end());
+  const auto oldSuccessors = branchSuccessors(suffix);
+  const auto callerBlockName = caller.blocks()[blockIndex].name();
+  original.erase(original.begin() + static_cast<std::ptrdiff_t>(instructionIndex), original.end());
+  original.emplace_back("icmp.slt", std::vector<std::string>{begin, end}, nonempty);
+  original.emplace_back("br", std::vector<std::string>{nonempty, loadName, fallbackName});
+
+  BasicBlock load{loadName};
+  load.addInstruction(Instruction{"getelementptr", {array, begin}, firstAddress});
+  load.addInstruction(Instruction{"load", {"int", firstAddress}, firstValue});
+  load.addInstruction(Instruction{"icmp.sge", {firstValue, "0"}, firstNonnegative});
+  load.addInstruction(Instruction{"add", {begin, "1"}, firstIndex});
+  load.addInstruction(Instruction{"br", {firstNonnegative, headerName, fallbackName}});
+
+  BasicBlock header{headerName};
+  header.addInstruction(
+      Instruction{"phi", {"int", firstIndex, loadName, nextIndex, advanceName}, index});
+  header.addInstruction(
+      Instruction{"phi", {"int", "0", loadName, combined, advanceName}, difference});
+  header.addInstruction(Instruction{"icmp.slt", {index, end}, inRange});
+  header.addInstruction(Instruction{"br", {inRange, bodyName, summaryName}});
+
+  BasicBlock body{bodyName};
+  body.addInstruction(Instruction{"getelementptr", {array, index}, address});
+  body.addInstruction(Instruction{"load", {"int", address}, value});
+  body.addInstruction(Instruction{"icmp.sge", {value, "0"}, nonnegative});
+  body.addInstruction(Instruction{"br", {nonnegative, advanceName, fallbackName}});
+
+  BasicBlock advance{advanceName};
+  advance.addInstruction(Instruction{"xor", {value, firstValue}, changedBits});
+  advance.addInstruction(Instruction{"or", {difference, changedBits}, combined});
+  advance.addInstruction(Instruction{"add", {index, "1"}, nextIndex});
+  advance.addInstruction(Instruction{"br", {headerName}});
+
+  BasicBlock summary{summaryName};
+  summary.addInstruction(Instruction{"icmp.eq", {difference, "0"}, identical});
+  summary.addInstruction(Instruction{"br", {identical, continuationName, digitInitName}});
+
+  BasicBlock digitInit{digitInitName};
+  digitInit.addInstruction(Instruction{"lshr", {difference, std::to_string(digitWidth)}, shifted});
+  digitInit.addInstruction(Instruction{"br", {digitHeaderName}});
+
+  BasicBlock digitHeader{digitHeaderName};
+  digitHeader.addInstruction(
+      Instruction{"phi", {"int", shifted, digitInitName, nextRemaining, digitBodyName}, remaining});
+  digitHeader.addInstruction(
+      Instruction{"phi", {"int", "0", digitInitName, nextDigit, digitBodyName}, digit});
+  digitHeader.addInstruction(Instruction{"icmp.ne", {remaining, "0"}, hasMore});
+  digitHeader.addInstruction(Instruction{"br", {hasMore, digitBodyName, dispatchName}});
+
+  BasicBlock digitBody{digitBodyName};
+  digitBody.addInstruction(
+      Instruction{"lshr", {remaining, std::to_string(digitWidth)}, nextRemaining});
+  digitBody.addInstruction(Instruction{"add", {digit, "1"}, nextDigit});
+  digitBody.addInstruction(Instruction{"br", {digitHeaderName}});
+
+  BasicBlock dispatch{dispatchName};
+  dispatch.addInstruction(Instruction{"icmp.sgt", {state, digit}, canSkip});
+  dispatch.addInstruction(Instruction{"br", {canSkip, fastCallName, fallbackName}});
+
+  auto fastOperands = call.operands();
+  fastOperands[0] = "@" + fastCalleeName;
+  fastOperands[transition.stateParameter + 1] = digit;
+  BasicBlock fastCall{fastCallName};
+  fastCall.addInstruction(Instruction{"call", std::move(fastOperands)});
+  fastCall.addInstruction(Instruction{"br", {continuationName}});
+
+  BasicBlock fallback{fallbackName};
+  fallback.addInstruction(call);
+  fallback.addInstruction(Instruction{"br", {continuationName}});
+
+  BasicBlock continuation{continuationName};
+  for (auto& instruction : suffix) continuation.addInstruction(std::move(instruction));
+  replacePhiPredecessor(caller, oldSuccessors, callerBlockName, continuationName);
+
+  auto insertion = caller.blocks().begin() + static_cast<std::ptrdiff_t>(blockIndex + 1);
+  insertion = caller.blocks().insert(insertion, std::move(load));
+  insertion = caller.blocks().insert(++insertion, std::move(header));
+  insertion = caller.blocks().insert(++insertion, std::move(body));
+  insertion = caller.blocks().insert(++insertion, std::move(advance));
+  insertion = caller.blocks().insert(++insertion, std::move(summary));
+  insertion = caller.blocks().insert(++insertion, std::move(digitInit));
+  insertion = caller.blocks().insert(++insertion, std::move(digitHeader));
+  insertion = caller.blocks().insert(++insertion, std::move(digitBody));
+  insertion = caller.blocks().insert(++insertion, std::move(dispatch));
+  insertion = caller.blocks().insert(++insertion, std::move(fastCall));
+  insertion = caller.blocks().insert(++insertion, std::move(fallback));
+  caller.blocks().insert(++insertion, std::move(continuation));
+  return true;
+}
+
+std::size_t specializeExternalCommonPrefixCalls(Module& module, std::size_t calleeIndex,
+                                                const Function& callee,
+                                                const UniformPartitionCandidate& candidate,
+                                                const RecursiveTransition& transition,
+                                                unsigned digitWidth,
+                                                const std::string& fastCalleeName) {
+  std::size_t transformed = 0;
+  for (std::size_t functionIndex = 0; functionIndex < module.functions().size(); ++functionIndex) {
+    if (functionIndex == calleeIndex) continue;
+    auto& caller = module.functions()[functionIndex];
+    std::vector<std::pair<std::size_t, std::size_t>> sites;
+    for (std::size_t blockIndex = 0; blockIndex < caller.blocks().size(); ++blockIndex) {
+      for (std::size_t instructionIndex = 0;
+           instructionIndex < caller.blocks()[blockIndex].instructions().size();
+           ++instructionIndex) {
+        const auto& instruction = caller.blocks()[blockIndex].instructions()[instructionIndex];
+        if (instruction.opcode() == "call" && !instruction.operands().empty() &&
+            instruction.operands()[0] == "@" + callee.name()) {
+          sites.emplace_back(blockIndex, instructionIndex);
+        }
+      }
+    }
+    for (auto site = sites.rbegin(); site != sites.rend(); ++site) {
+      if (specializeExternalCommonPrefixCallSite(caller, callee, candidate, transition, digitWidth,
+                                                 fastCalleeName, site->first, site->second)) {
+        ++transformed;
+      }
+    }
+  }
+  return transformed;
+}
+
+Function renamedClone(const Function& source, const std::string& name) {
+  Function clone{name, source.returnType(), source.parameters()};
+  for (const auto& block : source.blocks()) {
+    BasicBlock copied{block.name()};
+    for (const auto& instruction : block.instructions()) {
+      copied.addInstruction(
+          Instruction{instruction.opcode(), instruction.operands(), instruction.result()});
+    }
+    clone.addBlock(std::move(copied));
+  }
+  return clone;
+}
+
+void rewriteDirectCallees(Function& function,
+                          const std::unordered_map<std::string, std::string>& names) {
+  for (auto& block : function.blocks()) {
+    for (auto& instruction : block.instructions()) {
+      if (instruction.opcode() != "call" || instruction.operands().empty()) {
+        continue;
+      }
+      const auto replacement = names.find(instruction.operands()[0]);
+      if (replacement == names.end()) continue;
+      auto operands = instruction.operands();
+      operands[0] = replacement->second;
+      instruction = Instruction{"call", std::move(operands), instruction.result()};
+    }
+  }
+}
+
+struct DigitSelectorSite {
+  std::size_t blockIndex = 0;
+  std::size_t instructionIndex = 0;
+  std::string result;
+  std::string element;
+};
+
+bool isArrayElementValue(const std::string& value, const std::string& arrayParameter,
+                         const DefinitionMap& defs, std::unordered_set<std::string>& visiting) {
+  const auto access = loadedAccess(value, defs);
+  if (access.has_value()) return access->root == arrayParameter;
+  const auto found = defs.find(value);
+  if (found == defs.end() || found->second->opcode() != "phi" || !visiting.insert(value).second) {
+    return false;
+  }
+  const auto& operands = found->second->operands();
+  bool sawIncoming = false;
+  bool valid = true;
+  for (std::size_t index = 1; index < operands.size(); index += 2) {
+    sawIncoming = true;
+    valid &= isArrayElementValue(operands[index], arrayParameter, defs, visiting);
+  }
+  visiting.erase(value);
+  return sawIncoming && valid;
+}
+
+bool rewriteNonnegativeDigitSelectors(Function& function, const std::string& arrayParameter,
+                                      const std::string& selectorFingerprint,
+                                      std::size_t stateParameter, unsigned digitWidth,
+                                      std::size_t extent) {
+  const auto defs = definitions(function);
+  std::vector<DigitSelectorSite> sites;
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size(); ++blockIndex) {
+    const auto& block = function.blocks()[blockIndex];
+    for (std::size_t instructionIndex = 0; instructionIndex < block.instructions().size();
+         ++instructionIndex) {
+      const auto& instruction = block.instructions()[instructionIndex];
+      if (!instruction.hasResult() || !detail::isSideEffectFree(instruction)) {
+        continue;
+      }
+      std::unordered_set<std::string> leaves;
+      std::unordered_set<std::string> visiting;
+      collectExpressionLeaves(instruction.result(), defs, leaves, visiting);
+      for (const auto& leaf : leaves) {
+        std::unordered_set<std::string> arrayVisiting;
+        if (!isArrayElementValue(leaf, arrayParameter, defs, arrayVisiting)) {
+          continue;
+        }
+        const auto fingerprint = expressionFingerprint(instruction.result(), defs, function, leaf);
+        if (fingerprint.has_value() && *fingerprint == selectorFingerprint) {
+          sites.push_back(
+              DigitSelectorSite{blockIndex, instructionIndex, instruction.result(), leaf});
+          break;
+        }
+      }
+    }
+  }
+  if (sites.empty()) return false;
+
+  auto names = collectValueNames(function);
+  std::unordered_map<std::string, std::string> replacements;
+  struct GeneratedSelector {
+    DigitSelectorSite site;
+    std::string shift;
+    std::string shifted;
+    std::string digit;
+  };
+  std::vector<GeneratedSelector> generated;
+  for (const auto& site : sites) {
+    const auto shift = freshValue(names, "nonnegative.shift");
+    const auto shifted = freshValue(names, "nonnegative.shifted");
+    const auto digit = freshValue(names, "nonnegative.digit");
+    replacements.emplace(site.result, digit);
+    generated.push_back(GeneratedSelector{site, shift, shifted, digit});
+  }
+
+  for (auto& block : function.blocks()) {
+    for (auto& instruction : block.instructions()) {
+      auto operands = instruction.operands();
+      bool changed = false;
+      for (auto& operand : operands) {
+        const auto replacement = replacements.find(operand);
+        if (replacement != replacements.end()) {
+          operand = replacement->second;
+          changed = true;
+        }
+      }
+      if (changed) {
+        instruction = Instruction{instruction.opcode(), std::move(operands), instruction.result()};
+      }
+    }
+  }
+
+  std::sort(generated.begin(), generated.end(),
+            [](const GeneratedSelector& lhs, const GeneratedSelector& rhs) {
+              if (lhs.site.blockIndex != rhs.site.blockIndex) {
+                return lhs.site.blockIndex > rhs.site.blockIndex;
+              }
+              return lhs.site.instructionIndex > rhs.site.instructionIndex;
+            });
+  const auto& state = function.parameters()[stateParameter].name;
+  for (auto& item : generated) {
+    auto& instructions = function.blocks()[item.site.blockIndex].instructions();
+    auto insertion = instructions.begin() + static_cast<std::ptrdiff_t>(item.site.instructionIndex);
+    insertion = instructions.insert(
+        insertion, Instruction{"mul", {state, std::to_string(digitWidth)}, item.shift});
+    insertion = instructions.insert(
+        ++insertion, Instruction{"lshr", {item.site.element, item.shift}, item.shifted});
+    instructions.insert(++insertion,
+                        Instruction{"and", {item.shifted, std::to_string(extent - 1)}, item.digit});
+  }
+  return true;
+}
+
+bool insertUniformPartitionBypass(Function& function, const EntryReturnSummary& summary,
                                   const RecursiveTransition& transition) {
   const auto candidate = findUniformPartition(function);
   if (!candidate.has_value() || summary.continuationBlock.empty() ||
       !verifyUniformEffectsAndFanout(function, *candidate, transition)) {
     return false;
   }
-  auto target = std::find_if(function.blocks().begin(), function.blocks().end(),
-                             [&](const BasicBlock& block) {
-                               return block.name() == summary.continuationBlock;
-                             });
+  auto target = std::find_if(
+      function.blocks().begin(), function.blocks().end(),
+      [&](const BasicBlock& block) { return block.name() == summary.continuationBlock; });
   if (target == function.blocks().end()) return false;
   for (const auto& instruction : target->instructions()) {
     if (instruction.opcode() == "phi") return false;
@@ -1418,46 +1781,41 @@ bool insertUniformPartitionBypass(Function& function,
 
   std::unordered_map<std::string, std::string> clonedFirst;
   std::vector<Instruction> firstSelectorInstructions;
-  const auto firstSelector = cloneUniformExpression(
-      candidate->selector, defs, candidate->selectorElement, firstValue, function,
-      clonedFirst, names, firstSelectorInstructions);
+  const auto firstSelector =
+      cloneUniformExpression(candidate->selector, defs, candidate->selectorElement, firstValue,
+                             function, clonedFirst, names, firstSelectorInstructions);
   std::unordered_map<std::string, std::string> clonedCurrent;
   std::vector<Instruction> currentSelectorInstructions;
-  const auto currentSelector = cloneUniformExpression(
-      candidate->selector, defs, candidate->selectorElement, value, function,
-      clonedCurrent, names, currentSelectorInstructions);
+  const auto currentSelector =
+      cloneUniformExpression(candidate->selector, defs, candidate->selectorElement, value, function,
+                             clonedCurrent, names, currentSelectorInstructions);
   if (firstSelector.empty() || currentSelector.empty()) return false;
 
   std::vector<Instruction> fallbackInstructions = std::move(target->instructions());
   const auto oldSuccessors = branchSuccessors(fallbackInstructions);
   target->instructions().clear();
   target->addInstruction(Instruction{
-      "getelementptr", {candidate->arrayParameter, candidate->rangeBegin},
-      firstAddress});
+      "getelementptr", {candidate->arrayParameter, candidate->rangeBegin}, firstAddress});
   target->addInstruction(Instruction{"load", {"int", firstAddress}, firstValue});
   for (auto& instruction : firstSelectorInstructions) {
     target->addInstruction(std::move(instruction));
   }
-  target->addInstruction(Instruction{
-      "add", {candidate->rangeBegin, "1"}, firstIndex});
+  target->addInstruction(Instruction{"add", {candidate->rangeBegin, "1"}, firstIndex});
   target->addInstruction(Instruction{"br", {headerName}});
 
   BasicBlock header{headerName};
-  header.addInstruction(Instruction{
-      "phi", {"int", firstIndex, target->name(), next, advanceName}, index});
-  header.addInstruction(Instruction{
-      "icmp.slt", {index, candidate->rangeEnd}, inRange});
+  header.addInstruction(
+      Instruction{"phi", {"int", firstIndex, target->name(), next, advanceName}, index});
+  header.addInstruction(Instruction{"icmp.slt", {index, candidate->rangeEnd}, inRange});
   header.addInstruction(Instruction{"br", {inRange, bodyName, recurseName}});
 
   BasicBlock body{bodyName};
-  body.addInstruction(Instruction{
-      "getelementptr", {candidate->arrayParameter, index}, address});
+  body.addInstruction(Instruction{"getelementptr", {candidate->arrayParameter, index}, address});
   body.addInstruction(Instruction{"load", {"int", address}, value});
   for (auto& instruction : currentSelectorInstructions) {
     body.addInstruction(std::move(instruction));
   }
-  body.addInstruction(
-      Instruction{"icmp.eq", {currentSelector, firstSelector}, same});
+  body.addInstruction(Instruction{"icmp.eq", {currentSelector, firstSelector}, same});
   body.addInstruction(Instruction{"br", {same, advanceName, fallbackName}});
 
   BasicBlock advance{advanceName};
@@ -1466,13 +1824,13 @@ bool insertUniformPartitionBypass(Function& function,
 
   BasicBlock recurse{recurseName};
   recurse.addInstruction(Instruction{
-      "add", {function.parameters()[transition.stateParameter].name,
-              std::to_string(transition.step)}, nextState});
+      "add",
+      {function.parameters()[transition.stateParameter].name, std::to_string(transition.step)},
+      nextState});
   std::vector<std::string> callOperands{"@" + function.name()};
   for (std::size_t parameter = 0; parameter < function.parameters().size(); ++parameter) {
-    callOperands.push_back(parameter == transition.stateParameter
-                               ? nextState
-                               : function.parameters()[parameter].name);
+    callOperands.push_back(
+        parameter == transition.stateParameter ? nextState : function.parameters()[parameter].name);
   }
   recurse.addInstruction(Instruction{"call", std::move(callOperands)});
   recurse.addInstruction(Instruction{"ret", {}});
@@ -1500,33 +1858,49 @@ bool insertUniformPartitionBypass(Function& function,
 bool transformFunction(Module& module, std::size_t functionIndex) {
   if (functionIndex >= module.functions().size()) return false;
   const Function initialSnapshot = module.functions()[functionIndex];
-  if (initialSnapshot.returnType() != "void" ||
-      initialSnapshot.parameters().empty() ||
+  if (initialSnapshot.returnType() != "void" || initialSnapshot.parameters().empty() ||
       instructionCount(initialSnapshot) > 384) {
     return false;
   }
-  const bool stats =
-      std::getenv("COMPILER_RECURSIVE_CALL_SPECIALIZATION_STATS") != nullptr;
+  const bool stats = std::getenv("COMPILER_RECURSIVE_CALL_SPECIALIZATION_STATS") != nullptr;
   const auto initialSummary = summarizeEntryReturn(initialSnapshot);
   if (!initialSummary.has_value()) return false;
   const auto initialTransition =
       recursiveTransition(initialSnapshot, initialSummary->stateParameter);
   if (!initialTransition.has_value()) return false;
 
-  const bool uniformBypass = insertUniformPartitionBypass(
-      module.functions()[functionIndex], *initialSummary, *initialTransition);
+  const auto initialPartition = findUniformPartition(initialSnapshot);
+  std::optional<unsigned> commonPrefixDigitWidth;
+  std::string selectorFingerprint;
+  if (std::getenv("COMPILER_DISABLE_RECURSIVE_COMMON_PREFIX") == nullptr &&
+      initialPartition.has_value() &&
+      verifyUniformEffectsAndFanout(initialSnapshot, *initialPartition, *initialTransition)) {
+    commonPrefixDigitWidth =
+        powerOfTwoDigitWidth(initialSnapshot, *initialPartition, *initialTransition);
+    if (commonPrefixDigitWidth.has_value()) {
+      const auto defs = definitions(initialSnapshot);
+      const auto fingerprint = expressionFingerprint(
+          initialPartition->selector, defs, initialSnapshot, initialPartition->selectorElement);
+      if (fingerprint.has_value()) {
+        selectorFingerprint = *fingerprint;
+      } else {
+        commonPrefixDigitWidth.reset();
+      }
+    }
+  }
+
+  const bool uniformBypass = insertUniformPartitionBypass(module.functions()[functionIndex],
+                                                          *initialSummary, *initialTransition);
   const Function snapshot = module.functions()[functionIndex];
   const auto summary = summarizeEntryReturn(snapshot);
   if (!summary.has_value()) return uniformBypass;
   const auto transition = recursiveTransition(snapshot, summary->stateParameter);
   if (!transition.has_value()) return uniformBypass;
-  const auto predecessor = static_cast<std::int32_t>(
-      static_cast<std::uint32_t>(summary->terminalState) -
-      static_cast<std::uint32_t>(transition->step));
-  const auto specializedName =
-      freshFunctionName(module, "__recursive_state_specialized_");
-  auto clone = specializedClone(snapshot, specializedName,
-                                summary->stateParameter, predecessor);
+  const auto predecessor =
+      static_cast<std::int32_t>(static_cast<std::uint32_t>(summary->terminalState) -
+                                static_cast<std::uint32_t>(transition->step));
+  const auto specializedName = freshFunctionName(module, "__recursive_state_specialized_");
+  auto clone = specializedClone(snapshot, specializedName, summary->stateParameter, predecessor);
   if (!eraseTerminalCalls(clone, snapshot, *summary)) {
     return uniformBypass;
   }
@@ -1536,30 +1910,54 @@ bool transformFunction(Module& module, std::size_t functionIndex) {
   std::size_t guardedSites = 0;
   auto& function = module.functions()[functionIndex];
   std::vector<std::pair<std::size_t, std::size_t>> sites;
-  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size();
-       ++blockIndex) {
+  for (std::size_t blockIndex = 0; blockIndex < function.blocks().size(); ++blockIndex) {
     for (std::size_t instructionIndex = 0;
          instructionIndex < function.blocks()[blockIndex].instructions().size();
          ++instructionIndex) {
-      if (isDirectSelfCall(
-              function.blocks()[blockIndex].instructions()[instructionIndex],
-              snapshot)) {
+      if (isDirectSelfCall(function.blocks()[blockIndex].instructions()[instructionIndex],
+                           snapshot)) {
         sites.emplace_back(blockIndex, instructionIndex);
       }
     }
   }
   for (auto site = sites.rbegin(); site != sites.rend(); ++site) {
-    if (!specializeCallSite(function, snapshot, *summary, specializedName,
-                            predecessor, site->first, site->second)) {
+    if (!specializeCallSite(function, snapshot, *summary, specializedName, predecessor, site->first,
+                            site->second)) {
       return changed;
     }
     changed = true;
     ++guardedSites;
   }
+  std::size_t commonPrefixSites = 0;
+  bool nonnegativeVersion = false;
+  if (commonPrefixDigitWidth.has_value() && initialPartition.has_value()) {
+    const auto nonnegativeName = freshFunctionName(module, "__recursive_nonnegative_");
+    const auto nonnegativeTerminalName =
+        freshFunctionName(module, "__recursive_nonnegative_terminal_");
+    auto nonnegative = renamedClone(module.functions()[functionIndex], nonnegativeName);
+    if (rewriteNonnegativeDigitSelectors(nonnegative, initialPartition->arrayParameter,
+                                         selectorFingerprint, initialTransition->stateParameter,
+                                         *commonPrefixDigitWidth, initialPartition->extent)) {
+      rewriteDirectCallees(nonnegative, {{"@" + initialSnapshot.name(), "@" + nonnegativeName},
+                                         {"@" + specializedName, "@" + nonnegativeTerminalName}});
+      auto nonnegativeTerminal = specializedClone(nonnegative, nonnegativeTerminalName,
+                                                  summary->stateParameter, predecessor);
+      if (eraseTerminalCalls(nonnegativeTerminal, nonnegative, *summary)) {
+        module.addFunction(std::move(nonnegative));
+        module.addFunction(std::move(nonnegativeTerminal));
+        commonPrefixSites = specializeExternalCommonPrefixCalls(
+            module, functionIndex, initialSnapshot, *initialPartition, *initialTransition,
+            *commonPrefixDigitWidth, nonnegativeName);
+        nonnegativeVersion = commonPrefixSites != 0;
+        changed |= nonnegativeVersion;
+      }
+    }
+  }
   if (stats && changed) {
     std::cerr << "recursive-call-specialization: entry_guarded=" << guardedSites
-              << " state_specialized=1 uniform_bypass="
-              << (uniformBypass ? 1 : 0) << '\n';
+              << " state_specialized=1 uniform_bypass=" << (uniformBypass ? 1 : 0)
+              << " common_prefix_calls=" << commonPrefixSites
+              << " nonnegative_version=" << (nonnegativeVersion ? 1 : 0) << '\n';
   }
   return changed;
 }

@@ -2478,13 +2478,53 @@ correctness 门禁。变换不读取路径、样例、函数/变量/全局/基�
   以及高层统一分类时只扫描一次而不再 histogram、prefix、cycle partition 和
   多桶递归。代价是每项静态汇编约由 245 增至 465 条，存在 A53 I-cache 和分支
   布局风险；QEMU 只作诊断，不能据此宣称正式目标提速。
+- 官方 Cortex-A53：仓库所有者回传三项均通过，`03_sort1/2/3` 为
+  `0.58/0.02/0.07s`；相对父版本已有改善，因此本候选状态由 D 升级为 A 并保留。
 - 消融与状态：总开关为
   `COMPILER_DISABLE_RECURSIVE_CALL_SPECIALIZATION=1`，统计开关为
-  `COMPILER_RECURSIVE_CALL_SPECIALIZATION_STATS=1`。状态：D；本地正确性、隔离、
-  合规和性能门禁已完成，推送后由官方 Cortex-A53 判断保留或独立回退。
+  `COMPILER_RECURSIVE_CALL_SPECIALIZATION_STATS=1`。状态：A；本地正确性、隔离、
+  合规和性能门禁及官方 Cortex-A53 正向结果均已确认。
 
 本候选由 AI 辅助完成递归调用树热点统计、无作用入口摘要、有限状态前驱推导、
 cycle-leader 恒等条件、CFG/SSA 改写、匿名正反例、60/140 门禁、下游误触发隔离
 和实验记录。技术依据为经典 interprocedural predicate propagation、function
 specialization、dead-call elimination、runtime loop versioning 与 partition
 degeneracy bypass；未复制外部编译器实现。
+
+## 2026-08-05 二次幂递归分区的公共前缀摘要与非负专用版本（待平台判定）
+
+- 通用变换：在既有完整 histogram、前缀边界、cycle-leader 分区、唯一递归 fanout
+  和无外部副作用证明之上，进一步识别由中端规范化生成的二次幂 digit 语义。桶数
+  来自局部数组类型，位宽取 `log2(bucket_count)`；递归状态必须每次减一，分类器必须
+  等价于对 i32 做相应次数的正二次幂向零除法并取同一桶数余数。匹配不读取源码、
+  路径、函数/变量/块名、公开输入范围或固定状态上界。
+- 外部入口摘要：对直接外部调用的动态区间只扫描一次。空区间调用原函数；遇到
+  任一负元素也调用原函数。全部非负时，以首元素为基准累计所有元素的按位异或并
+  求或，按最高变化位推导首个可能不同的 digit 状态。若原始状态更高，则所有被跳过
+  状态的分类均一致，原 cycle partition 是恒等变换，可直接从首个变化状态开始；
+  若按位差为零，则所有元素完全相等，整个无副作用递归分区可直接结束。
+- 非负专用版本：入口扫描支配专用调用并证明整段元素非负；分区只做原数组元素的
+  置换，因此该性质在完整递归调用树上保持。专用版本把每次带符号偏置、算术移位和
+  有符号余数的 digit 计算改为逻辑右移与掩码，递归调用继续进入同一专用版本；负值、
+  空区间、状态无法缩短或任何结构证明失败时均保留原函数。独立开关为
+  `COMPILER_DISABLE_RECURSIVE_COMMON_PREFIX=1`。
+- 匿名验证：新增 8 桶、参数顺序改变、状态上界改变的递归分区程序，覆盖高位公共
+  前缀、混合 digit、空区间和 i32 checksum 回绕；O0、开启 O1 与关闭本候选 O1 的
+  stdout SHA-256 完全一致。原 8 桶结构变体和带可观察 histogram 副作用的反例继续
+  分别验证普通 fallback 与效果拒绝路径。
+- 门禁与隔离：Docker `compiler-impl2026-dev` 中使用 `/workspace/build/compiler`。
+  AArch64 correctness 为 `140/140 AC`；performance 为 `57 AC + 3` 个父提交既有的
+  h-4 末尾格式例外，三份 h-4 汇编与关闭版逐字一致。启用/关闭的 60 份最终汇编
+  只有 `03_sort1/2/3` 三项变化，均为直接语义命中，其余 57 项逐字一致。
+- 本地诊断：三轮交错消融的中位数约为 `03_sort1 0.191884→0.160953s`、
+  `03_sort2 0.011708→0.010011s`、`03_sort3 0.026436→0.019076s`，三项合计
+  `0.230028→0.190040s`，下降约 `17.4%`。完整门禁单轮合计为 `0.190478s`。
+  每项静态汇编指令约由 `465` 增至 `845`；热执行只进入非负专用版本，但仍存在
+  Cortex-A53 I-cache 和布局风险，本地 QEMU 不能替代正式平台结论。
+- 状态：D。本地语义、fallback、隔离、正确性和性能门禁已完成，推送后由官方
+  Cortex-A53 判定；若无稳定改善或出现回归则独立撤回本候选。
+
+本候选由 AI 辅助完成 common-prefix 语义证明、二次幂 digit 规范式识别、外部调用点
+CFG 版本化、非负递归版本生成、匿名边界测试、60/140 门禁与汇编隔离。技术依据为
+radix trie 的公共前缀跳过、runtime loop versioning、function specialization 和
+value-range propagation；未复制外部编译器实现。

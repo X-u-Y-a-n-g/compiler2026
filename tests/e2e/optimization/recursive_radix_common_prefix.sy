@@ -1,0 +1,82 @@
+const int radix = 8;
+
+int digit_at(int value, int level) {
+  int index = 0;
+  while (index < level) {
+    value = value / radix;
+    index = index + 1;
+  }
+  return value % radix;
+}
+
+void partition_digits(int left, int level, int right, int values[]) {
+  int begin[radix] = {};
+  int finish[radix] = {};
+  int count[radix] = {};
+  if (level == -1 || left + 1 >= right) return;
+
+  int index = left;
+  while (index < right) {
+    int digit = digit_at(values[index], level);
+    count[digit] = count[digit] + 1;
+    index = index + 1;
+  }
+  begin[0] = left;
+  finish[0] = left + count[0];
+  index = 1;
+  while (index < radix) {
+    begin[index] = finish[index - 1];
+    finish[index] = begin[index] + count[index];
+    index = index + 1;
+  }
+
+  index = 0;
+  while (index < radix) {
+    while (begin[index] < finish[index]) {
+      int value = values[begin[index]];
+      while (digit_at(value, level) != index) {
+        int displaced = value;
+        int destination = digit_at(displaced, level);
+        value = values[begin[destination]];
+        values[begin[destination]] = displaced;
+        begin[destination] = begin[destination] + 1;
+      }
+      values[begin[index]] = value;
+      begin[index] = begin[index] + 1;
+    }
+    index = index + 1;
+  }
+
+  begin[0] = left;
+  finish[0] = left + count[0];
+  index = 0;
+  while (index < radix) {
+    if (index > 0) {
+      begin[index] = finish[index - 1];
+      finish[index] = begin[index] + count[index];
+    }
+    partition_digits(begin[index], level - 1, finish[index], values);
+    index = index + 1;
+  }
+}
+
+int values[37];
+
+int main() {
+  int index = 0;
+  while (index < 37) {
+    values[index] = (index * 73 + 19) % 509;
+    index = index + 1;
+  }
+  partition_digits(0, 7, 37, values);
+  partition_digits(4, 7, 4, values);
+  int result = 0;
+  index = 0;
+  while (index < 37) {
+    result = result * 31 + values[index];
+    index = index + 1;
+  }
+  putint(result);
+  putch(10);
+  return 0;
+}
